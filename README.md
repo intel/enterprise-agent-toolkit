@@ -29,7 +29,7 @@ Deploys a full Kubernetes-based stack with GenAI Gateway (LiteLLM + Langfuse), o
 
 The Enterprise Agent Toolkit is a production-ready, Kubernetes-based platform that turns a single Linux server into a fully operational AI agent infrastructure. It bundles every layer an enterprise needs to build, run, and govern AI agents — from secure API routing and intelligent model dispatch, to sandboxed code execution, persistent agent memory, and real-time observability.
 
-Built on Intel® Xeon® Scalable processors (and optionally Intel® Gaudi® AI Accelerators), the stack is optimized for CPU-efficient inference out of the box and is designed to grow: models on external GPU clusters can be added to the same gateway at any time.
+Built on Intel® Xeon® Scalable processors the stack is optimized for CPU-efficient inference out of the box and is designed to grow: models on external GPU clusters can be added to the same gateway at any time.
 
 
 ```bash
@@ -57,10 +57,10 @@ Enables safe agent actions through sandboxed code execution, tool isolation, tok
 Provides scalable short- and long-term agent memory using vector databases and relational stores to maintain context across tasks, sessions, and workflows. **Redis** (with RediSearch) is deployed as the default memory backend, giving agents persistent session state, semantic search over past interactions, and cross-request continuity.
 
 ### Intel Tools & MCP
-Accelerates agent actions via Intel-optimized tools, **Model Context Protocol (MCP)** integrations, classic AI/ML pipelines, **OpenVINO** tools, and ingestion/ETL services. MCP server templates are included for extending the agent with domain-specific tooling without modifying the core stack.
+Accelerates agent actions via Intel-optimized tools, **Model Context Protocol (MCP)** integrations, classic AI/ML pipelines and ingestion/ETL services. MCP server templates are included for extending the agent with domain-specific tooling without modifying the core stack.
 
 ### Orchestration
-Orchestrates all agent workloads with **Kubernetes** (via Kubespray), **Helm**, and an Ansible-based automation layer. The stack supports distributed execution, rolling updates, high-availability scaling, and multi-node expansion out of the box. See the [Multi-Node Deployment Guide](docs/multi-node-deployment.md) for step-by-step instructions on deploying across multiple servers.
+Orchestrates all agent workloads with **Kubernetes** (via Kubespray), **Helm**, and an Ansible-based automation layer. The stack supports distributed execution, rolling updates, high-availability scaling, and multi-node expansion out of the box. See the [Single-Node Deployment Guide](docs/single-node-deployment.md) [Multi-Node Deployment Guide](docs/multi-node-deployment.md) for step-by-step instructions on deploying across multiple servers.
 
 ### Observability & Telemetry
 Integrates seamlessly with enterprise monitoring tooling, providing real-time metrics, traces, and logs through **Prometheus**, **Grafana**, **Loki**, and **Langfuse** (LLM-native tracing). Every token, latency measurement, and agent step is captured and queryable from the included dashboards.
