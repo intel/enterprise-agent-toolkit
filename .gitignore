@@ -7,4 +7,4 @@ core/kubespray/
 # Vault secrets
 core/inventory/metadata/vault.yml
 #core/inventory/metadata/all.yml
-core/inventory/agentic-config.cfg
+

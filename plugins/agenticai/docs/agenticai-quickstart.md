@@ -154,33 +154,6 @@ If you need to use OpenAI, Anthropic, or other external models:
    - **Model ID:** Cloud model name (e.g., `gpt-4`, `claude-3-opus`)
    - **API Key:** Your cloud provider API key
 
-#### Template Configuration
-
-The included `software-team.json` template uses placeholder values that you should replace:
-- **`your-model-endpoint`** → Replace with actual service endpoint
-- **`your-model-id`** → Replace with actual model name/ID
-
-After importing the template, update all LLM nodes with your model configuration.
-
-
-### How to Load an sample AgentFlow Template
-
-1. From the **left sidebar**, click **AgentFlows**
-2. Click **Add New**
-3. An empty Agent editor will open  
-   (You will see a blank canvas with the title “Untitled Agent”)
-4. In the **top-right corner**, Click **Settings** gear icon and select **Load Agents**
-5. Select the provided agent template `.json` file.
-   Pre-built agentflow template available at:
-   ```
-   plugins/agenticai/templates/software-team.json
-   ```
-6. The agent configuration will load automatically
-7. In all the LLM Nodes choose the credentials that is created in above step. And also update model and basepath.
-8. Click the **Save (💾) icon**
-9. Enter a name for the agent and save
-
-
 ---
 
 ## Administration
