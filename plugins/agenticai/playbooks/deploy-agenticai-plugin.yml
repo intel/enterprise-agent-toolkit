@@ -78,23 +78,6 @@
       run_once: true
 
     ###########################################################################
-    # End Node ConfigMap
-    # The 'endAgentflow' component is absent from all Flowise releases up to
-    # and including 3.1.2. This ConfigMap injects the missing component at
-    # the correct path so Flowise discovers it on startup.
-    # Controlled by agenticai_inject_end_node (default: true).
-    # Set to false once a Flowise image ships the End node natively.
-    ###########################################################################
-    - name: Create ConfigMap for missing endAgentflow End node component
-      shell: |
-        kubectl create configmap flowise-end-node \
-          --from-file=End.js={{ playbook_dir }}/../files/End.js \
-          --namespace={{ agenticai_namespace }} \
-          --dry-run=client -o yaml | kubectl apply -f -
-      when: agenticai_inject_end_node | bool
-      run_once: true
-
-    ###########################################################################
     # Validate Required Secrets
     ###########################################################################
     - name: Validate PostgreSQL Password is Set
@@ -155,10 +138,6 @@
           --set persistence.storageClass={{ agenticai_persistence_storage_class }} \
           --set persistence.size={{ agenticai_persistence_size }} \
           --set ingress.enabled=false \
-          {% if agenticai_inject_end_node | bool %}
-          --set-json 'extraVolumes=[{"name":"end-node","configMap":{"name":"flowise-end-node"}}]' \
-          --set-json 'extraVolumeMounts=[{"name":"end-node","mountPath":"/usr/local/lib/node_modules/flowise/node_modules/flowise-components/dist/nodes/agentflow/End","readOnly":true}]' \
-          {% endif %}
           --set extraEnvVars[0].name=FLOWISE_LITELLM_BASE_URL \
           --set extraEnvVars[0].value={{ agenticai_inference_endpoint }} \
           --set extraEnvVars[1].name=FLOWISE_LITELLM_API_KEY \

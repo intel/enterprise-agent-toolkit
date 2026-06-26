@@ -120,15 +120,6 @@
       changed_when: "'created' in local_path_install.stdout or 'configured' in local_path_install.stdout"
       tags: always
 
-    - name: Pre-pull local-path-provisioner image via containerd
-      ansible.builtin.shell: |
-        crictl pull docker.io/rancher/local-path-provisioner:v0.0.30
-      register: lpp_pull
-      retries: 3
-      delay: 10
-      until: lpp_pull.rc == 0
-      tags: always
-
     - name: Wait for local-path-provisioner to be ready
       ansible.builtin.shell: |
         kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=300s

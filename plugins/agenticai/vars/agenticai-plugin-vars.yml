@@ -64,12 +64,6 @@ agenticai_helm_repo_url: https://cowboysysop.github.io/charts/
 agenticai_helm_chart_name: flowise
 agenticai_helm_chart_version: "6.0.0"
 
-# End Node Patch
-# The 'endAgentflow' component is missing from all Flowise releases up to and
-# including 3.1.2. The ConfigMap injection below provides it at runtime.
-# Set to false if a future image version ships the component natively
-# (verify with: kubectl exec ... -- ls .../agentflow/End/End.js)
-agenticai_inject_end_node: true
 
 # Autoscaling (disabled by default for simplicity)
 agenticai_autoscaling_enabled: false
