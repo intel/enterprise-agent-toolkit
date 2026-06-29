@@ -30,7 +30,7 @@ spec:
               echo "Postgres and Redis are up!"
 {{- if .Values.restoreJob.enabled }}
         - name : wait-for-postgres-restore-job
-          image: bitnami/kubectl:latest
+          image: soldevelo/kubectl:latest
           command:
             - /bin/sh
             - -c
