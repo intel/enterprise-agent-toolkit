@@ -221,6 +221,22 @@ fresh_installation() {
                 echo "Skipping Agent Sandbox deployment..."
             fi
 
+            if [[ "${deploy_openclaw:-no}" == "yes" ]]; then
+                execute_and_check "Deploying OpenClaw (operator)..." deploy_openclaw \
+                    "OpenClaw deployed successfully." \
+                    "Failed to deploy OpenClaw. Exiting!."
+            else
+                echo "Skipping OpenClaw deployment..."
+            fi
+
+            if [[ "${deploy_agent_operator:-no}" == "yes" ]]; then
+                execute_and_check "Deploying Agent Operator (CRDs + controller)..." deploy_agent_operator \
+                    "Agent Operator deployed successfully." \
+                    "Failed to deploy Agent Operator. Exiting!."
+            else
+                echo "Skipping Agent Operator deployment..."
+            fi
+
 
 
             if [ "$deploy_llm_models" == "yes" ]; then

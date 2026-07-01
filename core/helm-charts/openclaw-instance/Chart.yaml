@@ -1,0 +1,12 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: openclaw-instance
+version: 0.1.0
+description: A Helm chart for deploying OpenClaw instance with direct vLLM connection
+appVersion: "2026.6.10"
+keywords:
+  - openclaw
+  - ai-agent
+  - vllm
+  - inference

@@ -1,0 +1,32 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-operator
+  labels:
+    app.kubernetes.io/name: agent-operator
+rules:
+  # Agent CRD
+  - apiGroups: ["intel-stack.io"]
+    resources: ["agents", "agents/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # OpenClaw backend CRs
+  - apiGroups: ["openclaw.rocks"]
+    resources: ["openclawinstances"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespaces (for per-agent namespace creation)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  # Secrets (gateway tokens)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  # Events (status reporting)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

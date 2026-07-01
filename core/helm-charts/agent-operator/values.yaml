@@ -1,0 +1,51 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+namespace: agent-operator-system
+
+image:
+  repository: python
+  tag: "3.12-slim"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+nodeSelector:
+  ei-inference-eligible: "true"
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# Keycloak (per-agent identity provisioning)
+keycloak:
+  enabled: false
+  url: "http://keycloak.auth-apisix.svc.cluster.local:80"
+  realm: "master"
+  adminSecretName: "keycloak-admin-credentials"
+  adminUser: ""      # Set via --set keycloak.adminUser=<user>
+  adminPassword: ""  # Set via --set keycloak.adminPassword=<password>
+
+# Proxy (for init container pip install)
+proxy:
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""
+
+# Backend adapter configuration
+adapters:
+  claw:
+    enabled: true
+    openclawImage: "ghcr.io/openclaw/openclaw"
+    openclawTag: "latest"
+    vllmServiceName: "vllm-qwen3-coder-30b-cpu-service"
+    vllmNamespace: "default"
+    modelId: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    sandboxEndpoint: "http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080"

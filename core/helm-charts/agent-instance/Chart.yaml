@@ -1,0 +1,11 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: agent-instance
+version: 0.1.0
+description: Create a persistent agent with one helm install command
+appVersion: "0.1.0"
+keywords:
+  - agent
+  - persistent-agents
+  - openclaw

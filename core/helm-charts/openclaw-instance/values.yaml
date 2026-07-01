@@ -1,0 +1,96 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# OpenClaw Instance Configuration
+# Connects directly to vLLM for model inference (no LiteLLM proxy needed)
+
+namespace: openclaw
+
+image:
+  repository: ghcr.io/openclaw/openclaw
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Model configuration
+model:
+  # Must match exactly what vLLM reports at /v1/models
+  id: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+  name: "Qwen3 Coder 30B"
+  # vLLM service endpoint (service-name.namespace.svc.cluster.local:port/v1)
+  baseUrl: "http://vllm-qwen3-coder-30b-cpu-service.default.svc.cluster.local:80/v1"
+  # vLLM doesn't require auth
+  apiKey: "<OPENAI_API_KEY>"
+
+# Scaling
+availability:
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilization: 70
+
+nodeSelector:
+  ei-inference-eligible: "true"
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# Resources
+resources:
+  requests:
+    cpu: "2"
+    memory: "4Gi"
+  limits:
+    cpu: "4"
+    memory: "8Gi"
+
+# Storage
+storage:
+  enabled: true
+  size: 20Gi
+
+# Security
+security:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  networkPolicy:
+    enabled: false
+
+# Gateway
+gateway:
+  enabled: true
+  tokenSecretName: openclaw-gateway-token
+  token: "<write-your-own-token-here>"
+
+# Observability
+observability:
+  metrics:
+    enabled: true
+    port: 9090
+  logging:
+    level: info
+
+# Networking
+service:
+  type: ClusterIP
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+
+# Auto-update
+autoUpdate:
+  enabled: false
+
+# Health probes
+probes:
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3

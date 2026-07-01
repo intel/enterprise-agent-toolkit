@@ -1,0 +1,15 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: intel-stack.io/v1alpha1
+kind: Agent
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: agent
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  owner:
+    principal: {{ required "owner is required (--set owner=user@intel.com)" .Values.owner | quote }}
+  skills:
+    {{- toYaml .Values.skills | nindent 4 }}

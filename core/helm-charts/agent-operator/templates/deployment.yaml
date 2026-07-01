@@ -1,0 +1,112 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-operator
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent-operator
+    spec:
+      serviceAccountName: agent-operator
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: install-deps
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["sh", "-c"]
+          args:
+            - |
+              pip install --no-cache-dir -r /code/requirements.txt -t /deps
+          env:
+            {{- if .Values.proxy.httpProxy }}
+            - name: http_proxy
+              value: "{{ .Values.proxy.httpProxy }}"
+            - name: https_proxy
+              value: "{{ .Values.proxy.httpsProxy }}"
+            - name: no_proxy
+              value: "{{ .Values.proxy.noProxy }}"
+            {{- end }}
+          volumeMounts:
+            - name: code
+              mountPath: /code
+            - name: deps
+              mountPath: /deps
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "kopf", "run", "/code/controller.py", "--all-namespaces", "--liveness=http://0.0.0.0:8080/healthz"]
+          env:
+            - name: PYTHONPATH
+              value: "/deps"
+            - name: ADAPTER_CLAW_ENABLED
+              value: "{{ .Values.adapters.claw.enabled }}"
+            - name: OPENCLAW_IMAGE
+              value: "{{ .Values.adapters.claw.openclawImage }}"
+            - name: OPENCLAW_TAG
+              value: "{{ .Values.adapters.claw.openclawTag }}"
+            - name: VLLM_SERVICE_NAME
+              value: "{{ .Values.adapters.claw.vllmServiceName }}"
+            - name: VLLM_NAMESPACE
+              value: "{{ .Values.adapters.claw.vllmNamespace }}"
+            - name: MODEL_ID
+              value: "{{ .Values.adapters.claw.modelId }}"
+            - name: SANDBOX_ENDPOINT
+              value: "{{ .Values.adapters.claw.sandboxEndpoint }}"
+            - name: KEYCLOAK_ENABLED
+              value: "{{ .Values.keycloak.enabled }}"
+            {{- if .Values.keycloak.enabled }}
+            - name: KEYCLOAK_URL
+              value: "{{ .Values.keycloak.url }}"
+            - name: KEYCLOAK_REALM
+              value: "{{ .Values.keycloak.realm }}"
+            - name: KEYCLOAK_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.adminSecretName }}
+                  key: username
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.adminSecretName }}
+                  key: password
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 60
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: code
+              mountPath: /code
+            - name: deps
+              mountPath: /deps
+      volumes:
+        - name: code
+          configMap:
+            name: agent-operator-code
+        - name: deps
+          emptyDir: {}

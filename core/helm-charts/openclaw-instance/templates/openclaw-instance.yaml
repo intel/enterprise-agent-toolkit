@@ -1,0 +1,115 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: openclaw.rocks/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: openclaw
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  image:
+    repository: {{ .Values.image.repository }}
+    tag: {{ .Values.image.tag }}
+    pullPolicy: {{ .Values.image.pullPolicy }}
+
+  availability:
+    autoScaling:
+      enabled: true
+      minReplicas: {{ .Values.availability.minReplicas }}
+      maxReplicas: {{ .Values.availability.maxReplicas }}
+      targetCPUUtilization: {{ .Values.availability.targetCPUUtilization }}
+    nodeSelector:
+      {{- toYaml .Values.nodeSelector | nindent 6 }}
+    podDisruptionBudget:
+      enabled: true
+      maxUnavailable: 1
+    tolerations:
+      {{- toYaml .Values.tolerations | nindent 6 }}
+
+  resources:
+    {{- toYaml .Values.resources | nindent 4 }}
+
+  storage:
+    persistence:
+      enabled: {{ .Values.storage.enabled }}
+      size: {{ .Values.storage.size }}
+
+  security:
+    podSecurityContext:
+      runAsNonRoot: {{ .Values.security.runAsNonRoot }}
+      runAsUser: {{ .Values.security.runAsUser }}
+      fsGroup: {{ .Values.security.fsGroup }}
+    networkPolicy:
+      enabled: {{ .Values.security.networkPolicy.enabled }}
+
+  shareProcessNamespace: true
+
+  # Model provider configuration
+  # mergeMode: merge ensures config persists across pod restarts
+  config:
+    format: json
+    mergeMode: merge
+    raw:
+      agents:
+        defaults:
+          model:
+            primary: "openai/{{ .Values.model.id }}"
+          models:
+            openai/{{ .Values.model.id }}: {}
+      models:
+        providers:
+          openai:
+            api: "openai-completions"
+            baseUrl: {{ .Values.model.baseUrl | quote }}
+            models:
+              - id: {{ .Values.model.id | quote }}
+                name: {{ .Values.model.name | quote }}
+
+  env:
+    - name: OPENAI_BASE_URL
+      value: {{ .Values.model.baseUrl | quote }}
+    - name: OPENAI_API_KEY
+      value: {{ .Values.model.apiKey | quote }}
+
+  probes:
+    liveness:
+      enabled: true
+      initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+      periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+      timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+      failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+    readiness:
+      enabled: true
+      initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+      periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+      timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+      failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+
+  observability:
+    metrics:
+      enabled: {{ .Values.observability.metrics.enabled }}
+      port: {{ .Values.observability.metrics.port }}
+    logging:
+      level: {{ .Values.observability.logging.level }}
+
+  networking:
+    service:
+      type: {{ .Values.service.type }}
+      annotations:
+        {{- toYaml .Values.service.annotations | nindent 8 }}
+
+  {{- if .Values.gateway.enabled }}
+  gateway:
+    enabled: true
+    existingSecret: {{ .Values.gateway.tokenSecretName }}
+  {{- end }}
+
+  autoUpdate:
+    enabled: {{ .Values.autoUpdate.enabled }}
+    checkInterval: "24h"
+    rollbackOnFailure: true
+    healthCheckTimeout: "10m"
+    backupBeforeUpdate: true

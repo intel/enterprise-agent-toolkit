@@ -52,14 +52,18 @@ fi
 # PARSE FLAGS
 # ──────────────────────────────────────────────────────────────────────────────
 SHOW_MENU=false
+PROFILE_PERSISTENT_AGENTS=false
 
 for arg in "$@"; do
     case "${arg}" in
         --menu)                 SHOW_MENU=true ;;
+        --persistent-agents)    PROFILE_PERSISTENT_AGENTS=true ;;
         --help|-h)
-            echo "Usage: $0 [--menu]"
-            echo "  (no flags)  Deploy full base stack"
-            echo "  --menu      Open the interactive cluster management menu"
+            echo "Usage: $0 [--menu] [--persistent-agents]"
+            echo "  (no flags)           Deploy full base stack"
+            echo "  --menu               Open the interactive cluster management menu"
+            echo "  --persistent-agents  Deploy with persistent-agents profile"
+            echo "                       (enables: Keycloak, pgvector, Agent Sandbox, OpenClaw)"
             exit 0 ;;
         *)
             echo "ERROR: Unknown argument '${arg}'" >&2
@@ -471,6 +475,7 @@ deploy_agenticai_plugin=off
 deploy_redis=on
 deploy_kuberay=off
 deploy_agent_sandbox=off
+deploy_openclaw=off
 http_proxy=${_http_proxy}
 https_proxy=${_https_proxy}
 no_proxy=${_no_proxy}
@@ -495,6 +500,8 @@ EOF
         _cfg_set_default "deploy_redis"             "on"
         _cfg_set_default "deploy_kuberay"            "off"
         _cfg_set_default "deploy_agent_sandbox"     "off"
+        _cfg_set_default "deploy_openclaw"          "off"
+        _cfg_set_default "deploy_agent_operator"    "off"
         _cfg_set_default "http_proxy"               "${_http_proxy}"
         _cfg_set_default "https_proxy"              "${_https_proxy}"
         # no_proxy gets k8s suffixes injected only when the key is absent
@@ -606,6 +613,8 @@ _source_core_libs() {
     source "${CORE_DIR}/lib/components/kuberay-controller.sh"
     source "${CORE_DIR}/lib/components/pgvector-controller.sh"
     source "${CORE_DIR}/lib/components/agent-sandbox-controller.sh"
+    source "${CORE_DIR}/lib/components/openclaw-controller.sh"
+    source "${CORE_DIR}/lib/components/agent-operator-controller.sh"
 
     source "${CORE_DIR}/lib/models/model-selection.sh"
     source "${CORE_DIR}/lib/models/list-model.sh"
@@ -760,6 +769,18 @@ _auto_skip_deployed_components() {
         success "Agent Sandbox: already deployed — skipping"
     fi
 
+    # OpenClaw (operator + instance)
+    if kubectl get namespace openclaw-operator-system &>/dev/null 2>&1; then
+        _cfg_turn_off "deploy_openclaw"
+        success "OpenClaw: already deployed — skipping"
+    fi
+
+    # Agent Operator
+    if kubectl get namespace agent-operator-system &>/dev/null 2>&1; then
+        _cfg_turn_off "deploy_agent_operator"
+        success "Agent Operator: already deployed — skipping"
+    fi
+
     info "Resume check complete — only pending components will be installed"
 }
 
@@ -791,6 +812,17 @@ run_deployment() {
     # never blocks waiting for interactive input on these.
     deploy_keycloak="no"
     deploy_apisix="no"
+
+    # ── Profile: --persistent-agents ─────────────────────────────────────────
+    # Enables the components required for persistent agents as first-class objects.
+    if [[ "${PROFILE_PERSISTENT_AGENTS}" == "true" ]]; then
+        info "Profile: --persistent-agents — enabling required components"
+        deploy_keycloak="yes"
+        deploy_pgvector="yes"
+        deploy_agent_sandbox="yes"
+        deploy_openclaw="yes"
+        deploy_agent_operator="yes"
+    fi
 
     # ansible-playbook uses relative paths; lib functions must run with CWD=core/
     pushd "${CORE_DIR}" > /dev/null
