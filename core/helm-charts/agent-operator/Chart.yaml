@@ -1,0 +1,11 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: agent-operator
+version: 0.1.0
+description: Intel AI Stack Agent Operator — reconciles Agent CRs (facade pattern)
+appVersion: "0.1.0"
+keywords:
+  - agent
+  - operator
+  - persistent-agents

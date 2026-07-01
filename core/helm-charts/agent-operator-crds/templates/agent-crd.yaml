@@ -1,0 +1,134 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agents.intel-stack.io
+  labels:
+    app.kubernetes.io/name: agent-operator
+    app.kubernetes.io/part-of: enterprise-agent-toolkit
+spec:
+  group: intel-stack.io
+  names:
+    kind: Agent
+    listKind: AgentList
+    plural: agents
+    singular: agent
+    shortNames:
+      - ag
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - owner
+              properties:
+                runtime:
+                  type: string
+                  description: "Backend reconciler (claw | hermes)"
+                  enum:
+                    - claw
+                    - hermes
+                  default: claw
+                owner:
+                  type: object
+                  required:
+                    - principal
+                  properties:
+                    principal:
+                      type: string
+                      description: "Owner identity (e.g. user@intel.com)"
+                role:
+                  type: string
+                  description: "Agent role in multi-agent topology"
+                  enum:
+                    - solo
+                    - lead
+                    - worker
+                  default: solo
+                skills:
+                  type: array
+                  description: "Capabilities this agent should have (e.g. shell, read_file, browser-automation)"
+                  items:
+                    type: string
+                manages:
+                  type: object
+                  description: "Required when role=lead; selects worker agents"
+                  properties:
+                    selector:
+                      type: object
+                      properties:
+                        matchLabels:
+                          type: object
+                          additionalProperties:
+                            type: string
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Ready
+                    - Running
+                    - IdleSuspended
+                    - Resuming
+                    - Terminating
+                    - Failed
+                lastActivity:
+                  type: string
+                  format: date-time
+                sandboxRef:
+                  type: string
+                  description: "Name of the agent-sandbox CR"
+                memoryRef:
+                  type: string
+                  description: "pgvector schema / Redis prefix"
+                backendRef:
+                  type: object
+                  description: "Reference to the backend-native CR"
+                  properties:
+                    apiVersion:
+                      type: string
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Owner
+          type: string
+          jsonPath: .spec.owner.principal
+        - name: Skills
+          type: string
+          jsonPath: .spec.skills
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

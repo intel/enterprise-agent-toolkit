@@ -1,0 +1,431 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-operator-code
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+data:
+  controller.py: |
+    """
+    Intel AI Stack Agent Operator (kopf-based)
+
+    Reconciles agents.intel-stack.io/v1alpha1 Agent CRs.
+    Facade pattern: owns Stack-only concerns, references backend CRs by name.
+
+    Lifecycle: Pending -> Ready -> Running -> IdleSuspended -> Resuming -> Terminating
+    """
+    import kopf
+    import kubernetes
+    import os
+    import datetime
+
+    ADAPTER_CLAW_ENABLED = os.environ.get("ADAPTER_CLAW_ENABLED", "true") == "true"
+    OPENCLAW_IMAGE = os.environ.get("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw")
+    OPENCLAW_TAG = os.environ.get("OPENCLAW_TAG", "latest")
+    VLLM_SERVICE = os.environ.get("VLLM_SERVICE_NAME", "vllm-qwen3-coder-30b-cpu-service")
+    VLLM_NAMESPACE = os.environ.get("VLLM_NAMESPACE", "default")
+    MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
+    SANDBOX_ENDPOINT = os.environ.get("SANDBOX_ENDPOINT", "http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080")
+    KEYCLOAK_ENABLED = os.environ.get("KEYCLOAK_ENABLED", "false") == "true"
+    KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "")
+    KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "master")
+    KEYCLOAK_ADMIN_USER = os.environ.get("KEYCLOAK_ADMIN_USER", "")
+    KEYCLOAK_ADMIN_PASSWORD = os.environ.get("KEYCLOAK_ADMIN_PASSWORD", "")
+
+    # Skill-to-OpenClaw config mapping
+    SKILL_MAP = {
+        "shell": {"tools": {"exec": {"security": "full", "ask": "off"}}},
+        "read_file": {},
+        "list_files": {},
+        "summarize": {},
+        "git": {},
+        "browser-automation": {"plugins": ["browser-automation"]},
+        "diagram-maker": {"plugins": ["diagram-maker"]},
+        "memory": {"plugins": ["memory-core"]},
+        "canvas": {"plugins": ["canvas"]},
+    }
+
+
+    @kopf.on.startup()
+    def configure(settings: kopf.OperatorSettings, **_):
+        settings.persistence.finalizer = "intel-stack.io/agent-operator"
+        settings.posting.level = 20  # INFO
+
+
+    @kopf.on.create("intel-stack.io", "v1alpha1", "agents")
+    def on_create(spec, meta, status, patch, namespace, name, logger, **_):
+        """Handle Agent creation: Pending -> Ready"""
+        runtime = spec.get("runtime", "claw")
+        owner = spec.get("owner", {}).get("principal", "unknown")
+        role = spec.get("role", "solo")
+        skills = spec.get("skills", ["shell", "read_file", "list_files"])
+
+        logger.info(f"Creating agent '{name}' runtime={runtime} owner={owner} skills={skills}")
+
+        patch.status["phase"] = "Pending"
+        patch.status["lastActivity"] = datetime.datetime.utcnow().isoformat() + "Z"
+
+        # Provision per-agent namespace
+        agent_ns = f"agent-{name}"
+        _ensure_namespace(agent_ns, owner, name, logger)
+
+        # Create backend CR based on runtime
+        backend_ref = None
+        if runtime == "claw" and ADAPTER_CLAW_ENABLED:
+            backend_ref = _create_openclaw_instance(name, agent_ns, owner, skills, logger)
+        elif runtime == "hermes":
+            logger.warning(f"Runtime 'hermes' not yet implemented, agent stays in Pending")
+            patch.status["phase"] = "Pending"
+            return
+
+        if backend_ref:
+            patch.status["backendRef"] = backend_ref
+
+        # Create gateway token secret
+        _create_gateway_secret(name, agent_ns, logger)
+
+        # Provision Keycloak OIDC client (per-agent identity)
+        if KEYCLOAK_ENABLED:
+            _provision_keycloak_client(name, agent_ns, owner, logger)
+
+        patch.status["phase"] = "Ready"
+        patch.status["memoryRef"] = f"agent:{name}"
+        logger.info(f"Agent '{name}' is Ready in namespace '{agent_ns}'")
+
+
+    @kopf.on.update("intel-stack.io", "v1alpha1", "agents", field="spec")
+    def on_update(spec, meta, status, patch, name, logger, **_):
+        """Handle spec changes"""
+        logger.info(f"Agent '{name}' spec updated")
+        patch.status["lastActivity"] = datetime.datetime.utcnow().isoformat() + "Z"
+
+
+    @kopf.on.delete("intel-stack.io", "v1alpha1", "agents")
+    def on_delete(spec, meta, status, name, namespace, logger, **_):
+        """Handle Agent deletion: Terminating + cleanup"""
+        logger.info(f"Deleting agent '{name}'")
+
+        agent_ns = f"agent-{name}"
+        runtime = spec.get("runtime", "claw")
+
+        # Delete Keycloak client
+        if KEYCLOAK_ENABLED:
+            _delete_keycloak_client(name, logger)
+
+        # Delete backend CR
+        if runtime == "claw":
+            _delete_openclaw_instance(name, agent_ns, logger)
+
+        # Delete gateway secret
+        _delete_secret(f"{name}-gateway-token", agent_ns, logger)
+        _delete_secret(f"{name}-keycloak-credentials", agent_ns, logger)
+
+        # Delete agent namespace
+        _delete_namespace(agent_ns, logger)
+
+        logger.info(f"Agent '{name}' cleanup complete")
+
+
+    # ── Helper functions ─────────────────────────────────────────────────────
+
+    def _ensure_namespace(ns, owner, agent_name, logger):
+        api = kubernetes.client.CoreV1Api()
+        try:
+            api.read_namespace(ns)
+            logger.info(f"Namespace '{ns}' already exists")
+        except kubernetes.client.ApiException as e:
+            if e.status == 404:
+                body = kubernetes.client.V1Namespace(
+                    metadata=kubernetes.client.V1ObjectMeta(
+                        name=ns,
+                        labels={
+                            "intel-stack.io/agent": agent_name,
+                            "intel-stack.io/owner": owner.replace("@", "_at_"),
+                            "app.kubernetes.io/managed-by": "agent-operator",
+                        },
+                    )
+                )
+                api.create_namespace(body)
+                logger.info(f"Created namespace '{ns}'")
+            else:
+                raise
+
+
+    def _build_skills_config(skills):
+        """Map skill names to openclaw.json tools/plugins config."""
+        tools_config = {}
+        plugins_allow = []
+        for skill in skills:
+            skill_cfg = SKILL_MAP.get(skill, {})
+            if "tools" in skill_cfg:
+                tools_config.update(skill_cfg["tools"])
+            if "plugins" in skill_cfg:
+                plugins_allow.extend(skill_cfg["plugins"])
+        return tools_config, plugins_allow
+
+
+    def _create_openclaw_instance(agent_name, agent_ns, owner, skills, logger):
+        api = kubernetes.client.CustomObjectsApi()
+        model_base_url = f"http://{VLLM_SERVICE}.{VLLM_NAMESPACE}.svc.cluster.local:80/v1"
+        tools_config, plugins_allow = _build_skills_config(skills)
+
+        instance_body = {
+            "apiVersion": "openclaw.rocks/v1alpha1",
+            "kind": "OpenClawInstance",
+            "metadata": {
+                "name": agent_name,
+                "namespace": agent_ns,
+                "labels": {
+                    "intel-stack.io/agent": agent_name,
+                    "intel-stack.io/owner": owner.replace("@", "_at_"),
+                },
+            },
+            "spec": {
+                "image": {
+                    "repository": OPENCLAW_IMAGE,
+                    "tag": OPENCLAW_TAG,
+                    "pullPolicy": "IfNotPresent",
+                },
+                "storage": {"persistence": {"enabled": True, "size": "10Gi"}},
+                "security": {"networkPolicy": {"enabled": False}},
+                "shareProcessNamespace": True,
+                "config": {
+                    "format": "json",
+                    "mergeMode": "merge",
+                    "raw": {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": f"openai/{MODEL_ID}"},
+                                "models": {f"openai/{MODEL_ID}": {}},
+                            }
+                        },
+                        "models": {
+                            "providers": {
+                                "openai": {
+                                    "api": "openai-completions",
+                                    "baseUrl": model_base_url,
+                                    "models": [{"id": MODEL_ID, "name": MODEL_ID}],
+                                }
+                            }
+                        },
+                        **({"tools": tools_config} if tools_config else {}),
+                        **({"plugins": {"allow": plugins_allow}} if plugins_allow else {}),
+                    },
+                },
+                "env": [
+                    {"name": "OPENAI_BASE_URL", "value": model_base_url},
+                    {"name": "OPENAI_API_KEY", "value": "sk-no-key-needed"},
+                    {"name": "AGENT_SANDBOX_ENDPOINT", "value": SANDBOX_ENDPOINT},
+                    {"name": "AGENT_SANDBOX_ENABLED", "value": "true"},
+                ],
+                "gateway": {"enabled": True, "existingSecret": f"{agent_name}-gateway-token"},
+                "autoUpdate": {"enabled": False},
+            },
+        }
+
+        try:
+            api.create_namespaced_custom_object(
+                group="openclaw.rocks",
+                version="v1alpha1",
+                namespace=agent_ns,
+                plural="openclawinstances",
+                body=instance_body,
+            )
+            logger.info(f"Created OpenClawInstance '{agent_name}' in '{agent_ns}'")
+        except kubernetes.client.ApiException as e:
+            if e.status == 409:
+                logger.info(f"OpenClawInstance '{agent_name}' already exists")
+            else:
+                raise
+
+        return {
+            "apiVersion": "openclaw.rocks/v1alpha1",
+            "kind": "OpenClawInstance",
+            "name": agent_name,
+        }
+
+
+    def _delete_openclaw_instance(agent_name, agent_ns, logger):
+        api = kubernetes.client.CustomObjectsApi()
+        try:
+            api.delete_namespaced_custom_object(
+                group="openclaw.rocks",
+                version="v1alpha1",
+                namespace=agent_ns,
+                plural="openclawinstances",
+                name=agent_name,
+            )
+            logger.info(f"Deleted OpenClawInstance '{agent_name}'")
+        except kubernetes.client.ApiException as e:
+            if e.status == 404:
+                logger.info(f"OpenClawInstance '{agent_name}' already gone")
+            else:
+                logger.warning(f"Failed to delete OpenClawInstance: {e}")
+
+
+    def _create_gateway_secret(agent_name, agent_ns, logger):
+        api = kubernetes.client.CoreV1Api()
+        import secrets as sec
+        token = sec.token_hex(24)
+
+        secret = kubernetes.client.V1Secret(
+            metadata=kubernetes.client.V1ObjectMeta(
+                name=f"{agent_name}-gateway-token",
+                namespace=agent_ns,
+            ),
+            string_data={"token": token},
+        )
+        try:
+            api.create_namespaced_secret(agent_ns, secret)
+            logger.info(f"Created gateway secret for '{agent_name}'")
+        except kubernetes.client.ApiException as e:
+            if e.status == 409:
+                logger.info(f"Gateway secret already exists")
+            else:
+                raise
+
+
+    def _delete_secret(name, ns, logger):
+        api = kubernetes.client.CoreV1Api()
+        try:
+            api.delete_namespaced_secret(name, ns)
+        except kubernetes.client.ApiException:
+            pass
+
+
+    def _delete_namespace(ns, logger):
+        api = kubernetes.client.CoreV1Api()
+        try:
+            api.delete_namespace(ns)
+            logger.info(f"Deleted namespace '{ns}'")
+        except kubernetes.client.ApiException as e:
+            if e.status == 404:
+                pass
+            else:
+                logger.warning(f"Failed to delete namespace '{ns}': {e}")
+
+
+    # ── Keycloak helpers ─────────────────────────────────────────────────────
+
+    def _get_keycloak_admin_token(logger):
+        import requests
+        token_url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+        try:
+            resp = requests.post(token_url, data={
+                "username": KEYCLOAK_ADMIN_USER,
+                "password": KEYCLOAK_ADMIN_PASSWORD,
+                "grant_type": "password",
+                "client_id": "admin-cli",
+            }, timeout=10)
+        except Exception as e:
+            logger.warning(f"Keycloak unreachable: {e}")
+            return None
+        if resp.status_code != 200:
+            logger.warning(f"Keycloak login failed: {resp.status_code} {resp.text[:100]}")
+            return None
+        return resp.json().get("access_token")
+
+
+    def _provision_keycloak_client(agent_name, agent_ns, owner, logger):
+        import requests
+        token = _get_keycloak_admin_token(logger)
+        if not token:
+            logger.warning("Skipping Keycloak provisioning — cannot get admin token")
+            return
+
+        client_id = f"agent-{agent_name}"
+        clients_url = f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/clients"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        # Create client
+        client_body = {
+            "clientId": client_id,
+            "enabled": True,
+            "publicClient": False,
+            "serviceAccountsEnabled": True,
+            "clientAuthenticatorType": "client-secret",
+            "protocol": "openid-connect",
+            "attributes": {
+                "agent.owner": owner,
+                "agent.name": agent_name,
+            },
+        }
+        resp = requests.post(clients_url, json=client_body, headers=headers, timeout=10)
+        if resp.status_code == 409:
+            logger.info(f"Keycloak client '{client_id}' already exists")
+        elif resp.status_code not in (200, 201):
+            logger.warning(f"Failed to create Keycloak client: {resp.status_code} {resp.text[:100]}")
+            return
+        else:
+            logger.info(f"Created Keycloak client '{client_id}'")
+
+        # Get client UUID
+        resp = requests.get(f"{clients_url}?clientId={client_id}", headers=headers, timeout=10)
+        if resp.status_code != 200 or not resp.json():
+            logger.warning("Failed to retrieve Keycloak client UUID")
+            return
+        client_uuid = resp.json()[0]["id"]
+
+        # Get client secret
+        resp = requests.get(f"{clients_url}/{client_uuid}/client-secret", headers=headers, timeout=10)
+        if resp.status_code != 200:
+            logger.warning("Failed to retrieve client secret")
+            return
+        client_secret = resp.json().get("value", "")
+
+        # Store credentials in agent namespace
+        token_endpoint = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"
+        api = kubernetes.client.CoreV1Api()
+        secret = kubernetes.client.V1Secret(
+            metadata=kubernetes.client.V1ObjectMeta(
+                name=f"{agent_name}-keycloak-credentials",
+                namespace=agent_ns,
+                labels={"intel-stack.io/agent": agent_name},
+            ),
+            string_data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "token_endpoint": token_endpoint,
+                "owner": owner,
+            },
+        )
+        try:
+            api.create_namespaced_secret(agent_ns, secret)
+            logger.info(f"Stored Keycloak credentials for '{agent_name}'")
+        except kubernetes.client.ApiException as e:
+            if e.status == 409:
+                logger.info("Keycloak credentials secret already exists")
+            else:
+                raise
+
+
+    def _delete_keycloak_client(agent_name, logger):
+        import requests
+        token = _get_keycloak_admin_token(logger)
+        if not token:
+            return
+
+        client_id = f"agent-{agent_name}"
+        clients_url = f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/clients"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Find client UUID
+        resp = requests.get(f"{clients_url}?clientId={client_id}", headers=headers, timeout=10)
+        if resp.status_code != 200 or not resp.json():
+            return
+        client_uuid = resp.json()[0]["id"]
+
+        # Delete
+        resp = requests.delete(f"{clients_url}/{client_uuid}", headers=headers, timeout=10)
+        if resp.status_code in (200, 204):
+            logger.info(f"Deleted Keycloak client '{client_id}'")
+        else:
+            logger.warning(f"Failed to delete Keycloak client: {resp.status_code}")
+
+  requirements.txt: |
+    kopf==1.37.2
+    kubernetes==31.0.0
+    requests==2.32.3

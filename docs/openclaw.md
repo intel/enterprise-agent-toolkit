@@ -80,7 +80,7 @@ The instance chart is at `core/helm-charts/openclaw-instance/`.
 | `resources.requests.cpu` | `2` | CPU request |
 | `resources.requests.memory` | `4Gi` | Memory request |
 | `storage.size` | `20Gi` | PVC size |
-| `gateway.token` | `openclaw-gateway-token-change-me-in-production` | Gateway auth token |
+| `gateway.token` | `""` | Gateway auth token (set your own) |
 | `security.networkPolicy.enabled` | `false` | NetworkPolicy (disable for cross-namespace vLLM access) |
 
 ---

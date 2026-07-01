@@ -1,0 +1,16 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-operator
+  labels:
+    app.kubernetes.io/name: agent-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-operator
+subjects:
+  - kind: ServiceAccount
+    name: agent-operator
+    namespace: {{ .Values.namespace }}

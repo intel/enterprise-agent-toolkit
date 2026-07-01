@@ -1,0 +1,11 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: agent-operator-crds
+version: 0.1.0
+description: CRDs for the Intel AI Stack Agent Operator (agents.intel-stack.io/v1alpha1)
+appVersion: "0.1.0"
+keywords:
+  - agent
+  - crd
+  - persistent-agents
