@@ -471,6 +471,7 @@ deploy_agenticai_plugin=off
 deploy_redis=on
 deploy_kuberay=off
 deploy_agent_sandbox=off
+deploy_openclaw=off
 http_proxy=${_http_proxy}
 https_proxy=${_https_proxy}
 no_proxy=${_no_proxy}
@@ -495,6 +496,7 @@ EOF
         _cfg_set_default "deploy_redis"             "on"
         _cfg_set_default "deploy_kuberay"            "off"
         _cfg_set_default "deploy_agent_sandbox"     "off"
+        _cfg_set_default "deploy_openclaw"          "off"
         _cfg_set_default "http_proxy"               "${_http_proxy}"
         _cfg_set_default "https_proxy"              "${_https_proxy}"
         # no_proxy gets k8s suffixes injected only when the key is absent
@@ -606,6 +608,7 @@ _source_core_libs() {
     source "${CORE_DIR}/lib/components/kuberay-controller.sh"
     source "${CORE_DIR}/lib/components/pgvector-controller.sh"
     source "${CORE_DIR}/lib/components/agent-sandbox-controller.sh"
+    source "${CORE_DIR}/lib/components/openclaw-controller.sh"
 
     source "${CORE_DIR}/lib/models/model-selection.sh"
     source "${CORE_DIR}/lib/models/list-model.sh"
@@ -758,6 +761,12 @@ _auto_skip_deployed_components() {
     if kubectl get namespace agent-sandbox &>/dev/null 2>&1; then
         _cfg_turn_off "deploy_agent_sandbox"
         success "Agent Sandbox: already deployed — skipping"
+    fi
+
+    # OpenClaw (operator + instance)
+    if kubectl get namespace openclaw-operator-system &>/dev/null 2>&1; then
+        _cfg_turn_off "deploy_openclaw"
+        success "OpenClaw: already deployed — skipping"
     fi
 
     info "Resume check complete — only pending components will be installed"

@@ -221,6 +221,14 @@ fresh_installation() {
                 echo "Skipping Agent Sandbox deployment..."
             fi
 
+            if [[ "${deploy_openclaw:-no}" == "yes" ]]; then
+                execute_and_check "Deploying OpenClaw (operator + instance)..." deploy_openclaw \
+                    "OpenClaw deployed successfully." \
+                    "Failed to deploy OpenClaw. Exiting!."
+            else
+                echo "Skipping OpenClaw deployment..."
+            fi
+
 
 
             if [ "$deploy_llm_models" == "yes" ]; then
