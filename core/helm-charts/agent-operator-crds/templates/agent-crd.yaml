@@ -44,7 +44,7 @@ spec:
                   properties:
                     principal:
                       type: string
-                      description: "Owner identity (e.g. user@intel.com)"
+                      description: "Owner identity (e.g. user@example.com)"
                 role:
                   type: string
                   description: "Agent role in multi-agent topology"
@@ -53,11 +53,30 @@ spec:
                     - lead
                     - worker
                   default: solo
+                desiredState:
+                  type: string
+                  description: "Desired lifecycle state. Set to Suspended to scale the agent to zero replicas (state retained)."
+                  enum:
+                    - Running
+                    - Suspended
+                  default: Running
                 skills:
                   type: array
                   description: "Capabilities this agent should have (e.g. shell, read_file, browser-automation)"
                   items:
                     type: string
+                tools:
+                  type: array
+                  description: "Custom tool/MCP server endpoints"
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        description: "Tool or MCP server name"
+                      url:
+                        type: string
+                        description: "Endpoint URL"
                 manages:
                   type: object
                   description: "Required when role=lead; selects worker agents"
@@ -69,6 +88,17 @@ spec:
                           type: object
                           additionalProperties:
                             type: string
+                workspace:
+                  type: object
+                  description: >-
+                    Optional. Files to seed into the agent's OpenClaw workspace
+                    (/home/openclaw/.openclaw/workspace), keyed by relative path
+                    with file content as the value. Loaded by OpenClaw at session
+                    start. Supports prompt files (AGENTS.md, SOUL.md, TOOLS.md),
+                    workspace-tier skills (skills/<name>/SKILL.md), and project
+                    files (projects/x/SPEC.md). Empty = none.
+                  additionalProperties:
+                    type: string
             status:
               type: object
               properties:
@@ -85,6 +115,18 @@ spec:
                 lastActivity:
                   type: string
                   format: date-time
+                suspendedAt:
+                  type: string
+                  format: date-time
+                resumedAt:
+                  type: string
+                  format: date-time
+                suspendReason:
+                  type: string
+                  description: "Why the agent was suspended (manual | auto-idle)"
+                contextBufferKey:
+                  type: string
+                  description: "Redis key holding the live LLM context buffer"
                 sandboxRef:
                   type: string
                   description: "Name of the agent-sandbox CR"
@@ -126,6 +168,9 @@ spec:
         - name: Skills
           type: string
           jsonPath: .spec.skills
+        - name: Desired
+          type: string
+          jsonPath: .spec.desiredState
         - name: Phase
           type: string
           jsonPath: .status.phase

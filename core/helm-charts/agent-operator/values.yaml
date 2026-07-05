@@ -33,6 +33,77 @@ keycloak:
   adminUser: ""      # Set via --set keycloak.adminUser=<user>
   adminPassword: ""  # Set via --set keycloak.adminPassword=<password>
 
+# Suspend / resume
+autoSuspend:
+  idleMinutes: 30          # Auto-suspend agents idle this long; 0 disables
+redisUrl: "redis://redis-stack-server.redis.svc.cluster.local:6379"
+contextTtlSeconds: 86400   # TTL extension for the live context buffer on suspend
+
+# Per-agent memory (pgvector). If dsn is empty, memory provisioning is a no-op.
+pgvector:
+  dsn: ""                  # e.g. host=pgvector.pgvector.svc.cluster.local port=5432 dbname=agentdb user=agentuser password=... sslmode=disable
+  embeddingDim: 768        # bge-base-en-v1.5 = 768; match your embedding model
+
+# MCP memory server auto-wired into agents that have the 'memory' skill
+memory:
+  mcpUrl: "http://mcp-memory-server.pgvector.svc.cluster.local:8000/sse"
+
+# Dispatch MCP server — auto-wired into role=lead agents (spawn/dispatch/collect workers)
+dispatch:
+  mcpUrl: "http://mcp-dispatch-server.agent-operator-system.svc.cluster.local:8000/sse"
+
+# ── Multi-tenancy primitives (Item 10) ──────────────────────────────────────
+# Defense-in-depth around per-agent memory isolation: network micro-segmentation,
+# resource caps, and PodSecurity level per agent namespace. Applied by the operator
+# on agent creation; garbage-collected when the agent namespace is deleted.
+multiTenancy:
+  # Per-agent NetworkPolicy: default-deny + strict egress allowlist (Calico-enforced).
+  networkPolicy:
+    enabled: true
+    # Egress allowlist — each entry opens egress to a namespace + ports. Anything
+    # not listed (incl. the public internet) is denied. Add an entry here to grant
+    # an agent a new dependency; no code change needed. DNS is always allowed.
+    #
+    # IMPORTANT: `ports` are the destination POD/targetPort, NOT the Service port —
+    # Calico enforces NetworkPolicy against the pod's real port. Where a Service does
+    # port≠targetPort (e.g. keycloak 80→8080, vLLM 80→2080), use the targetPort.
+    egressAllow:
+      - namespace: "genai-gateway"          # LiteLLM / model gateway (svc 4000→4000)
+        ports: [4000]
+      - namespace: "pgvector"               # memory MCP server (svc 8000→8000)
+        ports: [8000]
+      - namespace: "agent-operator-system"  # dispatch MCP server (svc 8000→8000)
+        ports: [8000]
+      - namespace: "auth-apisix"            # Keycloak (svc 80→pod 8080)
+        ports: [8080]
+      - namespace: "agent-sandbox"          # sandbox router (svc 8080→8080)
+        ports: [8080]
+      - namespace: "default"                # direct-vLLM fallback (svc 80→pod 2080)
+        ports: [2080]
+  # Per-agent-namespace resource cap + default per-pod limits.
+  resourceQuota:
+    enabled: true
+    hard:
+      requests.cpu: "4"
+      requests.memory: "8Gi"
+      limits.cpu: "8"
+      limits.memory: "16Gi"
+      pods: "10"
+      persistentvolumeclaims: "5"
+  limitRange:
+    enabled: true
+    defaultRequest: { cpu: "250m", memory: "256Mi" }
+    default: { cpu: "1", memory: "1Gi" }
+  # PodSecurity Standards level stamped on the agent namespace.
+  # NOTE: OpenClaw pods use shareProcessNamespace; if 'restricted' blocks pod
+  # admission, set this to 'baseline'. Validate against a live agent pod.
+  podSecurity:
+    enabled: true
+    level: "restricted"      # restricted | baseline | privileged
+  # Reject creating more than N agents for the same owner (per-owner cap).
+  # 0 disables the cap.
+  maxAgentsPerOwner: 0
+
 # Proxy (for init container pip install)
 proxy:
   httpProxy: ""
@@ -45,7 +116,39 @@ adapters:
     enabled: true
     openclawImage: "ghcr.io/openclaw/openclaw"
     openclawTag: "latest"
+
+    # ── Model backend ────────────────────────────────────────────────────────
+    # Fully configurable so agents can point at the LiteLLM semantic router,
+    # direct vLLM, or any OpenAI-compatible DNS endpoint — WITHOUT code changes.
+    # Field names match the standalone openclaw-instance chart's `model:` block.
+    #
+    # DEFAULT (below): LiteLLM semantic router.
+    #   model.provider: "auto_router"   model.id: "smart_router"
+    #   model.baseUrl:  LiteLLM gateway /v1
+    #   model.apiKey:   LiteLLM key (required — gateway rejects unauthenticated calls)
+    #   model.allowPrivateNetwork: true (gateway is a private/cluster host)
+    #
+    # To switch to DIRECT vLLM, set:
+    #   model.provider: "openai"
+    #   model.id:       "Qwen/Qwen3-Coder-30B-A3B-Instruct"   (must match /v1/models)
+    #   model.baseUrl:  ""      → auto-built from vllmServiceName/vllmNamespace below
+    #   model.apiKey:   "sk-no-key-needed"
+    #   (model.allowPrivateNetwork can stay true; harmless for keyless vLLM)
+    #
+    # To use ANY OTHER DNS endpoint, just set model.baseUrl to that URL and pick
+    # a model.provider/id/apiKey to match.
+    model:
+      provider: "auto_router"
+      id: "smart_router"
+      name: "Smart Router"
+      apiKey: ""   # LiteLLM key — set at deploy time: --set adapters.claw.model.apiKey=sk-...
+      allowPrivateNetwork: true
+      # Explicit endpoint. If left "", it is built from vllmServiceName/vllmNamespace
+      # (i.e. direct in-cluster vLLM).
+      baseUrl: "http://genai-gateway-service.genai-gateway.svc.cluster.local:4000/v1"
+
+    # Direct-vLLM fallback target (used only when model.baseUrl is empty)
     vllmServiceName: "vllm-qwen3-coder-30b-cpu-service"
     vllmNamespace: "default"
-    modelId: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+
     sandboxEndpoint: "http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080"

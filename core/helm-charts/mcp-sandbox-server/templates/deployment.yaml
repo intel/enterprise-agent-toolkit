@@ -1,0 +1,59 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-sandbox-server
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: mcp-sandbox-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-sandbox-server
+  template:
+    metadata:
+      labels:
+        app: mcp-sandbox-server
+    spec:
+      serviceAccountName: mcp-sandbox-server
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "/app/server.py"]
+          env:
+            - name: PYTHONPATH
+              value: "/deps"
+            - name: SANDBOX_ROUTER_URL
+              value: {{ .Values.sandbox.routerUrl | quote }}
+            - name: SANDBOX_NAMESPACE
+              value: {{ .Values.sandbox.namespace | quote }}
+            - name: SANDBOX_TEMPLATE
+              value: {{ .Values.sandbox.template | quote }}
+          ports:
+            - containerPort: 8000
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: code
+              mountPath: /app
+            - name: deps
+              mountPath: /deps
+      volumes:
+        - name: code
+          configMap:
+            name: mcp-sandbox-server-code
+        - name: deps
+          hostPath:
+            path: /tmp/mcp-sandbox-deps
+            type: Directory

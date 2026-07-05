@@ -1,0 +1,5 @@
+fastmcp>=3.0.0
+psycopg[binary]==3.2.3
+requests==2.32.3
+pyjwt[crypto]
+cryptography

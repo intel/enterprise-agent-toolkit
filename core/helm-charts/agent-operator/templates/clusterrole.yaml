@@ -23,6 +23,21 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "create", "update", "delete"]
+  # Exec into a lead pod to seed its manager delegation instructions.
+  # NOTE: the websocket exec authorizes against BOTH get and create on pods/exec.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+  # Multi-tenancy primitives (Item 10): per-agent-namespace isolation
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "list", "create", "update", "delete"]
   # Events (status reporting)
   - apiGroups: [""]
     resources: ["events"]

@@ -67,9 +67,54 @@ spec:
             - name: VLLM_NAMESPACE
               value: "{{ .Values.adapters.claw.vllmNamespace }}"
             - name: MODEL_ID
-              value: "{{ .Values.adapters.claw.modelId }}"
+              value: "{{ .Values.adapters.claw.model.id }}"
+            - name: MODEL_PROVIDER
+              value: "{{ .Values.adapters.claw.model.provider }}"
+            - name: MODEL_NAME
+              value: "{{ .Values.adapters.claw.model.name }}"
+            - name: MODEL_BASE_URL
+              value: "{{ .Values.adapters.claw.model.baseUrl }}"
+            - name: MODEL_API_KEY
+              value: {{ .Values.adapters.claw.model.apiKey | quote }}
+            - name: MODEL_ALLOW_PRIVATE_NETWORK
+              value: "{{ .Values.adapters.claw.model.allowPrivateNetwork }}"
             - name: SANDBOX_ENDPOINT
               value: "{{ .Values.adapters.claw.sandboxEndpoint }}"
+            - name: AUTO_SUSPEND_IDLE_MINUTES
+              value: "{{ .Values.autoSuspend.idleMinutes }}"
+            - name: REDIS_URL
+              value: "{{ .Values.redisUrl }}"
+            - name: CONTEXT_TTL_SECONDS
+              value: "{{ .Values.contextTtlSeconds }}"
+            - name: PGVECTOR_DSN
+              value: {{ .Values.pgvector.dsn | quote }}
+            - name: EMBEDDING_DIM
+              value: "{{ .Values.pgvector.embeddingDim }}"
+            - name: MEMORY_MCP_URL
+              value: {{ .Values.memory.mcpUrl | quote }}
+            - name: DISPATCH_MCP_URL
+              value: {{ .Values.dispatch.mcpUrl | quote }}
+            # Multi-tenancy primitives (Item 10)
+            - name: NETWORK_POLICY_ENABLED
+              value: "{{ .Values.multiTenancy.networkPolicy.enabled }}"
+            - name: NETWORK_POLICY_EGRESS_ALLOW
+              value: {{ .Values.multiTenancy.networkPolicy.egressAllow | toJson | quote }}
+            - name: RESOURCE_QUOTA_ENABLED
+              value: "{{ .Values.multiTenancy.resourceQuota.enabled }}"
+            - name: RESOURCE_QUOTA_HARD
+              value: {{ .Values.multiTenancy.resourceQuota.hard | toJson | quote }}
+            - name: LIMIT_RANGE_ENABLED
+              value: "{{ .Values.multiTenancy.limitRange.enabled }}"
+            - name: LIMIT_RANGE_DEFAULT
+              value: {{ .Values.multiTenancy.limitRange.default | toJson | quote }}
+            - name: LIMIT_RANGE_DEFAULT_REQUEST
+              value: {{ .Values.multiTenancy.limitRange.defaultRequest | toJson | quote }}
+            - name: POD_SECURITY_ENABLED
+              value: "{{ .Values.multiTenancy.podSecurity.enabled }}"
+            - name: POD_SECURITY_LEVEL
+              value: "{{ .Values.multiTenancy.podSecurity.level }}"
+            - name: MAX_AGENTS_PER_OWNER
+              value: "{{ .Values.multiTenancy.maxAgentsPerOwner }}"
             - name: KEYCLOAK_ENABLED
               value: "{{ .Values.keycloak.enabled }}"
             {{- if .Values.keycloak.enabled }}

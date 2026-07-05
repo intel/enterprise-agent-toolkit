@@ -10,7 +10,7 @@ Each agent gets its own namespace, OpenClaw instance, gateway token, and Keycloa
 ```bash
 # Create an agent
 helm install my-agent core/helm-charts/agent-instance/ \
-  --set owner=vkumar4@intel.com \
+  --set owner=vkumar4@example.com \
   --set "skills={shell,read_file,git,browser-automation}"
 
 # Check status
@@ -67,7 +67,7 @@ Keycloak client revoked → OpenClaw instance deleted → Namespace deleted.
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `owner` | Email/principal of the agent owner | `vkumar4@intel.com` |
+| `owner` | Email/principal of the agent owner | `vkumar4@example.com` |
 
 ### Optional
 
@@ -94,17 +94,17 @@ Keycloak client revoked → OpenClaw instance deleted → Namespace deleted.
 ```bash
 # Coding agent with full capabilities
 helm install code-bot core/helm-charts/agent-instance/ \
-  --set owner=dev@intel.com \
+  --set owner=dev@example.com \
   --set "skills={shell,read_file,list_files,git,browser-automation}"
 
 # Research agent (no shell access)
 helm install research-bot core/helm-charts/agent-instance/ \
-  --set owner=analyst@intel.com \
+  --set owner=analyst@example.com \
   --set "skills={read_file,summarize,browser-automation}"
 
 # Minimal agent
 helm install helper core/helm-charts/agent-instance/ \
-  --set owner=user@intel.com
+  --set owner=user@example.com
 ```
 
 ---
@@ -160,69 +160,175 @@ Two users on the same cluster:
 ```bash
 # User A
 helm install coding-agent core/helm-charts/agent-instance/ \
-  --set owner=alice@intel.com --set "skills={shell,git}"
+  --set owner=alice@example.com --set "skills={shell,git}"
 
 # User B
 helm install research-agent core/helm-charts/agent-instance/ \
-  --set owner=bob@intel.com --set "skills={read_file,summarize}"
+  --set owner=bob@example.com --set "skills={read_file,summarize}"
 ```
 
 They cannot see each other's agents, namespaces, or data.
 
 ---
 
+## Suspend / Resume
+
+Agents can be suspended (scaled to zero, saving CPU/memory) and resumed later
+with all state intact. State survives on the retained PVC + Redis.
+
+```bash
+# Suspend (manual)
+kubectl patch agent my-agent --type=merge -p '{"spec":{"desiredState":"Suspended"}}'
+# → PHASE=IdleSuspended, pod scaled to zero, PVC retained
+
+# Resume
+kubectl patch agent my-agent --type=merge -p '{"spec":{"desiredState":"Running"}}'
+# → PHASE=Running, workspace files and sessions intact
+```
+
+**Auto-idle suspend:** the operator auto-suspends agents idle longer than
+`autoSuspend.idleMinutes` (default 30; set `0` to disable). Auto-suspended agents
+show `suspendReason=auto-idle`. A manual resume always overrides.
+
+Full contract — what survives, phase state machine, config, limitations:
+[contracts/agent-suspend-resume.md](contracts/agent-suspend-resume.md)
+
+---
+
+## Persistent Memory
+
+Agents created with the `memory` skill get **per-agent isolated memory** — their
+own pgvector schema (`agent_{name}`) with three tiers (`claudemd`, `project`,
+`auto`), plus semantic search. The operator provisions the schema on create and
+drops it on delete; a shared, stateless MCP memory server (`mcp-memory-server`)
+exposes `memory_write` / `memory_read` / `memory_list_tiers` to any runtime.
+
+```bash
+helm install my-agent core/helm-charts/agent-instance/ \
+  --set owner=user@example.com --set "skills={memory}"
+# → schema agent_my_agent provisioned, memory MCP auto-wired into the agent
+```
+
+Full convention — tiers, schema layout, read/write contract, credential gotcha:
+[conventions/agent-memory.md](conventions/agent-memory.md)
+
+---
+
 ## Agent Sandbox (Code Execution)
+
+**Status: Working ✅** (verified end-to-end via Option B below)
 
 The **Agent Sandbox** (`agent-sandbox` namespace) provides isolated, ephemeral
 Kubernetes pods for safe code execution via the `k8s-agent-sandbox` SDK.
 
-### Current Limitation
+### How it works
 
-**OpenClaw does NOT natively integrate with agent-sandbox.** When an agent has
-the `shell` skill and you ask it to run code, it executes directly inside the
-OpenClaw pod using its built-in shell tool — not in an isolated sandbox pod.
+OpenClaw has no built-in hook to redirect its own `exec` tool to an external sandbox.
+Instead, it connects to an **MCP server** that exposes sandbox execution as MCP tools.
+OpenClaw supports MCP servers natively (SSE transport, `mcp.servers` config).
 
-The `AGENT_SANDBOX_ENDPOINT` env var is injected into the agent pod but OpenClaw
-ignores it. There is no built-in plugin or hook in OpenClaw to redirect `exec`
-calls to an external sandbox API.
-
-### Current behavior
+Once connected, the agent gets 4 sandbox tools: `execute_python`, `execute_shell`,
+`install_package`, `reset_sandbox`. Code runs in an isolated sandbox pod, not in the
+OpenClaw pod.
 
 ```
-You: "Run this Python code"
-  → OpenClaw's built-in shell tool
-  → Executes inside the OpenClaw pod directly
-  → Returns output
+OpenClaw Pod → MCP (SSE) → MCP Sandbox Server → k8s-agent-sandbox SDK
+             → sandbox-router → isolated sandbox pod → result
 ```
 
-This works functionally but without the isolation boundary that the sandbox provides.
+### Verified test
 
-### Planned solution: MCP Server Bridge
+In the OpenClaw Web UI, ask the agent:
 
-The recommended path to integrate agent-sandbox with OpenClaw is an **MCP server**
-that wraps the `k8s-agent-sandbox` SDK. OpenClaw supports connecting to MCP servers
-natively.
+> "Use execute_python to run: print('hello from sandbox')"
+
+Expected result: `hello from sandbox` (executed in an isolated sandbox pod).
+
+Direct in-cluster verification (bypasses OpenClaw):
+```bash
+kubectl exec -n agent-sandbox deploy/mcp-sandbox-server -- sh -c \
+  "PYTHONPATH=/deps python3 -c \"
+import asyncio
+from fastmcp import Client
+async def m():
+    async with Client('http://localhost:8000/sse') as c:
+        r = await c.call_tool('execute_python', {'code': \\\"print('hi')\\\"})
+        print(r.data)
+asyncio.run(m())\""
+# Expected: hi
+```
+
+### Solution: MCP Server Bridge
+
+Two sandbox options are available (deploy one, not both):
+
+**Option A: `agent-sandbox/agent-sandbox`** (recommended — built-in MCP)
+
+An open-source sandbox with a built-in MCP server at `/mcp`. Supports code execution,
+browser use, and shell commands with automatic lifecycle management.
+
+```bash
+# Install
+kubectl create namespace agent-sandbox
+kubectl apply -n agent-sandbox -f https://raw.githubusercontent.com/agent-sandbox/agent-sandbox/main/install.yaml
+
+# MCP endpoint for agents:
+# http://agent-sandbox-server.agent-sandbox.svc.cluster.local/mcp
+```
+
+```bash
+# Create agent with sandbox MCP tool
+helm install my-agent core/helm-charts/agent-instance/ \
+  --set owner=user@example.com \
+  --set "skills={read_file,list_files}" \
+  --set "tools[0].name=sandbox" \
+  --set "tools[0].url=http://agent-sandbox-server.agent-sandbox.svc.cluster.local/mcp"
+```
+
+**Option B: Custom MCP bridge for `kubernetes-sigs/agent-sandbox`** (this toolkit's sandbox)
+
+A custom MCP server (in `core/helm-charts/mcp-sandbox-server/`) that wraps the
+`k8s-agent-sandbox` SDK and exposes tools: `execute_python`, `execute_shell`,
+`install_package`, `reset_sandbox`. This is the tested, working option for the
+sandbox deployed by this toolkit.
+
+> **CRITICAL — SDK version must match the deployed sandbox.** The
+> `k8s-agent-sandbox` Python SDK pin in `src/requirements.txt` MUST equal
+> `agent_sandbox_version` in `core/inventory/metadata/agentic-metadata.cfg`
+> (currently `v0.4.6` → `k8s-agent-sandbox==0.4.6`). A mismatch causes HTTP 404
+> from the sandbox-router because the SDK's request contract changes between versions.
+
+```bash
+# Build and deploy
+sudo nerdctl --namespace k8s.io build -t mcp-sandbox-server:0.1.0 core/helm-charts/mcp-sandbox-server/src/
+helm install mcp-sandbox core/helm-charts/mcp-sandbox-server/ -n agent-sandbox
+
+# Create agent with sandbox MCP tool
+helm install my-agent core/helm-charts/agent-instance/ \
+  --set owner=user@example.com \
+  --set "skills={read_file,list_files}" \
+  --set "tools[0].name=sandbox" \
+  --set "tools[0].url=http://mcp-sandbox-server.agent-sandbox.svc.cluster.local:8000/sse"
+```
+
+**How agents connect to either:**
+
+The operator injects the tool URL into OpenClaw's `mcp.servers` config (transport `sse`).
+The agent discovers and calls the MCP tools automatically — no agent code changes.
 
 ```
-OpenClaw → MCP server (sidecar/pod) → sandbox-router → isolated sandbox pod
+OpenClaw Pod → MCP protocol (SSE) → Sandbox MCP Server → Isolated execution pod
 ```
 
-The MCP server would expose tools:
-- `execute_python` — runs code in a sandbox pod
-- `install_package` — pip install in the sandbox
-- `reset_sandbox` — terminate and recreate fresh environment
-
-Implementation uses the existing `k8s-agent-sandbox` Python SDK (`k8s-agent-sandbox==0.0.30`)
-which connects to `sandbox-router-svc.agent-sandbox.svc.cluster.local:8080`.
-
-**Status:** Not yet implemented. Tracked as a future enhancement.
-
-### Alternative: Standalone Coding Agent
-
-The `usecases/coding-agent/` in the innersource repo deploys a separate Python
-service (using `agent-framework` + `DevUI`) that integrates directly with the
-sandbox SDK. This is a standalone deployment, not part of the OpenClaw-based
-agent flow.
+**Notes:**
+- The custom bridge requires RBAC (Role + RoleBinding) to `create/delete sandboxclaims`,
+  `watch sandboxes`, and `get pods` — included in the chart's `templates/rbac.yaml`.
+- After `openclaw mcp reload`, the very first tool call may hit a one-time
+  "request before initialization" race; a retry succeeds. `FASTMCP_STATELESS_HTTP=1`
+  mitigates this.
+- Each `execute_python` call runs a fresh interpreter, so Python variables don't
+  persist across calls. The sandbox *pod* persists (files, installed packages) until
+  `reset_sandbox`.
 
 ### Reference
 
@@ -310,3 +416,19 @@ kubectl port-forward -n agent-my-agent svc/my-agent 18789:18789
 | `agent-operator/` | Operator controller (kopf) | `deploy-agentic-stack.sh` |
 | `agent-instance/` | Create one agent (user-facing) | User (`helm install`) |
 | `openclaw-instance/` | Standalone OpenClaw (no operator) | Manual |
+| `mcp-sandbox-server/` | MCP bridge for isolated code execution | Manual (per cluster) |
+| `mcp-memory-server/` | MCP per-agent persistent memory (pgvector) | Manual (per cluster) |
+
+---
+
+## Related Docs
+
+| Doc | What it covers |
+|-----|----------------|
+| [Why the Extra Layers](why-the-extra-layers.md) | Management rationale — what Redis/pgvector/JWT/operator replaced or upgraded vs. what OpenClaw already provides |
+| [Agent Suspend / Resume Contract](contracts/agent-suspend-resume.md) | What survives suspension and where it lives |
+| [Cross-Agent Dispatch Contract](contracts/cross-agent-dispatch.md) | Attenuated-JWT secure channel for lead/worker collaboration |
+| [Agent Memory Convention](conventions/agent-memory.md) | Per-agent pgvector schema model |
+| [Agent Multi-Tenancy Primitives](conventions/agent-multi-tenancy.md) | NetworkPolicy + ResourceQuota + PodSecurity per agent (Item 10) |
+| [Multi-Agent Research Demo](demos/multi-agent-research.md) | End-to-end lead/worker walkthrough |
+| [Engineering Org Demo](demos/engineering-org.md) | Agent company doing a real refactor task (code → review → test) |

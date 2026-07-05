@@ -1,0 +1,55 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+namespace: pgvector
+
+image:
+  repository: mcp-memory-server
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8000
+
+# pgvector connection. Build DSN from the POSTGRES_PASSWORD key (see docs) — the
+# app-user password over TCP is POSTGRES_PASSWORD, NOT DATABASE_URL's embedded pw.
+pgvector:
+  dsn: ""   # host=pgvector.pgvector.svc.cluster.local port=5432 dbname=agentdb user=agentuser password=... sslmode=disable
+
+# Embeddings via LiteLLM (OpenAI-compatible)
+litellm:
+  url: "http://genai-gateway-service.genai-gateway.svc.cluster.local:4000/v1"
+  apiKey: "sk-no-key"
+  embeddingModel: "BAAI/bge-base-en-v1.5"
+
+# Per-agent memory isolation (private-only model).
+# When enabled, a caller may access ONLY its own schema: the operator injects the
+# agent's own Keycloak client creds as unforgeable transport headers, and this
+# server mints+verifies a token per call and enforces caller == requested agent.
+# Set enabled: false for dev (NO isolation — any caller can read any agent).
+auth:
+  enabled: true
+  keycloakUrl: "http://keycloak.auth-apisix.svc.cluster.local:80"
+  keycloakRealm: "master"
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+nodeSelector:
+  ei-inference-eligible: "true"
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# For init-container pip install behind a proxy
+proxy:
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""

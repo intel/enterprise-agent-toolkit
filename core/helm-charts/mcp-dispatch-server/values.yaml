@@ -1,0 +1,38 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+namespace: agent-operator-system
+
+image:
+  repository: python
+  tag: "3.12-slim"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8000
+
+keycloak:
+  url: "http://keycloak.auth-apisix.svc.cluster.local:80"
+  realm: "master"
+
+modelId: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+workerTurnTimeout: 300
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+nodeSelector:
+  ei-inference-eligible: "true"
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# Host path where deps are pre-installed (proxy-blocked image build workaround)
+depsHostPath: /tmp/mcp-dispatch-deps

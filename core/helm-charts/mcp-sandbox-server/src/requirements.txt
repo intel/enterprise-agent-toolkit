@@ -1,0 +1,3 @@
+fastmcp>=3.0.0
+k8s-agent-sandbox==0.4.6   # MUST match agent_sandbox_version in agentic-metadata.cfg
+kubernetes>=35.0.0,<36

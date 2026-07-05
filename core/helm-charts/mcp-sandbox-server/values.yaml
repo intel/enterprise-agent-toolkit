@@ -1,0 +1,33 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+namespace: agent-sandbox
+
+image:
+  repository: mcp-sandbox-server
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  port: 8000
+
+sandbox:
+  routerUrl: "http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080"
+  namespace: "agent-sandbox"
+  template: "python-sandbox-template"
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+nodeSelector:
+  ei-inference-eligible: "true"
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"

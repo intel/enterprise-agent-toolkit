@@ -1,0 +1,67 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-memory-server
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: mcp-memory-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-memory-server
+  template:
+    metadata:
+      labels:
+        app: mcp-memory-server
+    spec:
+      serviceAccountName: mcp-memory-server
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "python:3.12-slim"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "/code/server.py"]
+          env:
+            - name: PYTHONPATH
+              value: "/deps"
+            - name: PGVECTOR_DSN
+              value: {{ .Values.pgvector.dsn | quote }}
+            - name: LITELLM_URL
+              value: {{ .Values.litellm.url | quote }}
+            - name: LITELLM_API_KEY
+              value: {{ .Values.litellm.apiKey | quote }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.litellm.embeddingModel | quote }}
+            - name: MEMORY_AUTH_ENABLED
+              value: "{{ .Values.auth.enabled }}"
+            - name: KEYCLOAK_URL
+              value: {{ .Values.auth.keycloakUrl | quote }}
+            - name: KEYCLOAK_REALM
+              value: {{ .Values.auth.keycloakRealm | quote }}
+          ports:
+            - containerPort: 8000
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: code
+              mountPath: /code
+            - name: deps
+              mountPath: /deps
+      volumes:
+        - name: code
+          configMap:
+            name: mcp-memory-server-code
+        - name: deps
+          hostPath:
+            path: /tmp/mcp-memory-deps
+            type: Directory

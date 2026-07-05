@@ -20,7 +20,34 @@ data:
     import kopf
     import kubernetes
     import os
+    import json
     import datetime
+
+    REDIS_URL = os.environ.get("REDIS_URL", "redis://redis-stack-server.redis.svc.cluster.local:6379")
+    CONTEXT_TTL_SECONDS = int(os.environ.get("CONTEXT_TTL_SECONDS", "86400"))  # 24h
+    AUTO_SUSPEND_IDLE_MINUTES = int(os.environ.get("AUTO_SUSPEND_IDLE_MINUTES", "30"))
+    PGVECTOR_DSN = os.environ.get("PGVECTOR_DSN", "")
+    EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "768"))  # bge-base-en-v1.5
+    MEMORY_TIERS = ("claudemd", "project", "auto")
+    MEMORY_MCP_URL = os.environ.get("MEMORY_MCP_URL", "http://mcp-memory-server.pgvector.svc.cluster.local:8000/sse")
+    DISPATCH_MCP_URL = os.environ.get("DISPATCH_MCP_URL", "http://mcp-dispatch-server.agent-operator-system.svc.cluster.local:8000/sse")
+
+    # ── Multi-tenancy primitives (Item 10) ──────────────────────────────────
+    def _env_json(key, default):
+        try:
+            return json.loads(os.environ.get(key, "") or "null") or default
+        except Exception:
+            return default
+    NETWORK_POLICY_ENABLED = os.environ.get("NETWORK_POLICY_ENABLED", "false") == "true"
+    NETWORK_POLICY_EGRESS_ALLOW = _env_json("NETWORK_POLICY_EGRESS_ALLOW", [])
+    RESOURCE_QUOTA_ENABLED = os.environ.get("RESOURCE_QUOTA_ENABLED", "false") == "true"
+    RESOURCE_QUOTA_HARD = _env_json("RESOURCE_QUOTA_HARD", {})
+    LIMIT_RANGE_ENABLED = os.environ.get("LIMIT_RANGE_ENABLED", "false") == "true"
+    LIMIT_RANGE_DEFAULT = _env_json("LIMIT_RANGE_DEFAULT", {})
+    LIMIT_RANGE_DEFAULT_REQUEST = _env_json("LIMIT_RANGE_DEFAULT_REQUEST", {})
+    POD_SECURITY_ENABLED = os.environ.get("POD_SECURITY_ENABLED", "false") == "true"
+    POD_SECURITY_LEVEL = os.environ.get("POD_SECURITY_LEVEL", "restricted")
+    MAX_AGENTS_PER_OWNER = int(os.environ.get("MAX_AGENTS_PER_OWNER", "0"))
 
     ADAPTER_CLAW_ENABLED = os.environ.get("ADAPTER_CLAW_ENABLED", "true") == "true"
     OPENCLAW_IMAGE = os.environ.get("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw")
@@ -28,6 +55,18 @@ data:
     VLLM_SERVICE = os.environ.get("VLLM_SERVICE_NAME", "vllm-qwen3-coder-30b-cpu-service")
     VLLM_NAMESPACE = os.environ.get("VLLM_NAMESPACE", "default")
     MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
+    # Model backend — fully configurable so agents can point at the LiteLLM
+    # semantic router, direct vLLM, or any OpenAI-compatible DNS endpoint.
+    #   MODEL_PROVIDER            OpenClaw provider key (e.g. "auto_router" or "openai")
+    #   MODEL_NAME                display name (defaults to MODEL_ID)
+    #   MODEL_BASE_URL            explicit endpoint; if empty, built from the vLLM service DNS
+    #   MODEL_API_KEY             bearer token sent to the endpoint
+    #   MODEL_ALLOW_PRIVATE_NETWORK  allow sending the key to a private/cluster host
+    MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "openai")
+    MODEL_NAME = os.environ.get("MODEL_NAME", "") or MODEL_ID
+    MODEL_BASE_URL = os.environ.get("MODEL_BASE_URL", "")
+    MODEL_API_KEY = os.environ.get("MODEL_API_KEY", "sk-no-key-needed")
+    MODEL_ALLOW_PRIVATE_NETWORK = os.environ.get("MODEL_ALLOW_PRIVATE_NETWORK", "true") == "true"
     SANDBOX_ENDPOINT = os.environ.get("SANDBOX_ENDPOINT", "http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080")
     KEYCLOAK_ENABLED = os.environ.get("KEYCLOAK_ENABLED", "false") == "true"
     KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "")
@@ -44,7 +83,7 @@ data:
         "git": {},
         "browser-automation": {"plugins": ["browser-automation"]},
         "diagram-maker": {"plugins": ["diagram-maker"]},
-        "memory": {"plugins": ["memory-core"]},
+        "memory": {},  # delivered via the memory MCP server (auto-wired below), not a plugin
         "canvas": {"plugins": ["canvas"]},
     }
 
@@ -62,8 +101,22 @@ data:
         owner = spec.get("owner", {}).get("principal", "unknown")
         role = spec.get("role", "solo")
         skills = spec.get("skills", ["shell", "read_file", "list_files"])
+        custom_tools = spec.get("tools", [])
+        workspace_files = spec.get("workspace", {}) or {}
 
-        logger.info(f"Creating agent '{name}' runtime={runtime} owner={owner} skills={skills}")
+        logger.info(f"Creating agent '{name}' runtime={runtime} owner={owner} skills={skills} tools={[t.get('name') for t in custom_tools]}")
+
+        # Per-owner agent cap (Item 10). The current agent is already in the CR list,
+        # so allow up to MAX_AGENTS_PER_OWNER (count includes this one).
+        if MAX_AGENTS_PER_OWNER > 0:
+            count = _owner_agent_count(owner)
+            if count > MAX_AGENTS_PER_OWNER:
+                msg = (f"owner '{owner}' has {count} agents, exceeds cap "
+                       f"{MAX_AGENTS_PER_OWNER}")
+                logger.warning(f"Rejecting agent '{name}': {msg}")
+                patch.status["phase"] = "Failed"
+                patch.status["suspendReason"] = msg
+                return
 
         patch.status["phase"] = "Pending"
         patch.status["lastActivity"] = datetime.datetime.utcnow().isoformat() + "Z"
@@ -72,10 +125,22 @@ data:
         agent_ns = f"agent-{name}"
         _ensure_namespace(agent_ns, owner, name, logger)
 
+        # Multi-tenancy primitives (Item 10): network isolation + resource caps.
+        # Applied before the backend so pods are born into the constrained namespace.
+        _apply_network_policy(agent_ns, logger)
+        _apply_resource_quota(agent_ns, logger)
+
+        # Provision Keycloak OIDC client (per-agent identity) BEFORE the backend,
+        # so the agent's own credentials can be wired into its MCP tool headers
+        # (used to authorize per-agent memory access).
+        kc_creds = None
+        if KEYCLOAK_ENABLED:
+            kc_creds = _provision_keycloak_client(name, agent_ns, owner, logger)
+
         # Create backend CR based on runtime
         backend_ref = None
         if runtime == "claw" and ADAPTER_CLAW_ENABLED:
-            backend_ref = _create_openclaw_instance(name, agent_ns, owner, skills, logger)
+            backend_ref = _create_openclaw_instance(name, agent_ns, owner, skills, custom_tools, role, kc_creds, logger)
         elif runtime == "hermes":
             logger.warning(f"Runtime 'hermes' not yet implemented, agent stays in Pending")
             patch.status["phase"] = "Pending"
@@ -87,20 +152,102 @@ data:
         # Create gateway token secret
         _create_gateway_secret(name, agent_ns, logger)
 
-        # Provision Keycloak OIDC client (per-agent identity)
-        if KEYCLOAK_ENABLED:
-            _provision_keycloak_client(name, agent_ns, owner, logger)
+        # Provision per-agent memory namespace (pgvector schema + tier tables)
+        schema = _provision_agent_memory(name, logger)
 
-        patch.status["phase"] = "Ready"
-        patch.status["memoryRef"] = f"agent:{name}"
-        logger.info(f"Agent '{name}' is Ready in namespace '{agent_ns}'")
+        # Seed the OpenClaw workspace, if there's anything to seed:
+        #  - spec.workspace: explicit files passed via the CR / helm (any role), and/or
+        #  - a LEAD's manager delegation policy (fallback, only if not already present).
+        if runtime == "claw" and ADAPTER_CLAW_ENABLED and (workspace_files or role == "lead"):
+            _wait_pod_ready(name, agent_ns, logger)
+            if workspace_files:
+                _seed_workspace_files(name, agent_ns, workspace_files, logger)
+            if role == "lead":
+                _seed_lead_instructions(name, agent_ns, logger)
+
+        patch.status["phase"] = "Running"
+        patch.status["memoryRef"] = schema or f"agent:{name}"
+        patch.status["contextBufferKey"] = f"agent:{name}:ctx"
+        patch.status["lastActivity"] = _now()
+        logger.info(f"Agent '{name}' is Running in namespace '{agent_ns}'")
 
 
     @kopf.on.update("intel-stack.io", "v1alpha1", "agents", field="spec")
     def on_update(spec, meta, status, patch, name, logger, **_):
         """Handle spec changes"""
         logger.info(f"Agent '{name}' spec updated")
-        patch.status["lastActivity"] = datetime.datetime.utcnow().isoformat() + "Z"
+        patch.status["lastActivity"] = _now()
+
+
+    @kopf.on.field("intel-stack.io", "v1alpha1", "agents", field="spec.desiredState")
+    def on_desired_state(new, old, status, name, namespace, patch, logger, **_):
+        """Drive suspend/resume by toggling OpenClawInstance.spec.suspended.
+
+        Idempotent: the auto-idle timer also flips spec.desiredState=Suspended
+        (to keep desiredState and phase consistent), which re-triggers this
+        handler — so we skip work that's already been done to avoid double
+        suspend/resume and to preserve the timer's suspendReason=auto-idle."""
+        if old is None:
+            # Initial set during create — nothing to transition
+            return
+        agent_ns = f"agent-{name}"
+        phase = (status or {}).get("phase")
+
+        if new == "Suspended":
+            if phase == "IdleSuspended":
+                # Already suspended (e.g. by the auto-idle timer) — no-op.
+                return
+            logger.info(f"Suspending agent '{name}'")
+            _snapshot_context(name, logger)
+            _set_openclaw_suspended(name, agent_ns, True, logger)
+            patch.status["phase"] = "IdleSuspended"
+            patch.status["suspendedAt"] = _now()
+            patch.status["suspendReason"] = "manual"
+        elif new == "Running":
+            if phase == "Running":
+                # Already running — no-op.
+                return
+            logger.info(f"Resuming agent '{name}'")
+            patch.status["phase"] = "Resuming"
+            _set_openclaw_suspended(name, agent_ns, False, logger)
+            _wait_pod_ready(name, agent_ns, logger)
+            patch.status["phase"] = "Running"
+            patch.status["resumedAt"] = _now()
+            patch.status["suspendReason"] = ""
+            patch.status["lastActivity"] = _now()
+
+
+    @kopf.timer("intel-stack.io", "v1alpha1", "agents", interval=300.0)
+    def auto_idle_suspend(spec, status, name, patch, logger, **_):
+        """Auto-suspend agents idle longer than AUTO_SUSPEND_IDLE_MINUTES."""
+        if AUTO_SUSPEND_IDLE_MINUTES <= 0:
+            return
+        if spec.get("desiredState", "Running") != "Running":
+            return
+        if status.get("phase") != "Running":
+            return
+        last = status.get("lastActivity")
+        if not last:
+            return
+        try:
+            last_dt = datetime.datetime.fromisoformat(last.replace("Z", "+00:00"))
+        except Exception:
+            return
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        idle_min = (now_dt - last_dt).total_seconds() / 60.0
+        if idle_min >= AUTO_SUSPEND_IDLE_MINUTES:
+            logger.info(f"Auto-suspending '{name}' (idle {idle_min:.0f}m >= {AUTO_SUSPEND_IDLE_MINUTES}m)")
+            agent_ns = f"agent-{name}"
+            _snapshot_context(name, logger)
+            _set_openclaw_suspended(name, agent_ns, True, logger)
+            # Keep spec.desiredState consistent with the suspended phase so a plain
+            # `desiredState=Running` patch is a real change that resumes the agent.
+            # This re-triggers on_desired_state, which no-ops (phase already
+            # IdleSuspended), preserving suspendReason=auto-idle set here.
+            patch.spec["desiredState"] = "Suspended"
+            patch.status["phase"] = "IdleSuspended"
+            patch.status["suspendedAt"] = _now()
+            patch.status["suspendReason"] = "auto-idle"
 
 
     @kopf.on.delete("intel-stack.io", "v1alpha1", "agents")
@@ -123,6 +270,9 @@ data:
         _delete_secret(f"{name}-gateway-token", agent_ns, logger)
         _delete_secret(f"{name}-keycloak-credentials", agent_ns, logger)
 
+        # Tear down per-agent memory schema
+        _teardown_agent_memory(name, logger)
+
         # Delete agent namespace
         _delete_namespace(agent_ns, logger)
 
@@ -131,27 +281,375 @@ data:
 
     # ── Helper functions ─────────────────────────────────────────────────────
 
+    def _now():
+        return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+    def _set_openclaw_suspended(agent_name, agent_ns, suspended, logger):
+        """Patch OpenClawInstance.spec.suspended to scale to/from zero."""
+        api = kubernetes.client.CustomObjectsApi()
+        try:
+            api.patch_namespaced_custom_object(
+                group="openclaw.rocks",
+                version="v1alpha1",
+                namespace=agent_ns,
+                plural="openclawinstances",
+                name=agent_name,
+                body={"spec": {"suspended": suspended}},
+            )
+            logger.info(f"Set OpenClawInstance '{agent_name}' suspended={suspended}")
+        except kubernetes.client.ApiException as e:
+            logger.warning(f"Failed to set suspended={suspended} on '{agent_name}': {e}")
+
+
+    def _snapshot_context(agent_name, logger):
+        """Extend the Redis TTL on the agent's live context buffer so it survives suspend.
+        Graceful no-op if Redis is unavailable."""
+        key = f"agent:{agent_name}:ctx"
+        try:
+            import redis  # noqa: PLC0415
+            r = redis.from_url(REDIS_URL, socket_connect_timeout=3, socket_timeout=3)
+            if r.exists(key):
+                r.expire(key, CONTEXT_TTL_SECONDS)
+                logger.info(f"Extended TTL on {key} ({CONTEXT_TTL_SECONDS}s)")
+            else:
+                logger.info(f"No context buffer at {key} yet (nothing to preserve)")
+        except Exception as e:
+            logger.warning(f"Redis context snapshot skipped: {e}")
+
+
+    def _wait_pod_ready(agent_name, agent_ns, logger, timeout=120):
+        """Best-effort wait for the resumed OpenClaw pod to be Ready."""
+        import time  # noqa: PLC0415
+        api = kubernetes.client.CoreV1Api()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                pods = api.list_namespaced_pod(
+                    agent_ns, label_selector=f"app.kubernetes.io/instance={agent_name}"
+                )
+                for p in pods.items:
+                    conds = p.status.conditions or []
+                    if any(c.type == "Ready" and c.status == "True" for c in conds):
+                        logger.info(f"Pod for '{agent_name}' is Ready")
+                        return
+            except kubernetes.client.ApiException:
+                pass
+            time.sleep(5)
+        logger.warning(f"Pod for '{agent_name}' not Ready within {timeout}s (continuing)")
+
+
+    def _seed_workspace_files(agent_name, agent_ns, files, logger):
+        """Write spec.workspace files into the agent's OpenClaw workspace.
+        `files` is {relative_path: content}. Creates parent dirs. Content is passed
+        via stdin (base64) to avoid shell-quoting issues with arbitrary text."""
+        import base64  # noqa: PLC0415
+        from kubernetes.stream import stream  # noqa: PLC0415
+        WS = "/home/openclaw/.openclaw/workspace"
+        pod = f"{agent_name}-0"
+        api = kubernetes.client.CoreV1Api()
+        seeded = []
+        for rel, content in files.items():
+            # Guard against path escapes; keep it inside the workspace.
+            rel = str(rel).lstrip("/")
+            if ".." in rel.split("/"):
+                logger.warning(f"Skipping unsafe workspace path '{rel}'")
+                continue
+            b64 = base64.b64encode((content or "").encode()).decode()
+            # mkdir -p parent, then base64-decode stdin into the file.
+            script = (
+                f'p="{WS}/{rel}"; mkdir -p "$(dirname "$p")"; '
+                f'base64 -d > "$p" && echo "OK {rel}"'
+            )
+            try:
+                resp = stream(
+                    api.connect_get_namespaced_pod_exec,
+                    pod, agent_ns, container="openclaw",
+                    command=["sh", "-c", script],
+                    stderr=True, stdin=True, stdout=True, tty=False,
+                    _preload_content=False,
+                )
+                resp.write_stdin(b64)
+                out = ""
+                while resp.is_open():
+                    resp.update(timeout=5)
+                    if resp.peek_stdout():
+                        out += resp.read_stdout()
+                    if not resp.peek_stdout() and not resp.peek_stderr():
+                        break
+                resp.close()
+                seeded.append(rel)
+            except Exception as e:
+                logger.warning(f"Could not seed workspace file '{rel}' for '{agent_name}': {e}")
+        if seeded:
+            logger.info(f"Seeded {len(seeded)} workspace file(s) for '{agent_name}': {seeded}")
+
+
+    def _seed_lead_instructions(agent_name, agent_ns, logger):
+        """Seed a LEAD agent's workspace AGENTS.md with a delegation policy so a
+        plain chat request drives it to spawn/dispatch real worker agents via the
+        `dispatch` MCP tools. Additive: it does NOT replace OpenClaw's built-in
+        `sessions_spawn` sub-agents. Idempotent (skips if already seeded)."""
+        from kubernetes.stream import stream  # noqa: PLC0415
+        marker = "## Role: Engineering Manager (delegation policy)"
+        block = (
+            "\n\n" + marker + "\n\n"
+            "You are a LEAD agent that manages a team of specialist WORKER agents on\n"
+            "the platform. You have an MCP tool server named \"dispatch\" with tools:\n"
+            "- spawn_worker(lead, worker_name, skills) - create a real isolated worker agent.\n"
+            "- dispatch_task(lead, worker, prompt, allowed_tools) - assign a task; returns its result.\n"
+            "- list_workers(lead), collect_results(lead), terminate_worker(lead, worker).\n\n"
+            f"Your lead name is: {agent_name}\n\n"
+            "DELEGATION POLICY - when the user asks you to build, implement, review,\n"
+            "test, or research something that benefits from specialists, DO NOT do it\n"
+            "all yourself. Instead:\n"
+            "1. Decompose the task into roles (e.g. implement, review, test).\n"
+            f"2. For each role, call spawn_worker with lead=\"{agent_name}\" and a\n"
+            "   descriptive worker_name and a skills subset.\n"
+            "3. Call dispatch_task to assign each worker its sub-task; use the result.\n"
+            "4. Synthesize the workers' results into a final answer for the user.\n"
+            "5. Optionally terminate_worker when the work is delivered.\n\n"
+            "Always use the dispatch tools (spawn_worker/dispatch_task) for durable\n"
+            "platform worker agents. This is SEPARATE from and does NOT replace\n"
+            "OpenClaw's built-in sessions_spawn sub-agents, which remain available for\n"
+            "lightweight background work. When the user asks for platform \"worker\n"
+            "agents\" or a \"team\", use the dispatch tools.\n"
+        )
+        # sh reads the block from stdin and appends it once. FALLBACK ONLY: skip if
+        # the workspace already has delegation guidance (mentions spawn_worker) — e.g.
+        # a company package (deploy-company.sh) seeded a richer AGENTS.md, which is
+        # authoritative. This keeps the operator seed additive and non-conflicting.
+        script = (
+            'F=/home/openclaw/.openclaw/workspace/AGENTS.md; '
+            'B="$(cat)"; '
+            'if [ -f "$F" ] && grep -q "spawn_worker" "$F"; then '
+            'echo SEED_SKIP_ALREADY_PRESENT; '
+            'else printf "%s" "$B" >> "$F"; echo SEED_OK; fi'
+        )
+        pod = f"{agent_name}-0"
+        try:
+            api = kubernetes.client.CoreV1Api()
+            resp = stream(
+                api.connect_get_namespaced_pod_exec,
+                pod, agent_ns, container="openclaw",
+                command=["sh", "-c", script],
+                stderr=True, stdin=True, stdout=True, tty=False,
+                _preload_content=False,
+            )
+            resp.write_stdin(block)
+            out = ""
+            while resp.is_open():
+                resp.update(timeout=5)
+                if resp.peek_stdout():
+                    out += resp.read_stdout()
+                if not resp.peek_stdout() and not resp.peek_stderr():
+                    break
+            resp.close()
+            logger.info(f"Seeded lead instructions for '{agent_name}': {out.strip() or 'done'}")
+        except Exception as e:
+            logger.warning(f"Could not seed lead instructions for '{agent_name}': {e}")
+
+
+    # ── Per-agent memory (pgvector schema + tier tables) ─────────────────────
+
+    def _memory_schema(name):
+        # Postgres identifiers: replace '-' so 'my-agent' -> 'agent_my_agent'
+        return "agent_" + name.replace("-", "_")
+
+
+    def _provision_agent_memory(name, logger):
+        """Create a per-agent Postgres schema with one table per memory tier.
+        Graceful no-op if PGVECTOR_DSN is unset or the DB is unreachable."""
+        if not PGVECTOR_DSN:
+            logger.info("PGVECTOR_DSN not set — skipping memory provisioning")
+            return None
+        schema = _memory_schema(name)
+        try:
+            import psycopg  # noqa: PLC0415
+            with psycopg.connect(PGVECTOR_DSN, connect_timeout=5) as conn:
+                conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+                for tier in MEMORY_TIERS:
+                    conn.execute(
+                        f'CREATE TABLE IF NOT EXISTS "{schema}"."{tier}" ('
+                        f'  id BIGSERIAL PRIMARY KEY,'
+                        f'  content TEXT,'
+                        f'  embedding VECTOR({EMBEDDING_DIM}),'
+                        f'  metadata JSONB,'
+                        f'  created_at TIMESTAMPTZ DEFAULT now())'
+                    )
+                    conn.execute(
+                        f'CREATE INDEX IF NOT EXISTS "{schema}_{tier}_emb_idx" '
+                        f'ON "{schema}"."{tier}" USING hnsw (embedding vector_cosine_ops)'
+                    )
+                conn.commit()
+            logger.info(f"Provisioned memory schema '{schema}' (tiers={list(MEMORY_TIERS)})")
+            return schema
+        except Exception as e:
+            logger.warning(f"Memory provisioning skipped for '{name}': {e}")
+            return None
+
+
+    def _teardown_agent_memory(name, logger):
+        """Drop the per-agent Postgres schema and all its data."""
+        if not PGVECTOR_DSN:
+            return
+        schema = _memory_schema(name)
+        try:
+            import psycopg  # noqa: PLC0415
+            with psycopg.connect(PGVECTOR_DSN, connect_timeout=5) as conn:
+                conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+                conn.commit()
+            logger.info(f"Dropped memory schema '{schema}'")
+        except Exception as e:
+            logger.warning(f"Memory teardown skipped for '{name}': {e}")
+
+
     def _ensure_namespace(ns, owner, agent_name, logger):
         api = kubernetes.client.CoreV1Api()
+        labels = {
+            "intel-stack.io/agent": agent_name,
+            "intel-stack.io/owner": owner.replace("@", "_at_"),
+            "app.kubernetes.io/managed-by": "agent-operator",
+        }
+        # PodSecurity Standards (Item 10): stamp the enforce/warn/audit level on the
+        # agent namespace so all its pods are admitted at that PSS level.
+        if POD_SECURITY_ENABLED:
+            labels["pod-security.kubernetes.io/enforce"] = POD_SECURITY_LEVEL
+            labels["pod-security.kubernetes.io/warn"] = POD_SECURITY_LEVEL
+            labels["pod-security.kubernetes.io/audit"] = POD_SECURITY_LEVEL
         try:
             api.read_namespace(ns)
             logger.info(f"Namespace '{ns}' already exists")
         except kubernetes.client.ApiException as e:
             if e.status == 404:
                 body = kubernetes.client.V1Namespace(
-                    metadata=kubernetes.client.V1ObjectMeta(
-                        name=ns,
-                        labels={
-                            "intel-stack.io/agent": agent_name,
-                            "intel-stack.io/owner": owner.replace("@", "_at_"),
-                            "app.kubernetes.io/managed-by": "agent-operator",
-                        },
-                    )
+                    metadata=kubernetes.client.V1ObjectMeta(name=ns, labels=labels)
                 )
                 api.create_namespace(body)
-                logger.info(f"Created namespace '{ns}'")
+                logger.info(f"Created namespace '{ns}'"
+                             + (f" (PSS={POD_SECURITY_LEVEL})" if POD_SECURITY_ENABLED else ""))
             else:
                 raise
+
+
+    def _apply_network_policy(agent_ns, logger):
+        """Default-deny + strict egress allowlist for the agent namespace (Item 10).
+
+        Ingress: only from within the same namespace (gateway/sidecars).
+        Egress: DNS + each namespace/port in NETWORK_POLICY_EGRESS_ALLOW. Everything
+        else (other tenants, the K8s API, the internet) is denied."""
+        if not NETWORK_POLICY_ENABLED:
+            return
+        net = kubernetes.client.NetworkingV1Api()
+
+        # DNS egress (kube-dns/coredns in kube-system) — required or name resolution breaks.
+        dns_rule = kubernetes.client.V1NetworkPolicyEgressRule(
+            to=[kubernetes.client.V1NetworkPolicyPeer(
+                namespace_selector=kubernetes.client.V1LabelSelector(
+                    match_labels={"kubernetes.io/metadata.name": "kube-system"}),
+                pod_selector=kubernetes.client.V1LabelSelector(
+                    match_labels={"k8s-app": "kube-dns"}),
+            )],
+            ports=[kubernetes.client.V1NetworkPolicyPort(protocol=p, port=53)
+                   for p in ("UDP", "TCP")],
+        )
+
+        egress_rules = [dns_rule]
+        for entry in NETWORK_POLICY_EGRESS_ALLOW:
+            target_ns = entry.get("namespace")
+            ports = entry.get("ports", [])
+            if not target_ns:
+                continue
+            egress_rules.append(kubernetes.client.V1NetworkPolicyEgressRule(
+                to=[kubernetes.client.V1NetworkPolicyPeer(
+                    namespace_selector=kubernetes.client.V1LabelSelector(
+                        match_labels={"kubernetes.io/metadata.name": target_ns}))],
+                ports=[kubernetes.client.V1NetworkPolicyPort(protocol="TCP", port=int(p))
+                       for p in ports] or None,
+            ))
+
+        # Ingress: allow only from pods in the same namespace.
+        ingress_rule = kubernetes.client.V1NetworkPolicyIngressRule(
+            _from=[kubernetes.client.V1NetworkPolicyPeer(
+                namespace_selector=kubernetes.client.V1LabelSelector(
+                    match_labels={"kubernetes.io/metadata.name": agent_ns}))],
+        )
+
+        policy = kubernetes.client.V1NetworkPolicy(
+            metadata=kubernetes.client.V1ObjectMeta(
+                name="agent-default-deny", namespace=agent_ns,
+                labels={"app.kubernetes.io/managed-by": "agent-operator"}),
+            spec=kubernetes.client.V1NetworkPolicySpec(
+                pod_selector=kubernetes.client.V1LabelSelector(),  # all pods
+                policy_types=["Ingress", "Egress"],
+                ingress=[ingress_rule],
+                egress=egress_rules,
+            ),
+        )
+        try:
+            net.create_namespaced_network_policy(agent_ns, policy)
+            logger.info(f"Applied NetworkPolicy (default-deny + allowlist) in '{agent_ns}'")
+        except kubernetes.client.ApiException as e:
+            if e.status == 409:
+                net.replace_namespaced_network_policy("agent-default-deny", agent_ns, policy)
+            else:
+                logger.warning(f"NetworkPolicy apply failed for '{agent_ns}': {e}")
+
+
+    def _apply_resource_quota(agent_ns, logger):
+        """Per-agent-namespace ResourceQuota + LimitRange (Item 10)."""
+        api = kubernetes.client.CoreV1Api()
+        if RESOURCE_QUOTA_ENABLED and RESOURCE_QUOTA_HARD:
+            quota = kubernetes.client.V1ResourceQuota(
+                metadata=kubernetes.client.V1ObjectMeta(
+                    name="agent-quota", namespace=agent_ns,
+                    labels={"app.kubernetes.io/managed-by": "agent-operator"}),
+                spec=kubernetes.client.V1ResourceQuotaSpec(
+                    hard={k: str(v) for k, v in RESOURCE_QUOTA_HARD.items()}),
+            )
+            try:
+                api.create_namespaced_resource_quota(agent_ns, quota)
+                logger.info(f"Applied ResourceQuota in '{agent_ns}'")
+            except kubernetes.client.ApiException as e:
+                if e.status == 409:
+                    api.replace_namespaced_resource_quota("agent-quota", agent_ns, quota)
+                else:
+                    logger.warning(f"ResourceQuota apply failed for '{agent_ns}': {e}")
+
+        if LIMIT_RANGE_ENABLED and (LIMIT_RANGE_DEFAULT or LIMIT_RANGE_DEFAULT_REQUEST):
+            lr = kubernetes.client.V1LimitRange(
+                metadata=kubernetes.client.V1ObjectMeta(
+                    name="agent-limits", namespace=agent_ns,
+                    labels={"app.kubernetes.io/managed-by": "agent-operator"}),
+                spec=kubernetes.client.V1LimitRangeSpec(limits=[
+                    kubernetes.client.V1LimitRangeItem(
+                        type="Container",
+                        default={k: str(v) for k, v in LIMIT_RANGE_DEFAULT.items()} or None,
+                        default_request={k: str(v) for k, v in LIMIT_RANGE_DEFAULT_REQUEST.items()} or None,
+                    )
+                ]),
+            )
+            try:
+                api.create_namespaced_limit_range(agent_ns, lr)
+                logger.info(f"Applied LimitRange in '{agent_ns}'")
+            except kubernetes.client.ApiException as e:
+                if e.status == 409:
+                    api.replace_namespaced_limit_range("agent-limits", agent_ns, lr)
+                else:
+                    logger.warning(f"LimitRange apply failed for '{agent_ns}': {e}")
+
+
+    def _owner_agent_count(owner):
+        """Count existing Agent CRs owned by `owner` (per-owner cap, Item 10)."""
+        api = kubernetes.client.CustomObjectsApi()
+        objs = api.list_cluster_custom_object(
+            group="intel-stack.io", version="v1alpha1", plural="agents")
+        n = 0
+        for o in objs.get("items", []):
+            if o.get("spec", {}).get("owner", {}).get("principal") == owner:
+                n += 1
+        return n
 
 
     def _build_skills_config(skills):
@@ -167,10 +665,64 @@ data:
         return tools_config, plugins_allow
 
 
-    def _create_openclaw_instance(agent_name, agent_ns, owner, skills, logger):
+    def _create_openclaw_instance(agent_name, agent_ns, owner, skills, custom_tools, role, kc_creds, logger):
         api = kubernetes.client.CustomObjectsApi()
-        model_base_url = f"http://{VLLM_SERVICE}.{VLLM_NAMESPACE}.svc.cluster.local:80/v1"
+        # Model endpoint: use the explicit MODEL_BASE_URL if set, otherwise fall
+        # back to the in-cluster vLLM service DNS (direct-vLLM default).
+        model_base_url = MODEL_BASE_URL or f"http://{VLLM_SERVICE}.{VLLM_NAMESPACE}.svc.cluster.local:80/v1"
+        model_ref = f"{MODEL_PROVIDER}/{MODEL_ID}"
+
+        # OpenClaw provider block. apiKey + allowPrivateNetwork are needed when the
+        # endpoint is a private/cluster host that requires a bearer token (e.g. the
+        # LiteLLM gateway); harmless for keyless vLLM ("sk-no-key-needed").
+        provider_cfg = {
+            "api": "openai-completions",
+            "baseUrl": model_base_url,
+            "apiKey": MODEL_API_KEY,
+            "models": [{"id": MODEL_ID, "name": MODEL_NAME}],
+        }
+        if MODEL_ALLOW_PRIVATE_NETWORK:
+            provider_cfg["request"] = {"allowPrivateNetwork": True}
+
         tools_config, plugins_allow = _build_skills_config(skills)
+
+        # Build MCP servers config from custom tools
+        mcp_servers = {}
+        for tool in custom_tools:
+            tool_name = tool.get("name", "")
+            tool_url = tool.get("url", "")
+            if tool_name and tool_url:
+                mcp_servers[tool_name] = {"url": tool_url, "transport": "sse"}
+                logger.info(f"Adding MCP server: {tool_name} → {tool_url}")
+
+        # Auto-wire the per-agent memory MCP server when the 'memory' skill is set.
+        # Inject the agent's OWN Keycloak client credentials as static transport
+        # headers. The LLM controls tool ARGUMENTS but not transport headers, so it
+        # cannot forge another agent's identity — the memory server verifies these
+        # and rejects any call whose requested `agent` != this identity.
+        if "memory" in skills and MEMORY_MCP_URL:
+            # X-Agent-Id names the caller (dev-mode identity + audit). The memory
+            # server derives the target schema from identity — there is no target
+            # arg — so an agent can only ever touch its own memory.
+            headers = {"X-Agent-Id": agent_name}
+            if kc_creds:
+                # Enforced mode: unforgeable proof of identity (verified via JWKS).
+                headers["X-Agent-Client-Id"] = kc_creds["client_id"]
+                headers["X-Agent-Client-Secret"] = kc_creds["client_secret"]
+                headers["X-Agent-Token-Endpoint"] = kc_creds["token_endpoint"]
+                logger.info(f"Wired memory MCP for '{agent_name}' with verified identity → {MEMORY_MCP_URL}")
+            else:
+                logger.warning(f"Wired memory MCP for '{agent_name}' with X-Agent-Id only "
+                               f"(no Keycloak creds) — enforced-mode access will be denied")
+            mcp_servers["memory"] = {"url": MEMORY_MCP_URL, "transport": "sse", "headers": headers}
+
+        # Role branching: only a LEAD gets the dispatch MCP (spawn/dispatch/collect
+        # workers). Workers and solos never get it — a worker cannot spawn workers.
+        if role == "lead" and DISPATCH_MCP_URL:
+            mcp_servers["dispatch"] = {"url": DISPATCH_MCP_URL, "transport": "sse"}
+            logger.info(f"Wired dispatch MCP server for lead '{agent_name}' → {DISPATCH_MCP_URL}")
+        elif role == "worker":
+            logger.info(f"Worker '{agent_name}' — dispatch MCP intentionally NOT wired (cannot spawn workers)")
 
         instance_body = {
             "apiVersion": "openclaw.rocks/v1alpha1",
@@ -198,26 +750,23 @@ data:
                     "raw": {
                         "agents": {
                             "defaults": {
-                                "model": {"primary": f"openai/{MODEL_ID}"},
-                                "models": {f"openai/{MODEL_ID}": {}},
+                                "model": {"primary": model_ref},
+                                "models": {model_ref: {}},
                             }
                         },
                         "models": {
                             "providers": {
-                                "openai": {
-                                    "api": "openai-completions",
-                                    "baseUrl": model_base_url,
-                                    "models": [{"id": MODEL_ID, "name": MODEL_ID}],
-                                }
+                                MODEL_PROVIDER: provider_cfg,
                             }
                         },
                         **({"tools": tools_config} if tools_config else {}),
                         **({"plugins": {"allow": plugins_allow}} if plugins_allow else {}),
+                        **({"mcp": {"servers": mcp_servers}} if mcp_servers else {}),
                     },
                 },
                 "env": [
                     {"name": "OPENAI_BASE_URL", "value": model_base_url},
-                    {"name": "OPENAI_API_KEY", "value": "sk-no-key-needed"},
+                    {"name": "OPENAI_API_KEY", "value": MODEL_API_KEY},
                     {"name": "AGENT_SANDBOX_ENDPOINT", "value": SANDBOX_ENDPOINT},
                     {"name": "AGENT_SANDBOX_ENABLED", "value": "true"},
                 ],
@@ -330,11 +879,14 @@ data:
 
 
     def _provision_keycloak_client(agent_name, agent_ns, owner, logger):
+        """Provision the agent's Keycloak client + credentials secret.
+        Returns {client_id, client_secret, token_endpoint} so the caller can wire
+        the agent's identity into its MCP tool headers, or None on failure."""
         import requests
         token = _get_keycloak_admin_token(logger)
         if not token:
             logger.warning("Skipping Keycloak provisioning — cannot get admin token")
-            return
+            return None
 
         client_id = f"agent-{agent_name}"
         clients_url = f"{KEYCLOAK_URL}/admin/realms/{KEYCLOAK_REALM}/clients"
@@ -358,7 +910,7 @@ data:
             logger.info(f"Keycloak client '{client_id}' already exists")
         elif resp.status_code not in (200, 201):
             logger.warning(f"Failed to create Keycloak client: {resp.status_code} {resp.text[:100]}")
-            return
+            return None
         else:
             logger.info(f"Created Keycloak client '{client_id}'")
 
@@ -366,14 +918,14 @@ data:
         resp = requests.get(f"{clients_url}?clientId={client_id}", headers=headers, timeout=10)
         if resp.status_code != 200 or not resp.json():
             logger.warning("Failed to retrieve Keycloak client UUID")
-            return
+            return None
         client_uuid = resp.json()[0]["id"]
 
         # Get client secret
         resp = requests.get(f"{clients_url}/{client_uuid}/client-secret", headers=headers, timeout=10)
         if resp.status_code != 200:
             logger.warning("Failed to retrieve client secret")
-            return
+            return None
         client_secret = resp.json().get("value", "")
 
         # Store credentials in agent namespace
@@ -400,6 +952,12 @@ data:
                 logger.info("Keycloak credentials secret already exists")
             else:
                 raise
+
+        return {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "token_endpoint": token_endpoint,
+        }
 
 
     def _delete_keycloak_client(agent_name, logger):
@@ -429,3 +987,5 @@ data:
     kopf==1.37.2
     kubernetes==31.0.0
     requests==2.32.3
+    redis==5.2.1
+    psycopg[binary]==3.2.3

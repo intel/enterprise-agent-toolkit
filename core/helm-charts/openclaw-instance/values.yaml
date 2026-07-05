@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # OpenClaw Instance Configuration
-# Connects directly to vLLM for model inference (no LiteLLM proxy needed)
+# Routes through the LiteLLM semantic router (genai-gateway) for model inference.
 
 namespace: openclaw
 
@@ -13,13 +13,19 @@ image:
 
 # Model configuration
 model:
-  # Must match exactly what vLLM reports at /v1/models
-  id: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
-  name: "Qwen3 Coder 30B"
-  # vLLM service endpoint (service-name.namespace.svc.cluster.local:port/v1)
-  baseUrl: "http://vllm-qwen3-coder-30b-cpu-service.default.svc.cluster.local:80/v1"
-  # vLLM doesn't require auth
-  apiKey: "<OPENAI_API_KEY>"
+  # OpenClaw provider key — the LiteLLM semantic auto-router
+  provider: "auto_router"
+  # LiteLLM smart-router model (semantic routing picks the backend model)
+  id: "smart_router"
+  name: "Smart Router"
+  # LiteLLM gateway endpoint (service-name.namespace.svc.cluster.local:port/v1)
+  baseUrl: "http://genai-gateway-service.genai-gateway.svc.cluster.local:4000/v1"
+  # LiteLLM master key (Bearer token) — sent to the gateway on every request.
+  # Set at deploy time: --set model.apiKey=sk-...  (leave empty in source)
+  apiKey: ""
+  # Required: the LiteLLM gateway is a private (cluster) host, not loopback.
+  # OpenClaw refuses to send the apiKey to a private network unless this is set.
+  allowPrivateNetwork: true
 
 # Scaling
 availability:

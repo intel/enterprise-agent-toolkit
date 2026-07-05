@@ -97,7 +97,7 @@ deploy_agent_operator() {
     echo "    spec:"
     echo "      runtime: claw"
     echo "      owner:"
-    echo "        principal: user@intel.com"
+    echo "        principal: user@example.com"
     echo "      role: solo"
     echo "    EOF"
     echo ""

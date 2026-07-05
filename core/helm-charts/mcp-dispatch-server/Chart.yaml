@@ -1,0 +1,12 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: mcp-dispatch-server
+version: 0.1.0
+description: MCP server for lead/worker multi-agent dispatch over an attenuated-JWT channel
+appVersion: "0.1.0"
+keywords:
+  - mcp
+  - multi-agent
+  - dispatch
+  - orchestration

@@ -1,0 +1,12 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: mcp-sandbox-server
+version: 0.1.0
+description: MCP server that bridges OpenClaw agents to agent-sandbox for isolated code execution
+appVersion: "0.1.0"
+keywords:
+  - mcp
+  - sandbox
+  - agent-sandbox
+  - code-execution

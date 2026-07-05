@@ -10,6 +10,20 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
   owner:
-    principal: {{ required "owner is required (--set owner=user@intel.com)" .Values.owner | quote }}
+    principal: {{ required "owner is required (--set owner=user@example.com)" .Values.owner | quote }}
+  role: {{ .Values.role | quote }}
+  desiredState: {{ .Values.desiredState | quote }}
   skills:
     {{- toYaml .Values.skills | nindent 4 }}
+  {{- if .Values.manages }}
+  manages:
+    {{- toYaml .Values.manages | nindent 4 }}
+  {{- end }}
+  {{- if .Values.tools }}
+  tools:
+    {{- toYaml .Values.tools | nindent 4 }}
+  {{- end }}
+  {{- if .Values.workspace }}
+  workspace:
+    {{- toYaml .Values.workspace | nindent 4 }}
+  {{- end }}

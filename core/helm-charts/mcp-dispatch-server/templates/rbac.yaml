@@ -1,0 +1,39 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-dispatch-server
+  labels:
+    app: mcp-dispatch-server
+rules:
+  # Manage Agent CRs (spawn/list/terminate workers)
+  - apiGroups: ["intel-stack.io"]
+    resources: ["agents"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  # Read per-agent Keycloak credentials to mint attenuated tokens
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  # Exec into worker pods to run `openclaw agent` turns
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-dispatch-server
+  labels:
+    app: mcp-dispatch-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-dispatch-server
+subjects:
+  - kind: ServiceAccount
+    name: mcp-dispatch-server
+    namespace: {{ .Values.namespace }}

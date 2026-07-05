@@ -56,14 +56,19 @@ spec:
       agents:
         defaults:
           model:
-            primary: "openai/{{ .Values.model.id }}"
+            primary: "{{ .Values.model.provider }}/{{ .Values.model.id }}"
           models:
-            openai/{{ .Values.model.id }}: {}
+            {{ .Values.model.provider }}/{{ .Values.model.id }}: {}
       models:
         providers:
-          openai:
+          {{ .Values.model.provider }}:
             api: "openai-completions"
             baseUrl: {{ .Values.model.baseUrl | quote }}
+            apiKey: {{ .Values.model.apiKey | quote }}
+            {{- if .Values.model.allowPrivateNetwork }}
+            request:
+              allowPrivateNetwork: true
+            {{- end }}
             models:
               - id: {{ .Values.model.id | quote }}
                 name: {{ .Values.model.name | quote }}

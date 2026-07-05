@@ -4,10 +4,67 @@
 # Owner identity (required)
 owner: ""
 
-# Agent skills/capabilities
+# Agent topology role: solo (default) | lead | worker
+#   lead   — auto-wired with the dispatch MCP (can spawn/dispatch/collect workers)
+#   worker — spawned by a lead; dispatch MCP intentionally NOT wired
+#   solo   — standalone agent (no dispatch)
+role: "solo"
+
+# Desired lifecycle state: Running (default) | Suspended
+desiredState: "Running"
+
+# Workers this lead manages (optional; used for label-based discovery)
+# Example: manages: { selector: { matchLabels: { intel-stack.io/managed-by-lead: my-lead } } }
+manages: {}
+
+# Agent skills/capabilities (predefined)
 # Available: shell, read_file, list_files, summarize, git,
 #            browser-automation, diagram-maker, memory, canvas
 skills:
   - shell
   - read_file
   - list_files
+
+# Custom tools — MCP servers connected to this agent via SSE
+# The operator injects these under mcp.servers in openclaw.json
+#
+# Example:
+#   --set "tools[0].name=sandbox" --set "tools[0].url=http://mcp-sandbox-server.agent-sandbox.svc:8000/sse"
+#
+# Sandbox options (pick one):
+#   Option A: agent-sandbox/agent-sandbox (built-in MCP at /mcp endpoint)
+#     url: "http://agent-sandbox-server.agent-sandbox.svc.cluster.local/mcp"
+#   Option B: Custom MCP bridge for kubernetes-sigs/agent-sandbox
+#     url: "http://mcp-sandbox-server.agent-sandbox.svc.cluster.local:8000/sse"
+tools: []
+#  - name: "sandbox"
+#    url: "http://agent-sandbox-server.agent-sandbox.svc.cluster.local/mcp"
+
+# Optional OpenClaw workspace files — seeded into /home/openclaw/.openclaw/workspace
+# and loaded by OpenClaw at session start. Keyed by RELATIVE PATH; value is content.
+# Empty {} = none (default). This injects BOTH:
+#   • prompt files:  AGENTS.md (operating instructions), SOUL.md (persona), TOOLS.md
+#   • skills:        skills/<name>/SKILL.md   (workspace-tier skills; frontmatter:
+#                    name, description [, metadata]). OpenClaw discovers these as
+#                    `openclaw-workspace` skills automatically.
+#   • project files: projects/<x>/...  (any files the agent reads with file tools)
+#
+# Pass via helm:
+#   whole folder → values file (generator one-liner in companies/*/README.md):
+#     helm install cto core/helm-charts/agent-instance/ -f my-company-values.yaml
+#   single file:
+#     --set-file 'workspace.AGENTS\.md=path/to/AGENTS.md'
+#     --set-file 'workspace.skills/code-review/SKILL\.md=path/to/SKILL.md'
+# (For a whole company folder, deploy-company.sh is the simplest path.)
+workspace: {}
+#  AGENTS.md: |
+#    # Operating instructions...
+#  SOUL.md: |
+#    # Persona...
+#  skills/hello-world/SKILL.md: |
+#    ---
+#    name: hello-world
+#    description: A simple skill that prints a greeting.
+#    ---
+#    # Hello World
+#    When asked to greet, respond warmly.

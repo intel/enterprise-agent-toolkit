@@ -1,0 +1,12 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: mcp-memory-server
+version: 0.1.0
+description: MCP server exposing per-agent persistent memory (pgvector) to any agent runtime
+appVersion: "0.1.0"
+keywords:
+  - mcp
+  - memory
+  - pgvector
+  - rag

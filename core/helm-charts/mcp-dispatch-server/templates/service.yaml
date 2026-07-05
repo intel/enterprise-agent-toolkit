@@ -1,0 +1,16 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-dispatch-server
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: mcp-dispatch-server
+spec:
+  selector:
+    app: mcp-dispatch-server
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 8000
+  type: ClusterIP
