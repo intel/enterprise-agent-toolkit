@@ -92,6 +92,8 @@ spec:
               value: "{{ .Values.pgvector.embeddingDim }}"
             - name: MEMORY_MCP_URL
               value: {{ .Values.memory.mcpUrl | quote }}
+            - name: SANDBOX_MCP_URL
+              value: {{ .Values.sandbox.mcpUrl | quote }}
             - name: DISPATCH_MCP_URL
               value: {{ .Values.dispatch.mcpUrl | quote }}
             # Multi-tenancy primitives (Item 10)

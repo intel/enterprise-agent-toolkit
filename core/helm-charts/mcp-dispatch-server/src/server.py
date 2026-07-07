@@ -26,6 +26,8 @@ import json
 import logging
 import base64
 import datetime
+import threading
+import uuid
 
 from fastmcp import FastMCP
 
@@ -37,17 +39,12 @@ KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "master")
 OPENCLAW_MODEL = os.environ.get("MODEL_ID", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
 WORKER_TURN_TIMEOUT = int(os.environ.get("WORKER_TURN_TIMEOUT", "300"))
 
-# In-memory result store: {lead: [{worker, prompt, result, granted_claims}]}
+# In-memory result store: {lead: [{worker, prompt, result, granted_claims, dispatch_id, status}]}
 # (module-level: persists across requests in this single-replica process; stateless
 # HTTP below affects the MCP SSE *session*, not process state.)
 _results = {}
-
-# Stateless HTTP: each request is independent, so overlapping/duplicate SSE messages
-# during long-running tools (dispatch_task can exec `openclaw agent` for minutes)
-# can't double-respond on a shared session — which was tripping OpenClaw's client
-# circuit-breaker ("Request already responded to" → server paused). Matches the
-# sandbox server, which uses this for the same reason.
-os.environ["FASTMCP_STATELESS_HTTP"] = "1"
+# Lock protecting writes to _results from background threads.
+_results_lock = threading.Lock()
 
 mcp = FastMCP("agent-dispatch")
 
@@ -196,6 +193,7 @@ def _mint_and_verify_token(lead, requested_tools, authority, k8s):
 
 
 @mcp.tool(description="Dispatch a task to a worker over an attenuated-JWT secured channel. "
+                      "Returns immediately with a dispatch_id. Poll collect_results() for the answer. "
                       "allowed_tools (optional) must be a subset of the lead's skills.")
 def dispatch_task(lead: str, worker: str, prompt: str, allowed_tools: list = None) -> dict:
     try:
@@ -219,18 +217,46 @@ def dispatch_task(lead: str, worker: str, prompt: str, allowed_tools: list = Non
         if err:
             return {"status": "rejected", "reason": err}
 
-        # Run the worker turn synchronously via `openclaw agent` (exec into pod).
-        worker_ns = f"agent-{worker}"
-        pod = f"{worker}-0"
-        # A worker may have been auto-idle-suspended (scaled to zero). Wake it first.
-        _ensure_worker_awake(k8s, worker, worker_ns)
-        reply = _run_worker_turn(k8s, worker_ns, pod, prompt)
+        dispatch_id = str(uuid.uuid4())[:8]
 
-        _results.setdefault(lead, []).append({
-            "worker": worker, "prompt": prompt, "result": reply,
+        # Record a pending placeholder so collect_results shows it immediately.
+        entry = {
+            "dispatch_id": dispatch_id,
+            "worker": worker,
+            "prompt": prompt,
+            "status": "running",
+            "result": None,
             "granted_claims": granted,
-        })
-        return {"status": "ok", "worker": worker, "granted_claims": granted, "result": reply}
+        }
+        with _results_lock:
+            _results.setdefault(lead, []).append(entry)
+
+        # Run the worker exec in a background thread — MCP connection returns right away.
+        def _bg(entry=entry, k8s=k8s):
+            worker_ns = f"agent-{worker}"
+            pod = f"{worker}-0"
+            try:
+                _ensure_worker_awake(k8s, worker, worker_ns)
+                reply = _run_worker_turn(k8s, worker_ns, pod, prompt)
+                with _results_lock:
+                    entry["result"] = reply
+                    entry["status"] = "done"
+                logger.info(f"dispatch {dispatch_id} ({worker}) done")
+            except Exception as exc:
+                with _results_lock:
+                    entry["result"] = f"(worker turn failed: {exc})"
+                    entry["status"] = "error"
+                logger.error(f"dispatch {dispatch_id} bg failed: {exc}")
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+        return {
+            "status": "dispatching",
+            "dispatch_id": dispatch_id,
+            "worker": worker,
+            "granted_claims": granted,
+            "note": "Call collect_results(lead) to poll for the result.",
+        }
     except Exception as e:
         logger.error(f"dispatch_task failed: {e}")
         return {"error": str(e)}
@@ -310,31 +336,54 @@ def _ensure_worker_awake(k8s, worker, namespace, timeout=180):
 
 
 def _run_worker_turn(k8s, namespace, pod, prompt):
-    """Exec `openclaw agent` in the worker pod, return the reply text."""
+    """Exec `openclaw agent` in the worker pod, return the reply text.
+
+    Retries once on known transient gateway closure signatures that can happen
+    during worker startup/reload races.
+    """
     from kubernetes.stream import stream
-    cmd = ["openclaw", "agent", "--agent", "main", "--message", prompt,
-           "--json", "--timeout", str(WORKER_TURN_TIMEOUT)]
-    try:
-        resp = stream(
-            k8s.client.CoreV1Api().connect_get_namespaced_pod_exec,
-            pod, namespace, container="openclaw", command=cmd,
-            stderr=True, stdin=False, stdout=True, tty=False,
-            _preload_content=True, _request_timeout=WORKER_TURN_TIMEOUT + 30)
-        d = _parse_agent_envelope(resp)
-        if not isinstance(d, dict):
-            return resp.strip()[:500]
-        payloads = d.get("result", {}).get("payloads", [])
-        for p in payloads:
-            if p.get("text"):
-                return p["text"]
-        return "(no text in worker reply)"
-    except Exception as e:
-        return f"(worker turn failed: {e})"
+    import time
+
+    def _once():
+        cmd = ["openclaw", "agent", "--agent", "main", "--message", prompt,
+               "--json", "--timeout", str(WORKER_TURN_TIMEOUT)]
+        try:
+            resp = stream(
+                k8s.client.CoreV1Api().connect_get_namespaced_pod_exec,
+                pod, namespace, container="openclaw", command=cmd,
+                stderr=True, stdin=False, stdout=True, tty=False,
+                _preload_content=True, _request_timeout=WORKER_TURN_TIMEOUT + 30)
+            d = _parse_agent_envelope(resp)
+            if not isinstance(d, dict):
+                return resp.strip()[:500]
+            payloads = d.get("result", {}).get("payloads", [])
+            for p in payloads:
+                if p.get("text"):
+                    return p["text"]
+            return "(no text in worker reply)"
+        except Exception as e:
+            return f"(worker turn failed: {e})"
+
+    reply = _once()
+    low = reply.lower()
+    transient = (
+        "embedded fallback" in low and
+        "gateway closed" in low and
+        ("1012" in low or "1006" in low)
+    )
+    if transient:
+        logger.info(f"Transient worker gateway closure for {namespace}/{pod}; retrying once")
+        time.sleep(2)
+        reply = _once()
+
+    return reply
 
 
-@mcp.tool(description="Collect results gathered from dispatched workers for this lead.")
+@mcp.tool(description="Collect results gathered from dispatched workers for this lead. "
+                      "Each entry has status=running|done|error. Poll until status=done.")
 def collect_results(lead: str) -> list:
-    return _results.get(lead, [])
+    with _results_lock:
+        return list(_results.get(lead, []))
 
 
 @mcp.tool(description="Terminate a worker agent (deletes the Agent CR and all its resources).")

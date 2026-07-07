@@ -40,6 +40,18 @@ spec:
               value: {{ .Values.sandbox.namespace | quote }}
             - name: SANDBOX_TEMPLATE
               value: {{ .Values.sandbox.template | quote }}
+            {{- if .Values.proxy.httpProxy }}
+            - name: SANDBOX_HTTP_PROXY
+              value: {{ .Values.proxy.httpProxy | quote }}
+            {{- end }}
+            {{- if .Values.proxy.httpsProxy }}
+            - name: SANDBOX_HTTPS_PROXY
+              value: {{ .Values.proxy.httpsProxy | quote }}
+            {{- end }}
+            {{- if .Values.proxy.noProxy }}
+            - name: SANDBOX_NO_PROXY
+              value: {{ .Values.proxy.noProxy | quote }}
+            {{- end }}
           ports:
             - containerPort: 8000
           resources:

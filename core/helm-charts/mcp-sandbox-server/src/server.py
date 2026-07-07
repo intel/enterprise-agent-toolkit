@@ -29,6 +29,36 @@ SANDBOX_ROUTER_URL = os.environ.get(
 SANDBOX_NAMESPACE = os.environ.get("SANDBOX_NAMESPACE", "agent-sandbox")
 SANDBOX_TEMPLATE = os.environ.get("SANDBOX_TEMPLATE", "python-sandbox-template")
 
+# Build a shell env-var prefix so commands run inside the sandbox pod can reach
+# the internet via the corporate proxy. Uses SANDBOX_HTTPS_PROXY / SANDBOX_HTTP_PROXY
+# (not the standard names) so the kubernetes client in THIS pod is not affected.
+_HTTP_PROXY = os.environ.get("SANDBOX_HTTP_PROXY", "")
+_HTTPS_PROXY = os.environ.get("SANDBOX_HTTPS_PROXY", "")
+_NO_PROXY = os.environ.get("SANDBOX_NO_PROXY", "localhost,127.0.0.1,10.0.0.0/8,.svc,.cluster.local")
+
+_PROXY_PREFIX = ""
+if _HTTPS_PROXY:
+    _PROXY_PREFIX += (
+        f"export http_proxy={_HTTP_PROXY!r}; "
+        f"export HTTP_PROXY={_HTTP_PROXY!r}; "
+        f"export https_proxy={_HTTPS_PROXY!r}; "
+        f"export HTTPS_PROXY={_HTTPS_PROXY!r}; "
+        f"export no_proxy={_NO_PROXY!r}; "
+        f"export NO_PROXY={_NO_PROXY!r}; "
+        f"export GIT_SSL_NO_VERIFY=false; "
+    )
+
+
+def _with_proxy(command: str) -> str:
+    """Wrap command in sh -c with proxy env-vars exported, so git/pip reach the internet.
+    commands.run() execs directly (no shell), so export must be inside sh -c."""
+    if not _PROXY_PREFIX:
+        return command
+    # Escape any single quotes in the command before embedding in sh -c '...'
+    safe = command.replace("'", "'\\''")
+    return f"sh -c '{_PROXY_PREFIX}{safe}'"
+
+
 os.environ["FASTMCP_STATELESS_HTTP"] = "1"
 mcp = FastMCP("sandbox-executor")
 
@@ -82,9 +112,8 @@ def execute_python(code: str) -> str:
     try:
         sandbox = _get_sandbox()
         encoded = base64.b64encode(code.encode()).decode()
-        result = sandbox.commands.run(
-            f"sh -c 'echo {encoded} | base64 -d > /tmp/_exec.py && python3 /tmp/_exec.py'"
-        )
+        inner = f"echo {encoded} | base64 -d > /tmp/_exec.py && python3 /tmp/_exec.py"
+        result = sandbox.commands.run(_with_proxy(inner))
         return _format_result(result)
     except Exception as e:
         logger.error(f"execute_python failed: {e}")
@@ -96,7 +125,7 @@ def execute_shell(command: str) -> str:
     """Execute a shell command in the sandbox."""
     try:
         sandbox = _get_sandbox()
-        result = sandbox.commands.run(command)
+        result = sandbox.commands.run(_with_proxy(command))
         return _format_result(result)
     except Exception as e:
         logger.error(f"execute_shell failed: {e}")
@@ -108,7 +137,7 @@ def install_package(package: str) -> str:
     """Install a Python package in the sandbox."""
     try:
         sandbox = _get_sandbox()
-        result = sandbox.commands.run(f"pip install {package}")
+        result = sandbox.commands.run(_with_proxy(f"pip install {package}"))
         if result.exit_code == 0:
             return f"Successfully installed {package}"
         return f"Failed to install {package}:\n{result.stderr}"

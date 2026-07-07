@@ -50,7 +50,7 @@ tools: []
 #   • project files: projects/<x>/...  (any files the agent reads with file tools)
 #
 # Pass via helm:
-#   whole folder → values file (generator one-liner in companies/*/README.md):
+#   whole folder → values file (generator one-liner in teams/*/README.md):
 #     helm install cto core/helm-charts/agent-instance/ -f my-company-values.yaml
 #   single file:
 #     --set-file 'workspace.AGENTS\.md=path/to/AGENTS.md'

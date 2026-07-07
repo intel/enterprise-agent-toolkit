@@ -322,6 +322,18 @@ BKSVC
             exit 1
         fi
 
+        echo "      Pre-pulling base image python:3.14-slim through proxy..."
+        sudo env \
+            ${http_proxy:+http_proxy="${http_proxy}"} \
+            ${https_proxy:+https_proxy="${https_proxy}"} \
+            ${HTTP_PROXY:+HTTP_PROXY="${HTTP_PROXY}"} \
+            ${HTTPS_PROXY:+HTTPS_PROXY="${HTTPS_PROXY}"} \
+            ${no_proxy:+no_proxy="${no_proxy}"} \
+            ${NO_PROXY:+NO_PROXY="${NO_PROXY}"} \
+            nerdctl --namespace k8s.io pull python:3.14-slim || {
+                echo "${YELLOW}WARN: Failed to pre-pull python:3.14-slim. Build may fail if proxy issues persist.${NC}"
+            }
+
         echo "      Building '${router_full_image}' into containerd k8s.io namespace..."
         sudo nerdctl \
             --namespace k8s.io \
@@ -367,6 +379,18 @@ BKSVC
             echo "${RED}       Check: https://github.com/kubernetes-sigs/agent-sandbox/tree/${sandbox_version}/examples/python-runtime-sandbox${NC}"
             exit 1
         fi
+
+        echo "      Pre-pulling base image python:3.11-slim through proxy..."
+        sudo env \
+            ${http_proxy:+http_proxy="${http_proxy}"} \
+            ${https_proxy:+https_proxy="${https_proxy}"} \
+            ${HTTP_PROXY:+HTTP_PROXY="${HTTP_PROXY}"} \
+            ${HTTPS_PROXY:+HTTPS_PROXY="${HTTPS_PROXY}"} \
+            ${no_proxy:+no_proxy="${no_proxy}"} \
+            ${NO_PROXY:+NO_PROXY="${NO_PROXY}"} \
+            nerdctl --namespace k8s.io pull python:3.11-slim || {
+                echo "${YELLOW}WARN: Failed to pre-pull python:3.11-slim. Build may fail if proxy issues persist.${NC}"
+            }
 
         echo "      Building '${runtime_full_image}' into containerd k8s.io namespace..."
         sudo nerdctl \

@@ -15,13 +15,11 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list"]
-  # Exec into worker pods to run `openclaw agent` turns
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["get", "create"]
+  # NOTE: exec into worker pods is intentionally NOT granted cluster-wide here.
+  # The operator creates a namespace-scoped Role+RoleBinding in each worker
+  # namespace (agent-<name>) granting this ServiceAccount `pods` + `pods/exec`
+  # ONLY there. This bounds the blast radius: the dispatch server can exec into
+  # worker pods it manages, not arbitrary pods across the cluster.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

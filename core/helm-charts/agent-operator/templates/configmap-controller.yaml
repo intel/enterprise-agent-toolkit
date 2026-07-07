@@ -30,7 +30,12 @@ data:
     EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "768"))  # bge-base-en-v1.5
     MEMORY_TIERS = ("claudemd", "project", "auto")
     MEMORY_MCP_URL = os.environ.get("MEMORY_MCP_URL", "http://mcp-memory-server.pgvector.svc.cluster.local:8000/sse")
+    SANDBOX_MCP_URL = os.environ.get("SANDBOX_MCP_URL", "http://mcp-sandbox-server.agent-sandbox.svc.cluster.local:8000/sse")
     DISPATCH_MCP_URL = os.environ.get("DISPATCH_MCP_URL", "http://mcp-dispatch-server.agent-operator-system.svc.cluster.local:8000/sse")
+    # The dispatch server's ServiceAccount — granted namespace-scoped exec into each
+    # worker namespace (not cluster-wide) so it can run `openclaw agent` turns.
+    DISPATCH_SA_NAME = os.environ.get("DISPATCH_SA_NAME", "mcp-dispatch-server")
+    DISPATCH_SA_NAMESPACE = os.environ.get("DISPATCH_SA_NAMESPACE", "agent-operator-system")
 
     # ── Multi-tenancy primitives (Item 10) ──────────────────────────────────
     def _env_json(key, default):
@@ -129,6 +134,9 @@ data:
         # Applied before the backend so pods are born into the constrained namespace.
         _apply_network_policy(agent_ns, logger)
         _apply_resource_quota(agent_ns, logger)
+        # Grant the dispatch server scoped (namespace-only) exec into this agent's
+        # pods — replaces cluster-wide pods/exec (blast-radius reduction).
+        _grant_dispatch_exec(agent_ns, logger)
 
         # Provision Keycloak OIDC client (per-agent identity) BEFORE the backend,
         # so the agent's own credentials can be wired into its MCP tool headers
@@ -257,6 +265,27 @@ data:
 
         agent_ns = f"agent-{name}"
         runtime = spec.get("runtime", "claw")
+
+        # Cascade-delete any workers spawned by this lead at runtime.
+        # Workers are not owned by helm, so we delete them explicitly.
+        if spec.get("role") == "lead":
+            try:
+                api = kubernetes.client.CustomObjectsApi()
+                workers = api.list_namespaced_custom_object(
+                    group="intel-stack.io", version="v1alpha1", namespace=namespace,
+                    plural="agents",
+                    label_selector=f"intel-stack.io/managed-by-lead={name}")
+                for w in workers.get("items", []):
+                    wname = w["metadata"]["name"]
+                    try:
+                        api.delete_namespaced_custom_object(
+                            group="intel-stack.io", version="v1alpha1",
+                            namespace=namespace, plural="agents", name=wname)
+                        logger.info(f"Cascade-deleted worker '{wname}' (lead={name})")
+                    except Exception as e:
+                        logger.warning(f"Could not delete worker '{wname}': {e}")
+            except Exception as e:
+                logger.warning(f"Could not list workers for lead '{name}': {e}")
 
         # Delete Keycloak client
         if KEYCLOAK_ENABLED:
@@ -533,6 +562,50 @@ data:
                 raise
 
 
+    def _grant_dispatch_exec(agent_ns, logger):
+        """Grant the dispatch server's ServiceAccount pods+pods/exec ONLY in this
+        agent's namespace (Role + RoleBinding). Replaces cluster-wide exec so the
+        dispatch server can run `openclaw agent` turns in worker pods it manages,
+        without the ability to exec into arbitrary pods elsewhere. Idempotent."""
+        rbac = kubernetes.client.RbacAuthorizationV1Api()
+        name = "dispatch-exec"
+        role = kubernetes.client.V1Role(
+            metadata=kubernetes.client.V1ObjectMeta(
+                name=name, namespace=agent_ns,
+                labels={"app.kubernetes.io/managed-by": "agent-operator"}),
+            rules=[
+                kubernetes.client.V1PolicyRule(
+                    api_groups=[""], resources=["pods"], verbs=["get", "list"]),
+                # websocket exec authorizes on BOTH get and create of pods/exec
+                kubernetes.client.V1PolicyRule(
+                    api_groups=[""], resources=["pods/exec"], verbs=["get", "create"]),
+            ],
+        )
+        binding = kubernetes.client.V1RoleBinding(
+            metadata=kubernetes.client.V1ObjectMeta(
+                name=name, namespace=agent_ns,
+                labels={"app.kubernetes.io/managed-by": "agent-operator"}),
+            role_ref=kubernetes.client.V1RoleRef(
+                api_group="rbac.authorization.k8s.io", kind="Role", name=name),
+            subjects=[kubernetes.client.RbacV1Subject(
+                kind="ServiceAccount", name=DISPATCH_SA_NAME,
+                namespace=DISPATCH_SA_NAMESPACE)],
+        )
+        for kind, create, replace, obj in (
+            ("Role", rbac.create_namespaced_role, rbac.replace_namespaced_role, role),
+            ("RoleBinding", rbac.create_namespaced_role_binding, rbac.replace_namespaced_role_binding, binding),
+        ):
+            try:
+                create(agent_ns, obj)
+            except kubernetes.client.ApiException as e:
+                if e.status == 409:
+                    replace(name, agent_ns, obj)
+                else:
+                    logger.warning(f"Failed to grant dispatch exec ({kind}) in '{agent_ns}': {e}")
+                    return
+        logger.info(f"Granted scoped dispatch exec (Role+RoleBinding) in '{agent_ns}'")
+
+
     def _apply_network_policy(agent_ns, logger):
         """Default-deny + strict egress allowlist for the agent namespace (Item 10).
 
@@ -695,32 +768,30 @@ data:
                 mcp_servers[tool_name] = {"url": tool_url, "transport": "sse"}
                 logger.info(f"Adding MCP server: {tool_name} → {tool_url}")
 
-        # Auto-wire the per-agent memory MCP server when the 'memory' skill is set.
-        # Inject the agent's OWN Keycloak client credentials as static transport
-        # headers. The LLM controls tool ARGUMENTS but not transport headers, so it
-        # cannot forge another agent's identity — the memory server verifies these
-        # and rejects any call whose requested `agent` != this identity.
-        if "memory" in skills and MEMORY_MCP_URL:
-            # X-Agent-Id names the caller (dev-mode identity + audit). The memory
-            # server derives the target schema from identity — there is no target
-            # arg — so an agent can only ever touch its own memory.
+        # Auto-wire memory MCP for ALL agents (every agent gets persistent memory).
+        # Inject the agent's own Keycloak creds as transport headers — the memory
+        # server enforces these so an agent can only access its own schema.
+        if MEMORY_MCP_URL:
             headers = {"X-Agent-Id": agent_name}
             if kc_creds:
-                # Enforced mode: unforgeable proof of identity (verified via JWKS).
                 headers["X-Agent-Client-Id"] = kc_creds["client_id"]
                 headers["X-Agent-Client-Secret"] = kc_creds["client_secret"]
                 headers["X-Agent-Token-Endpoint"] = kc_creds["token_endpoint"]
-                logger.info(f"Wired memory MCP for '{agent_name}' with verified identity → {MEMORY_MCP_URL}")
+                logger.info(f"Wired memory MCP for '{agent_name}' (verified identity) → {MEMORY_MCP_URL}")
             else:
-                logger.warning(f"Wired memory MCP for '{agent_name}' with X-Agent-Id only "
-                               f"(no Keycloak creds) — enforced-mode access will be denied")
+                logger.warning(f"Wired memory MCP for '{agent_name}' with X-Agent-Id only (no Keycloak creds)")
             mcp_servers["memory"] = {"url": MEMORY_MCP_URL, "transport": "sse", "headers": headers}
 
-        # Role branching: only a LEAD gets the dispatch MCP (spawn/dispatch/collect
-        # workers). Workers and solos never get it — a worker cannot spawn workers.
+        # Auto-wire sandbox MCP when the 'shell' skill is present (all roles).
+        # This gives agents proper isolated code execution via the sandbox controller.
+        if "shell" in skills and SANDBOX_MCP_URL:
+            mcp_servers["sandbox"] = {"url": SANDBOX_MCP_URL, "transport": "sse"}
+            logger.info(f"Wired sandbox MCP for '{agent_name}' → {SANDBOX_MCP_URL}")
+
+        # Dispatch MCP: lead-only. Workers/solos cannot spawn workers.
         if role == "lead" and DISPATCH_MCP_URL:
             mcp_servers["dispatch"] = {"url": DISPATCH_MCP_URL, "transport": "sse"}
-            logger.info(f"Wired dispatch MCP server for lead '{agent_name}' → {DISPATCH_MCP_URL}")
+            logger.info(f"Wired dispatch MCP for lead '{agent_name}' → {DISPATCH_MCP_URL}")
         elif role == "worker":
             logger.info(f"Worker '{agent_name}' — dispatch MCP intentionally NOT wired (cannot spawn workers)")
 
@@ -759,7 +830,7 @@ data:
                                 MODEL_PROVIDER: provider_cfg,
                             }
                         },
-                        **({"tools": tools_config} if tools_config else {}),
+                        **({"tools": {**tools_config, "deny": ["create_goal", "update_goal", "get_goal"]}} if tools_config else {"tools": {"deny": ["create_goal", "update_goal", "get_goal"]}}),
                         **({"plugins": {"allow": plugins_allow}} if plugins_allow else {}),
                         **({"mcp": {"servers": mcp_servers}} if mcp_servers else {}),
                     },
@@ -786,7 +857,20 @@ data:
             logger.info(f"Created OpenClawInstance '{agent_name}' in '{agent_ns}'")
         except kubernetes.client.ApiException as e:
             if e.status == 409:
-                logger.info(f"OpenClawInstance '{agent_name}' already exists")
+                # Already exists — patch the config so stale values (e.g. bad
+                # tools.exec.security from a previous operator version) are corrected.
+                logger.info(f"OpenClawInstance '{agent_name}' already exists — patching config")
+                try:
+                    api.patch_namespaced_custom_object(
+                        group="openclaw.rocks",
+                        version="v1alpha1",
+                        namespace=agent_ns,
+                        plural="openclawinstances",
+                        name=agent_name,
+                        body={"spec": {"config": instance_body["spec"]["config"]}},
+                    )
+                except Exception as pe:
+                    logger.warning(f"Could not patch existing OpenClawInstance '{agent_name}': {pe}")
             else:
                 raise
 

@@ -16,6 +16,12 @@ sandbox:
   namespace: "agent-sandbox"
   template: "python-sandbox-template"
 
+# Corporate proxy — injected into sandbox execution so git/pip can reach the internet
+proxy:
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: "localhost,127.0.0.1,10.0.0.0/8,.svc,.cluster.local"
+
 resources:
   requests:
     cpu: "100m"

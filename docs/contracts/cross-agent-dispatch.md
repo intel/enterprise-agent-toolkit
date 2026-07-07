@@ -103,20 +103,29 @@ The worker reply path is **synchronous**. `dispatch_task`:
    `{...}` block and tries `json.loads` then `ast.literal_eval`, reading the answer from
    `result.payloads[].text`.
 
-### RBAC required by the dispatch server
+### RBAC required by the dispatch server (least-privilege exec)
 
-The `mcp-dispatch-server` ServiceAccount holds a ClusterRole granting:
+The `mcp-dispatch-server` ServiceAccount holds a **ClusterRole** with only:
 
 | Resource | Verbs | Why |
 |----------|-------|-----|
 | `agents.intel-stack.io` | get, list, watch, create, delete, **patch, update** | spawn/list/terminate workers; patch `desiredState` to wake them |
 | `secrets` | get, list | read the lead's Keycloak client credentials |
-| `pods` | get, list | locate the worker pod |
-| `pods/exec` | **get**, create | the websocket exec upgrade uses `get` **and** `create` on the `exec` subresource — both are required |
+
+**It has NO cluster-wide `pods` / `pods/exec`.** Instead, the operator creates a
+**namespace-scoped `Role` + `RoleBinding` (`dispatch-exec`)** in each agent
+namespace (`agent-<name>`) on creation, granting the dispatch ServiceAccount
+`pods` (get/list) and `pods/exec` (get/create) **only there**. So the dispatch
+server can exec into worker pods it manages — and is denied exec into any other
+pod in the cluster (kube-system, other tenants, infra). This bounds the blast
+radius: a compromised dispatch server cannot exec cluster-wide.
+
+The operator can grant these verbs because it holds `pods/exec` itself (used for
+lead workspace-seeding), so the RoleBinding is not a privilege escalation.
 
 > **Gotcha:** the Kubernetes websocket exec (`connect_get_namespaced_pod_exec`)
-> authorizes against the **`get`** verb on `pods/exec`, not only `create`. Granting
-> `create` alone yields a `403 Forbidden` on the handshake. Grant both.
+> authorizes against the **`get`** verb on `pods/exec`, not only `create` — the
+> scoped Role grants both.
 
 > **Client version:** the dispatch server pins `kubernetes>=35,<36`. The 36.x client
 > mishandles the None error body on a failed exec handshake

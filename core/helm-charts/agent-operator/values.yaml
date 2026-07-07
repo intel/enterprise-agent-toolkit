@@ -48,7 +48,11 @@ pgvector:
 memory:
   mcpUrl: "http://mcp-memory-server.pgvector.svc.cluster.local:8000/sse"
 
-# Dispatch MCP server — auto-wired into role=lead agents (spawn/dispatch/collect workers)
+# Sandbox MCP server — auto-wired into agents with the 'shell' skill (all roles)
+sandbox:
+  mcpUrl: "http://mcp-sandbox-server.agent-sandbox.svc.cluster.local:8000/sse"
+
+# Dispatch MCP server — auto-wired into role=lead agents only (spawn/dispatch/collect workers)
 dispatch:
   mcpUrl: "http://mcp-dispatch-server.agent-operator-system.svc.cluster.local:8000/sse"
 
@@ -76,8 +80,8 @@ multiTenancy:
         ports: [8000]
       - namespace: "auth-apisix"            # Keycloak (svc 80→pod 8080)
         ports: [8080]
-      - namespace: "agent-sandbox"          # sandbox router (svc 8080→8080)
-        ports: [8080]
+      - namespace: "agent-sandbox"          # sandbox router (svc 8080→8080) + MCP server (8000→8000)
+        ports: [8080, 8000]
       - namespace: "default"                # direct-vLLM fallback (svc 80→pod 2080)
         ports: [2080]
   # Per-agent-namespace resource cap + default per-pod limits.

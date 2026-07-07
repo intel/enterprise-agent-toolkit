@@ -38,6 +38,12 @@ rules:
   - apiGroups: [""]
     resources: ["resourcequotas", "limitranges"]
     verbs: ["get", "list", "create", "update", "delete"]
+  # Grant the dispatch server namespace-scoped exec per worker namespace
+  # (Role + RoleBinding). The operator already holds pods/exec above, so it may
+  # grant the same verbs in a Role without privilege escalation.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "create", "update", "delete"]
   # Events (status reporting)
   - apiGroups: [""]
     resources: ["events"]
