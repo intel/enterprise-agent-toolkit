@@ -339,15 +339,20 @@ deploy_redis=on
 
 **Manual deployment (alternative / standalone):**
 
+A password is mandatory — the chart refuses to render without one.
+
 ```bash
 # 1. Resolve Helm chart dependencies
 helm dependency build core/helm-charts/redis
 
-# 2. Deploy into the `redis` namespace
+# 2. Deploy into the `redis` namespace with a password
+_redis_pw=$(grep '^redis_stack_password:' core/inventory/metadata/vault.yml | awk -F'"' '{print $2}')
 helm upgrade --install redis core/helm-charts/redis \
   --namespace redis \
   --create-namespace \
+  --set-string "redis-stack-server.redis_stack_server.auth.password=${_redis_pw}" \
   --wait --timeout 5m
+unset _redis_pw
 ```
 
 **Verify it is running:**
@@ -357,15 +362,31 @@ kubectl get pods -n redis
 # NAME                       READY   STATUS    RESTARTS   AGE
 # redis-stack-server-0       1/1     Running   0          60s
 
-kubectl exec -n redis redis-stack-server-0 -- redis-cli ping
+kubectl exec -n redis redis-stack-server-0 -- sh -c \
+  'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping'
 # PONG
 ```
 
 **Redis URL (in-cluster) — use this in all agents:**
 
+```bash
+kubectl get secret redis-stack-server-credentials -n redis \
+  -o jsonpath='{.data.REDIS_URL}' | base64 -d
+# redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379
 ```
-redis://redis-stack-server.redis.svc.cluster.local:6379
-```
+
+### Redis security notes
+
+Redis holds agent session state and is a code-execution surface (Lua, plus JavaScript via RedisGears), so it must never be reachable unauthenticated.
+
+- **Authentication is mandatory** — the chart fails to render without a password.
+- **The Service is `ClusterIP`.** Do not switch it to `NodePort` or `LoadBalancer`. On a multi-node cluster a NodePort binds the 30000-32767 range on *every* node IP, so anything that can route to any node reaches Redis. This matters most when nodes have public addresses or sit in a permissive cloud security group.
+- **Firewall the NodePort range.** In addition to the inter-node ports listed above, restrict `30000-32767` to trusted sources at the host firewall or cloud security-group level. Do not expose it to the internet.
+- **Restrict Redis to the namespaces that need it** with the bundled NetworkPolicy (requires an enforcing CNI such as Calico):
+
+  ```bash
+  --set "redis-stack-server.redis_stack_server.networkPolicy.allowedNamespaces={genai-gateway,agent-sandbox}"
+  ```
 
 ---
 

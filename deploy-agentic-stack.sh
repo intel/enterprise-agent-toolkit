@@ -925,7 +925,9 @@ except Exception:
     # ── MEMORY (Redis) ────────────────────────────────────────────────────────
     echo ""
     echo -e "${YELLOW}── MEMORY (Redis Stack) ───────────────────────────────────────────────${NC}"
-    echo -e "  In-cluster      : redis://redis-stack-server.redis.svc.cluster.local:6379"
+    echo -e "  In-cluster      : redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379"
+    echo -e "  Service type    : ClusterIP (in-cluster only, password required)"
+    echo -e "  URL secret      : kubectl get secret redis-stack-server-credentials -n redis -o jsonpath='{.data.REDIS_URL}' | base64 -d"
 
     # ── AGENT SANDBOX ─────────────────────────────────────────────────────────
     echo ""

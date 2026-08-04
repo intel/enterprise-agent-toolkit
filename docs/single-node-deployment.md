@@ -314,17 +314,24 @@ Set `deploy_redis=on` in `core/inventory/agentic-config.cfg` before running `./d
 deploy_redis=on
 ```
 
+The deployment script reads `redis_stack_password` from `core/inventory/metadata/vault.yml` and passes it to the chart, so no manual credential setup is needed.
+
 **Manual deployment (alternative / standalone):**
+
+A password is mandatory — the chart refuses to render without one.
 
 ```bash
 # 1. Resolve Helm chart dependencies (fetches the redis-stack-server subchart)
 helm dependency build core/helm-charts/redis
 
-# 2. Deploy into the `redis` namespace
+# 2. Deploy into the `redis` namespace with a password
+_redis_pw=$(grep '^redis_stack_password:' core/inventory/metadata/vault.yml | awk -F'"' '{print $2}')
 helm upgrade --install redis core/helm-charts/redis \
   --namespace redis \
   --create-namespace \
+  --set-string "redis-stack-server.redis_stack_server.auth.password=${_redis_pw}" \
   --wait --timeout 5m
+unset _redis_pw
 ```
 
 **Verify it is running:**
@@ -334,18 +341,37 @@ kubectl get pods -n redis
 # NAME                       READY   STATUS    RESTARTS   AGE
 # redis-stack-server-0       1/1     Running   0          60s
 
-# Quick connectivity test
-kubectl exec -n redis redis-stack-server-0 -- redis-cli ping
+# Quick connectivity test (a password is required)
+kubectl exec -n redis redis-stack-server-0 -- sh -c \
+  'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping'
 # PONG
 ```
 
 **Redis URL (in-cluster) — use this in all agents:**
 
-```
-redis://redis-stack-server.redis.svc.cluster.local:6379
+The full URL, including the password, is stored in a Kubernetes Secret. Read it from there rather than hardcoding credentials:
+
+```bash
+kubectl get secret redis-stack-server-credentials -n redis \
+  -o jsonpath='{.data.REDIS_URL}' | base64 -d
+# redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379
 ```
 
 > This URL is the single source of truth for all agent workloads connecting to Redis within the cluster.
+> Note the `default:` username — Redis 6+ rejects the `redis://:<password>@...` form with `WRONGPASS`.
+
+### Redis security notes
+
+- **Authentication is mandatory.** The chart fails to render if no password is supplied. Redis with `nopass` allows any client that can reach the port to read and modify all agent session data and to execute arbitrary Lua and JavaScript (via RedisGears) on the server.
+- **The Service is `ClusterIP`**, reachable only from inside the cluster. Do not change it to `NodePort` or `LoadBalancer` — that publishes Redis on every node IP in the 30000-32767 range. If you need external access, use `kubectl port-forward` instead.
+- **A NetworkPolicy is applied by default.** It admits any in-cluster pod unless you list namespaces. To restrict Redis to only the workloads that need it:
+
+  ```bash
+  --set "redis-stack-server.redis_stack_server.networkPolicy.allowedNamespaces={genai-gateway,agent-sandbox}"
+  ```
+
+  NetworkPolicy requires a CNI that enforces it (Calico, the default here, does).
+- **Rotate the password** by updating `redis_stack_password` in `vault.yml` and re-running the deployment; restart dependent workloads so they pick up the new Secret.
 
 ---
 

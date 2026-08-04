@@ -1,0 +1,33 @@
+{{- if .Values.redis_stack_server.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ .Values.name }}"
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: "{{ .Values.name }}"
+spec:
+  podSelector:
+    matchLabels:
+      app: "{{ .Values.name }}"
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    {{- if .Values.redis_stack_server.networkPolicy.allowedNamespaces }}
+    {{- range .Values.redis_stack_server.networkPolicy.allowedNamespaces }}
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ . | quote }}
+    {{- end }}
+    # Always allow pods in the Redis namespace itself (probes, redis-cli, backups).
+    - podSelector: {}
+    {{- else }}
+    # No allowlist configured: accept connections from any pod in the cluster.
+    # Populate `allowedNamespaces` to restrict this to specific namespaces.
+    - namespaceSelector: {}
+    {{- end }}
+    ports:
+    - protocol: TCP
+      port: {{ .Values.redis_stack_server.port }}
+{{- end }}

@@ -142,6 +142,16 @@ setup_initial_env() {
         else
             echo -e "${GREEN}vault.yml exists and contains all mandatory keys. Skipping generation...${NC}"
         fi
+
+        # ── Backfill newer, non-mandatory keys without touching existing ones ──
+        # Added after the initial release, so a pre-existing vault.yml will not
+        # have it. Append only — a full regeneration would rotate every other
+        # secret and break already-deployed components.
+        if ! grep -q '^redis_stack_password:' "$vault_file"; then
+            echo -e "${YELLOW}Adding missing redis_stack_password to vault.yml...${NC}"
+            printf 'redis_stack_password: "%s"\n' \
+                "$(openssl rand -base64 15 | tr -d '=+/' | cut -c1-20)" >> "$vault_file"
+        fi
     fi
 
     # ── Sync litellm_master_key from the live cluster if already deployed ─────

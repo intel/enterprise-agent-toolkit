@@ -7,3 +7,21 @@ redis_stack_server:
   storage_class: local-path
   storage: 1Gi
   affinity: {}
+  auth:
+    # Redis requires a password (requirepass) by default. The password is stored
+    # in the `<name>-credentials` Secret and injected via REDIS_ARGS.
+    # Required: set via --set or a custom values file. There is no default.
+    enabled: true
+    password: ""
+  service:
+    # ClusterIP keeps Redis reachable only from inside the cluster.
+    # Do NOT use NodePort/LoadBalancer: that publishes Redis on every node IP
+    # in the 30000-32767 range, where it is reachable by anything that can
+    # route to a node.
+    type: ClusterIP
+  # Restrict ingress to the namespaces/pods that actually need Redis.
+  # With an empty `allowedNamespaces`, all in-cluster pods may connect (the
+  # pre-existing behaviour); listing namespaces limits it to those only.
+  networkPolicy:
+    enabled: true
+    allowedNamespaces: []

@@ -19,6 +19,9 @@ echo "🔧 Generating secure credentials..."
 LITELLM_MASTER_KEY="sk-$(generate_hex_key 10)"
 LITELLM_SALT_KEY=$(generate_hex_key 10)
 REDIS_PASSWORD=$(generate_password 20)
+# Standalone Redis Stack (core/helm-charts/redis) — separate from the Redis
+# bundled with the GenAI Gateway, which uses REDIS_PASSWORD above.
+REDIS_STACK_PASSWORD=$(generate_password 20)
 LANGFUSE_SECRET_KEY="lf_sk_$(generate_hex_key 10)"
 LANGFUSE_PUBLIC_KEY="lf_pk_$(generate_hex_key 10)"
 POSTGRESQL_USERNAME="admin"
@@ -65,6 +68,7 @@ cat > "$VAULT_FILE" << EOF
 litellm_master_key: "$LITELLM_MASTER_KEY"
 litellm_salt_key: "$LITELLM_SALT_KEY"
 redis_password: "$REDIS_PASSWORD"
+redis_stack_password: "$REDIS_STACK_PASSWORD"
 langfuse_secret_key: "$LANGFUSE_SECRET_KEY"
 langfuse_public_key: "$LANGFUSE_PUBLIC_KEY"
 postgresql_username: "$POSTGRESQL_USERNAME"
