@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -19,7 +20,7 @@ fresh_installation() {
 
     echo "Deployment configuration: $deploy_kubernetes_fresh"
 
-    if [[  "$deploy_kubernetes_fresh" == "no" && "$deploy_ingress_controller" == "no" && "$deploy_keycloak" == "no" && "$deploy_apisix" == "no" && "$deploy_llm_models" == "no" && "$deploy_observability" == "no" && "$deploy_genai_gateway" == "no" && "$deploy_istio" == "no" && "$deploy_ceph" == "no" && "$uninstall_ceph" == "no"  && "$deploy_nri_balloon_policy" == "no" && "$deploy_agenticai_plugin" == "no" && "$deploy_finetune_plugin" == "no" && "$deploy_redis" == "no" && "$deploy_pgvector" == "no" && "${deploy_agent_sandbox:-no}" == "no" ]]; then
+    if [[  "$deploy_kubernetes_fresh" == "no" && "$deploy_ingress_controller" == "no" && "$deploy_llm_models" == "no" && "$deploy_observability" == "no" && "$deploy_genai_gateway" == "no" && "$deploy_istio" == "no" && "$deploy_ceph" == "no" && "$uninstall_ceph" == "no"  && "$deploy_nri_balloon_policy" == "no" && "$deploy_agenticai_plugin" == "no" && "$deploy_finetune_plugin" == "no" && "$deploy_redis" == "no" && "$deploy_pgvector" == "no" && "${deploy_agent_sandbox:-no}" == "no" ]]; then
 
     # Check if all deployment steps are set to "no" after getting user input
         echo "No installation or deployment steps selected. Skipping setup_initial_env..."
@@ -99,16 +100,6 @@ fresh_installation() {
                 echo "Skipping Ingress NGINX Controller deployment..."
             fi
 
-            if [[ "$deploy_keycloak" == "yes" || "$deploy_apisix" == "yes" ]]; then
-                execute_and_check "Deploying Keycloak..." run_keycloak_playbook \
-                    "Keycloak is deployed successfully." \
-                    "Failed to deploy Keycloak. Exiting."
-                execute_and_check "Deploying Keycloak TLS secret..." create_keycloak_tls_secret_playbook "$@" \
-                    "Keycloak TLS secret is deployed successfully." \
-                    "Failed to deploy Keycloak TLS secret. Exiting."
-            else
-                echo "Skipping Keycloak deployment..."
-            fi
             if [[ "$deploy_genai_gateway" == "yes" ]]; then
                 echo "successfully deploying genai gateway"
                 execute_and_check "Deploying GenAI Gateway..." run_genai_gateway_playbook \

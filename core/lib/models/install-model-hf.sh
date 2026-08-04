@@ -1,4 +1,4 @@
-
+#!/bin/bash
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -10,7 +10,7 @@ deploy_from_huggingface() {
     read_config_file "$@"        
     prompt_for_input "$@"    
     skip_check="true"
-    if [ -z "$cluster_url" ] || [ -z "$cert_file" ] || [ -z "$key_file" ] || [ -z "$keycloak_client_id" ] || [ -z "$keycloak_admin_user" ] || [ -z "$keycloak_admin_password" ] || [ -z "$hugging_face_token" ] || [ -z "$models" ]; then
+    if [ -z "$cluster_url" ] || [ -z "$cert_file" ] || [ -z "$key_file" ] || [ -z "$hugging_face_token" ] || [ -z "$models" ]; then
         echo "Some required arguments are missing. Prompting for input..."
         prompt_for_input
     fi        

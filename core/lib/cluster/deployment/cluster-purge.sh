@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -10,7 +11,6 @@ run_reset_playbook() {
         uninstall_ceph_cluster
     fi
         
-    ansible-playbook -i "${INVENTORY_PATH}" playbooks/deploy-keycloak-controller.yml --extra-vars "delete_pv_on_purge=${delete_pv_on_purge}"
     ansible-playbook -i "${INVENTORY_PATH}" playbooks/reset.yml --vault-password-file "$vault_pass_file"
     # Check the exit status of the Ansible playbook command
     if [ $? -eq 0 ]; then

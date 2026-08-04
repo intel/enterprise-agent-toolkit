@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -9,9 +10,6 @@ INVENTORY_PATH="${KUBESPRAYDIR}/inventory/mycluster/hosts.yaml"
 cluster_url=""
 cert_file=""
 key_file=""
-keycloak_client_id=""
-keycloak_admin_user=""
-keycloak_admin_password=""
 hugging_face_token=""
 models=""
 model_name_list=""
@@ -23,10 +21,7 @@ deploy_llm_models=""
 deploy_istio="no"
 deploy_nri_balloon_policy=""
 list_model_menu=""
-apisix_enabled=""
 ingress_enabled=""
-deploy_keycloak=""
-deploy_apisix=""
 delete_pv_on_purge=""
 prereq_executed=0
 vault_pass_file=""

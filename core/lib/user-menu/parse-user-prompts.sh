@@ -1,3 +1,4 @@
+#!/bin/bash
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -7,9 +8,6 @@ parse_arguments() {
             --cluster-url) cluster_url="$2"; shift ;;
             --cert-file) cert_file="$2"; shift ;;
             --key-file) key_file="$2"; shift ;;
-            --keycloak-client-id) keycloak_client_id="$2"; shift ;;
-            --keycloak-admin-user) keycloak_admin_user="$2"; shift ;;
-            --keycloak-admin-password) keycloak_admin_password="$2"; shift ;;
             --hugging-face-token) hugging_face_token="$2"; shift ;;
             --models) models="$2"; shift ;;
             --compute_platform) cpu="$2"; shift ;;
@@ -34,10 +32,6 @@ prompt_for_input() {
     else
         echo "Proceeding with the setup of Ingress Controller: $deploy_ingress_controller"
     fi
-    # Keycloak and APISIX are not used in this stack — skip prompts and default to "no"
-    deploy_keycloak="no"
-    deploy_apisix="no"
-
     if [ -z "$deploy_genai_gateway" ]; then
         read -p "Do you want to proceed with deploying GenAI Gateway? (yes/no): " deploy_genai_gateway
     else
@@ -85,23 +79,5 @@ prompt_for_input() {
     else
         echo "Using provided key file: $key_file"
     fi
-    if [ $deploy_keycloak == "yes" ]; then
-        if [ -z "$keycloak_client_id" ]; then
-            read -p "Enter the keycloak client id: " keycloak_client_id
-        else
-            echo "Using provided keycloak client id: $keycloak_client_id"
-        fi
-        if [ -z "$keycloak_admin_user" ]; then
-            read -p "Enter the Keycloak admin username: " keycloak_admin_user
-        else
-            echo "Using provided Keycloak admin username: $keycloak_admin_user"
-        fi
-        if [ -z "$keycloak_admin_password" ]; then
-            read -sp "Enter the Keycloak admin password: " keycloak_admin_password
-            echo
-        else
-            echo "Using provided Keycloak admin password"
-        fi
-    fi        
     
 }

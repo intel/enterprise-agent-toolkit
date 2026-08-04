@@ -129,7 +129,7 @@ Since your LLM models are deployed within the same Kubernetes cluster as Flowise
      - Example: `http://llama-2-7b-service.default.svc.cluster.local:8000/v1`
    - **Model Name/ID:** Your model identifier
      - Example: `meta-llama/Llama-2-7b-chat-hf`
-   - **API Key:** `sk-dummy` (use APIKey from keycloak or GenAI gateway)
+   - **API Key:** `sk-dummy` (use APIKey from GenAI gateway)
 
 **Find your deployed model services:**
 ```bash

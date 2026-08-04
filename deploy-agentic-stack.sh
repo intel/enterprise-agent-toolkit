@@ -424,7 +424,6 @@ EOF
 # ──────────────────────────────────────────────────────────────────────────────
 # WRITE agentic-config.cfg
 # Enables: K8s · Ingress · GenAI Gateway · Observability · Qwen3-Coder-30B
-# Keycloak and APISIX are explicitly excluded from this stack.
 #
 # IMPORTANT: If the file already exists, only missing keys are added.
 #            Existing values are NEVER overwritten — re-runs are safe.
@@ -710,13 +709,6 @@ _auto_skip_deployed_components() {
         success "Ingress NGINX: already deployed — skipping"
     fi
 
-    # Keycloak / APISIX — not part of this stack; force off in case they
-    # still exist in user-edited configs from a previous run.
-    # Keycloak / APISIX — not part of this stack; force off in case they
-    # still exist in user-edited configs from a previous run.
-    _cfg_turn_off "deploy_keycloak"
-    _cfg_turn_off "deploy_apisix"
-
     # GenAI Gateway (LiteLLM + Langfuse)
     if kubectl get namespace genai-gateway &>/dev/null 2>&1; then
         _cfg_turn_off "deploy_genai_gateway"
@@ -787,10 +779,6 @@ run_deployment() {
         --hugging-face-token      "${HUGGINGFACE_TOKEN}" \
         --models                  "${MODELS}" \
         --compute_platform        "cpu"
-
-    # never blocks waiting for interactive input on these.
-    deploy_keycloak="no"
-    deploy_apisix="no"
 
     # ansible-playbook uses relative paths; lib functions must run with CWD=core/
     pushd "${CORE_DIR}" > /dev/null

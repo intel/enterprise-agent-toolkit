@@ -5,7 +5,6 @@ helm_charts_base: "{{ lookup('env', 'PWD') }}/helm-charts"
 remote_home_dir: "{{ lookup('env', 'PWD') }}/scripts"
 remote_helm_charts_base: "/tmp/helm-charts"
 ingress_file: "all_models_apisix_ingres_nginx.yaml"
-keycloak_url: "https://{{ secret_name }}"
 uninstall_true: 'false'
 install_true: 'false'
 list_model_true: 'false'
@@ -17,6 +16,6 @@ hugging_face_model_remove_name: 'false'
 balloon_policy_cpu: 'None'
 huggingface_tensor_parellel_size: 'false'
 vllm_metrics_enabled: 'false'
-# Total CPUs reserved across all NUMA nodes for system components (keycloak, apisix, observability)
+# Total CPUs reserved across all NUMA nodes for system components (observability, etc.)
 # This fixed total is distributed evenly across NUMA nodes
 nri_total_reserved_cpus: 8
