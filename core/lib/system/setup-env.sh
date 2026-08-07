@@ -142,6 +142,16 @@ setup_initial_env() {
         else
             echo -e "${GREEN}vault.yml exists and contains all mandatory keys. Skipping generation...${NC}"
         fi
+
+        # ── Backfill newer, non-mandatory keys without touching existing ones ──
+        # Added after the initial release, so a pre-existing vault.yml will not
+        # have it. Append only — a full regeneration would rotate every other
+        # secret and break already-deployed components.
+        if ! grep -q '^redis_stack_password:' "$vault_file"; then
+            echo -e "${YELLOW}Adding missing redis_stack_password to vault.yml...${NC}"
+            printf 'redis_stack_password: "%s"\n' \
+                "$(openssl rand -base64 15 | tr -d '=+/' | cut -c1-20)" >> "$vault_file"
+        fi
     fi
 
     # ── Sync litellm_master_key from the live cluster if already deployed ─────
@@ -170,7 +180,7 @@ setup_initial_env() {
     fi
 
     if [ "$purge_inference_cluster" != "purging" ]; then        
-        if [[ "$deploy_llm_models" == "yes" || "$deploy_keycloak_apisix" == "yes" || "$deploy_genai_gateway" == "yes" || "$deploy_observability" == "yes" || "$deploy_logging" == "yes" || "$deploy_ceph" == "yes" || "$deploy_istio" == "yes" || "$deploy_finetune_plugin" == "yes" ]]; then
+        if [[ "$deploy_llm_models" == "yes" || "$deploy_genai_gateway" == "yes" || "$deploy_observability" == "yes" || "$deploy_logging" == "yes" || "$deploy_ceph" == "yes" || "$deploy_istio" == "yes" || "$deploy_finetune_plugin" == "yes" ]]; then
             if [ ! -s "$HOMEDIR/inventory/metadata/vault.yml" ]; then                
                 echo -e "${YELLOW}----------------------------------------------------------------------------${NC}"
                 echo -e "${YELLOW}|  NOTICE: inventory/metadata/vault.yml is empty!                           |${NC}"

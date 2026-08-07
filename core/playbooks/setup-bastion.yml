@@ -16,7 +16,7 @@
     yq_version: "v4.40.5"
     # Use current user or default to ubuntu for consistency with project
     setup_user: "{{ ansible_user | default(ansible_env.USER) | default('ubuntu') }}"
-    
+
   tasks:
     - name: Display bastion setup information
       debug:
@@ -156,7 +156,7 @@
     # Ansible Installation and Configuration
     - name: Install Ansible via pip
       pip:
-        name: 
+        name:
           - ansible
           - ansible-core
         state: present
@@ -240,7 +240,7 @@
 
     - name: Display kubeconfig status
       debug:
-        msg: 
+        msg:
           - "{{ 'Kubeconfig file found at ~/.kube/config' if kubeconfig_check.stat.exists else 'No kubeconfig file found at ~/.kube/config' }}"
           - "{{ 'Ready to connect to remote cluster' if kubeconfig_check.stat.exists else 'Kubeconfig will be provided by the deployment script' }}"
       tags: kubeconfig
@@ -361,8 +361,8 @@
         dest: /tmp/openshift-client-linux.tar.gz
         mode: '0644'
         timeout: 120
-      when: 
-        - kubeconfig_check.stat.exists 
+      when:
+        - kubeconfig_check.stat.exists
         - is_openshift is defined and is_openshift
         - oc_download is failed
       register: oc_download_fallback
@@ -452,7 +452,7 @@
 
     - name: Display kubectl connection test results
       debug:
-        msg: 
+        msg:
           - "{{ 'Successfully connected to remote cluster!' if kubectl_test is defined and kubectl_test.rc == 0 else 'Could not connect to cluster - please verify kubeconfig' }}"
           - "{{ kubectl_test.stdout_lines if kubectl_test is defined and kubectl_test.rc == 0 else kubectl_test.stderr if kubectl_test is defined else 'Kubeconfig not present - skipping connection test' }}"
       when: kubeconfig_check.stat.exists
@@ -980,8 +980,8 @@
             - name: Extract Ingress address
               set_fact:
                 ingress_address: >-
-                  {{ test_ingress_status.resources[0].status.loadBalancer.ingress[0].ip 
-                     if test_ingress_status.resources[0].status.loadBalancer.ingress[0].ip is defined 
+                  {{ test_ingress_status.resources[0].status.loadBalancer.ingress[0].ip
+                     if test_ingress_status.resources[0].status.loadBalancer.ingress[0].ip is defined
                      else test_ingress_status.resources[0].status.loadBalancer.ingress[0].hostname }}
               when: test_ingress_status is succeeded and test_ingress_status.resources[0].status.loadBalancer.ingress is defined
               tags: precheck
@@ -1070,8 +1070,8 @@
               ignore_errors: yes
               tags: precheck
 
-          when: 
-            - kubeconfig_check.stat.exists 
+          when:
+            - kubeconfig_check.stat.exists
             - cluster_info_check is defined and cluster_info_check.rc == 0
             - is_vanilla_k8s is defined and is_vanilla_k8s
 
@@ -1165,8 +1165,8 @@
               when: router_connectivity_test is defined
               tags: precheck
 
-          when: 
-            - kubeconfig_check.stat.exists 
+          when:
+            - kubeconfig_check.stat.exists
             - cluster_info_check is defined and cluster_info_check.rc == 0
             - is_openshift is defined and is_openshift
 
@@ -1314,8 +1314,8 @@
               when: alb_connectivity_test is defined
               tags: precheck
 
-          when: 
-            - kubeconfig_check.stat.exists 
+          when:
+            - kubeconfig_check.stat.exists
             - cluster_info_check is defined and cluster_info_check.rc == 0
             - detected_platform is defined and 'EKS' in detected_platform
 
@@ -1401,7 +1401,7 @@
                 regexp: '^deploy_istio='
                 line: 'deploy_istio=off'
                 create: no
-              when: 
+              when:
                 - istio_installed is defined
                 - istio_installed
               tags: precheck
@@ -1432,13 +1432,13 @@
                   - ""
                   - "Proceeding with deployment using existing Istio installation..."
                   - "========================================="
-              when: 
+              when:
                 - istio_installed is defined
                 - istio_installed
               tags: precheck
 
-          when: 
-            - kubeconfig_check.stat.exists 
+          when:
+            - kubeconfig_check.stat.exists
             - cluster_info_check is defined and cluster_info_check.rc == 0
 
         # Node Label Prechecks
@@ -1497,19 +1497,19 @@
                   CRITICAL: Missing Required Node Labels
                   ========================================
                   Required node labels for workload scheduling:
-                    - ei-infra-eligible=true (for Keycloak, APISIX, GenAI Gateway, Observability)
+                    - ei-infra-eligible=true (for GenAI Gateway, Observability)
                     - ei-inference-eligible=true (for LLM model workloads)
-                  
+
                   Current state:
                     - ei-infra-eligible=true nodes: {{ infra_nodes_check.stdout }}
                     - ei-inference-eligible=true nodes: {{ inference_nodes_check.stdout }}
-                  
+
                   Without proper labels, pods will remain in Pending state!
-                  
+
                   To add labels, run:
                     kubectl label nodes <infra-node-name> ei-infra-eligible=true
                     kubectl label nodes <inference-node-name> ei-inference-eligible=true
-                  
+
                   Or use the automated labeling playbook:
                     ansible-playbook playbooks/label-nodes.yml
                   ========================================
@@ -1642,17 +1642,17 @@
               DEPLOYMENT BLOCKED: Critical Prechecks Failed
               ========================================
               One or more critical prechecks have failed. Please review the summary above and resolve the issues before proceeding with deployment.
-              
+
               Common issues to check:
               1. Cluster API connection - verify KUBECONFIG is correct
               2. Storage classes - ensure at least one StorageClass exists
               3. Node labels - verify nodes are labeled with ei-infra-eligible=true and ei-inference-eligible=true
               4. EKS certificate ARN - verify aws_certificate_arn in agentic-config.cfg (for EKS clusters)
               5. Ingress controller - verify ingress controller or ALB controller is deployed
-              
+
               To apply node labels automatically, run:
                 ansible-playbook playbooks/label-nodes.yml
-              
+
               Cannot proceed with deployment until all critical checks pass.
               ========================================
           when: >
@@ -1682,7 +1682,7 @@
         - "export KUBECONFIG=/home/{{ setup_user }}/.kube/config"
         - "# Kubectl autocompletion"
         - "source <(kubectl completion bash)"
-        - "# Helm autocompletion" 
+        - "# Helm autocompletion"
         - "source <(helm completion bash)"
         - "# Aliases for convenience"
         - "alias k=kubectl"

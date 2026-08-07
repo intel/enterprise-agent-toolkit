@@ -39,7 +39,7 @@ Make sure to update the values in the agentic-config.cfg file according to your 
 > - The `hugging_face_token` is the token used for pulling LLM models from Hugging Face. 
 > - If `deploy_llm_models` is set to `off`, the `hugging_face_token` value will be ignored.
 > - The `cpu` value specifies whether to deploy models for CPU or Intel® AI Accelerator.
-> - If `deploy_redis` is set to `on` , Redis will be deployed which is the default memory backend, giving agents persistent session state, semantic search over past interactions, and cross-request continuity
+> - If `deploy_redis` is set to `on` , Redis will be deployed which is the default memory backend, giving agents persistent session state, semantic search over past interactions, and cross-request continuity. Redis is password-protected (credentials generated into `vault.yml` and exposed via the `redis-stack-server-credentials` Secret) and reachable only from inside the cluster — see [backend-connection-reference.md](./backend-connection-reference.md#redis-session-memory--caching).
 > - If `deploy_pgvector` is set to `on`, PostgreSQL 16 with the pgvector extension will be deployed as a vector store and long-term memory backend.
 > - If `deploy_kuberay` is set to `on`, KubeRay will be deployed to provide Ray distributed computing inside the cluster. Tuning parameters (namespace, worker replicas, CPU/memory limits, Ray image) are configured separately in `core/inventory/kuberay-config.yaml` — see [docs/kuberay.md](./kuberay.md) for the full guide.
 > - If `deploy_agent_sandbox` is set to `on`, the Agent Sandbox controller will be deployed for isolated pod-based code execution.

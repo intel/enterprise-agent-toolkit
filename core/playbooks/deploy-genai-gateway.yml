@@ -95,15 +95,6 @@
         state: absent
       when: kubernetes_platform != "eks"
       run_once: true
-    - name: Delete Ingress Resource
-      kubernetes.core.k8s:
-        state: absent
-        api_version: networking.k8s.io/v1
-        kind: Ingress
-        name: keycloak
-        namespace: default
-      run_once: true
-      ignore_errors: true
     - name: Install GenAI Gateway System
       command: >
         helm dependency update {{ remote_helm_charts_base }}/genai-gateway
@@ -160,7 +151,7 @@
       delay: 10
       failed_when: pod_status.rc != 0 and pod_status.stdout != "0"
       run_once: true
-    
+
     - name: Add GenAI Gateway Trace Repository
       command: >
         helm repo add langfuse https://langfuse.github.io/langfuse-k8s
@@ -169,7 +160,7 @@
       command: >
         helm repo update
       run_once: true
-                   
+
     - name: Create TLS secret for GenAI Gateway
       community.kubernetes.k8s:
         state: present
@@ -189,7 +180,7 @@
       debug:
         msg: "Secret trace-{{ secret_name }} created."
       run_once: true
-    
+
     - name: Create EKS ingress annotations file for GenAI Gateway Trace
       copy:
         content: |
@@ -249,7 +240,7 @@
         -f {{ remote_helm_charts_base }}/genai-gateway-trace/eks-ingress-annotations.yaml
         {% endif %}
         -f {{ remote_helm_charts_base }}/genai-gateway-trace/charts/langfuse/values.yaml
-      run_once: true            
+      run_once: true
     - name: Wait for All GenAI Gateway Trace Pods to be Ready
       shell: |
         kubectl get pods -n genai-gateway -l app.kubernetes.io/instance=genai-gateway-trace -o json | jq -r '
@@ -262,7 +253,7 @@
       delay: 10
       failed_when: pod_status.rc != 0 and pod_status.stdout != "0"
       run_once: true
-    
+
     - name: Apply Custom OpenShift Route for GenAI Gateway Trace
       kubernetes.core.k8s:
         state: present

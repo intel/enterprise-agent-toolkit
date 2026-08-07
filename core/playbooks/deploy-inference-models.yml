@@ -348,7 +348,7 @@
         - name: Apply optimized TP/PP defaults (unless user overrides)
           ansible.builtin.set_fact:
             # Cap tensor_parallel_size at 1 for single-node CPU deployments.
-            # Multi-NUMA auto-detection (e.g. 2 NUMA nodes → TP=2) causes an
+            # Multi-NUMA auto-detection (e.g. 2 NUMA nodes Ã¢â€ â€™ TP=2) causes an
             # asymmetric-NUMA crash on Xeon (shm.cpp thread_num mismatch).
             # TP > 1 requires symmetric NUMA + explicit user override via
             # huggingface_tensor_parellel_size in agentic-config.cfg.
@@ -365,197 +365,18 @@
               - "==================================================================="
               - "CPU Optimization Configuration Complete"
               - "==================================================================="
-              - "✓ CPU topology detected and analyzed"
-              - "✓ Memory calculated ({{ optimal_memory_gb | default('8') }}Gi based on available socket memory)"
-              - "✓ Optimized values prepared for helm deployment"
-              - "✓ CPU: {{ optimal_balloon_config.workload_cpus | default(8) }} cores"
-              - "✓ Memory: {{ optimal_memory_gb | default('8') }}Gi"
-              - "✓ Tensor Parallel Size: {{ optimal_balloon_config.tensor_parallel_size | default(1) }}"
-              - "✓ Pipeline Parallel Size: {{ optimal_balloon_config.pipeline_parallel_size | default(1) }}"
-              - "✓ Values will be set via --set flags during helm install"
-              - "✓ xeon-values.yaml remains unchanged (template-based)"
-              - "✓ Ready for model deployment with NRI balloon policy"
+              - "Ã¢Å“â€œ CPU topology detected and analyzed"
+              - "Ã¢Å“â€œ Memory calculated ({{ optimal_memory_gb | default('8') }}Gi based on available socket memory)"
+              - "Ã¢Å“â€œ Optimized values prepared for helm deployment"
+              - "Ã¢Å“â€œ CPU: {{ optimal_balloon_config.workload_cpus | default(8) }} cores"
+              - "Ã¢Å“â€œ Memory: {{ optimal_memory_gb | default('8') }}Gi"
+              - "Ã¢Å“â€œ Tensor Parallel Size: {{ optimal_balloon_config.tensor_parallel_size | default(1) }}"
+              - "Ã¢Å“â€œ Pipeline Parallel Size: {{ optimal_balloon_config.pipeline_parallel_size | default(1) }}"
+              - "Ã¢Å“â€œ Values will be set via --set flags during helm install"
+              - "Ã¢Å“â€œ xeon-values.yaml remains unchanged (template-based)"
+              - "Ã¢Å“â€œ Ready for model deployment with NRI balloon policy"
               - "==================================================================="
 
-    - name: Setup Environment (continued)
-      block:
-        - name: Transfer Dependency keycloak-realmcreationfile
-          ansible.builtin.copy:
-            src: "{{ remote_home_dir }}/"
-            dest: "{{ remote_helm_charts_base }}/"
-            mode: "0755"
-            owner: "{{ ansible_user }}"
-            group: "{{ ansible_user }}"
-            remote_src: no
-          tags: install-keycloak-apisix
-        - name: Ensure the script is executable
-          file:
-            path: "{{ remote_helm_charts_base }}/keycloak-realmcreation.sh"
-            mode: "0755"
-            owner: "{{ ansible_user }}"
-            group: "{{ ansible_user }}"
-          tags: install-keycloak-apisix
-        - name: Update Dependencies for Auth-Apisix on Nodes
-          ansible.builtin.command: helm dependency update "{{ remote_helm_charts_base }}/apisix-helm/"
-          register: helm_dependency_update
-          failed_when: helm_dependency_update.rc != 0
-          when: apisix_enabled == "yes"
-          tags: install-keycloak-apisix
-    - name: Fetch the keycloak client secret
-      block:
-        - name: Create ConfigMap with Keycloak realm creation script
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: keycloak-realm-script
-                namespace: default
-              data:
-                keycloak-realmcreation.sh: "{{ lookup('file', remote_home_dir + '/keycloak-realmcreation.sh') }}"
-          run_once: true
-
-        - name: Create Keycloak realm setup Job
-          kubernetes.core.k8s:
-            state: present
-            definition:
-              apiVersion: batch/v1
-              kind: Job
-              metadata:
-                name: keycloak-realm-setup-models
-                namespace: default
-              spec:
-                ttlSecondsAfterFinished: 300
-                backoffLimit: 3
-                template:
-                  metadata:
-                    name: keycloak-realm-setup
-                  spec:
-                    restartPolicy: Never
-                    containers:
-                    - name: keycloak-setup
-                      image: ubuntu:22.04
-                      env: >-
-                        {{
-                          [
-                            {'name': 'http_proxy',  'value': env_proxy.http_proxy  | default('')},
-                            {'name': 'https_proxy', 'value': env_proxy.https_proxy | default('')},
-                            {'name': 'HTTP_PROXY',  'value': env_proxy.http_proxy  | default('')},
-                            {'name': 'HTTPS_PROXY', 'value': env_proxy.https_proxy | default('')},
-                            {'name': 'no_proxy',    'value': env_proxy.no_proxy    | default('')},
-                            {'name': 'NO_PROXY',    'value': env_proxy.no_proxy    | default('')}
-                          ] if (env_proxy is defined and env_proxy.http_proxy | default('') != '') else []
-                        }}
-                      command: ["/bin/bash", "-c"]
-                      args:
-                        - |
-                          set -e
-
-                          # Install dependencies
-                          export DEBIAN_FRONTEND=noninteractive
-                          apt-get update -qq
-                          apt-get install -y -qq curl jq
-
-                          # Copy script to writable location
-                          cp /scripts/keycloak-realmcreation.sh /tmp/keycloak-realmcreation.sh
-                          chmod +x /tmp/keycloak-realmcreation.sh
-
-                          # Wait for Keycloak to be ready with retry logic
-                          MAX_RETRIES=30
-                          RETRY_DELAY=10
-                          RETRY_COUNT=0
-
-                          echo "Waiting for Keycloak to be ready..."
-                          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-                            echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Testing Keycloak authentication..."
-
-                            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                              -X POST \
-                              -d "client_id=admin-cli" \
-                              -d "username={{ keycloak_admin_user }}" \
-                              -d "password={{ keycloak_admin_password }}" \
-                              -d "grant_type=password" \
-                              http://keycloak.default.svc.cluster.local:80/realms/master/protocol/openid-connect/token)
-
-                            if [ "$HTTP_CODE" = "200" ]; then
-                              echo "Keycloak is ready and authenticated successfully"
-                              break
-                            else
-                              echo "Keycloak not ready yet (HTTP $HTTP_CODE), waiting ${RETRY_DELAY}s..."
-                              RETRY_COUNT=$((RETRY_COUNT + 1))
-                              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                                sleep $RETRY_DELAY
-                              fi
-                            fi
-                          done
-
-                          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-                            echo "ERROR: Keycloak did not become ready after $MAX_RETRIES attempts"
-                            exit 1
-                          fi
-
-                          # Additional stabilization wait
-                          echo "Waiting 15 seconds for Keycloak to stabilize..."
-                          sleep 15
-
-                          # Run the realm creation script
-                          echo "Running Keycloak realm creation script..."
-                          /tmp/keycloak-realmcreation.sh \
-                            keycloak.default.svc.cluster.local:80 \
-                            "{{ keycloak_admin_user }}" \
-                            "{{ keycloak_admin_password }}" \
-                            "{{ keycloak_client_id }}"
-                      volumeMounts:
-                      - name: scripts
-                        mountPath: /scripts
-                        readOnly: true
-                    volumes:
-                    - name: scripts
-                      configMap:
-                        name: keycloak-realm-script
-                        defaultMode: 0755
-                    tolerations:
-                      - key: node-role.kubernetes.io/control-plane
-                        operator: Exists
-                        effect: NoSchedule
-                      - key: node-role.kubernetes.io/master
-                        operator: Exists
-                        effect: NoSchedule
-          run_once: true
-
-        - name: Wait for Keycloak realm setup Job to complete
-          kubernetes.core.k8s_info:
-            kind: Job
-            namespace: default
-            name: keycloak-realm-setup-models
-          register: realm_job
-          until: >
-            realm_job.resources[0].status.succeeded is defined and
-            realm_job.resources[0].status.succeeded == 1
-          retries: 30
-          delay: 10
-          run_once: true
-
-        - name: Get Keycloak realm setup Job logs
-          command: kubectl logs job/keycloak-realm-setup-models -n default
-          register: script_output
-          run_once: true
-
-        - name: Set Keycloak client fact
-          set_fact:
-            client_secret: "{{ script_output.stdout | regex_search('Client secret: (.*)') | join('') | regex_replace('^Client secret: ') }}"
-          when: script_output.stdout is search('Client secret:')
-          run_once: true
-
-        - name: Warning when client secret not found
-          debug:
-            msg: "WARNING: Client secret was not found in the Keycloak setup job output. Please check the job logs manually."
-          when: client_secret is not defined
-          run_once: true
-      run_once: true
-      when: deploy_keycloak == 'yes'
-      tags: install-keycloak-apisix
     - name: env_proxy Contents
       debug:
         var: env_proxy
@@ -598,6 +419,24 @@
         - uninstall_true == 'true'
         - helm_release_installed.stdout != ""
 
+    - name: Check if CPU Model with Speculative Decoding is installed
+      ansible.builtin.command:
+        cmd: "helm list --filter vllm-llama-8b-specdec-cpu --short"
+      register: helm_release_installed
+      ignore_errors: true
+      run_once: true
+      tags: uninstall-cpu-llama-8b-specdec
+    - name: Uninstall CPU Model with Speculative Decoding
+      ansible.builtin.command:
+        cmd: "helm uninstall vllm-llama-8b-specdec-cpu"
+      run_once: true
+      tags: uninstall-cpu-llama-8b-specdec
+      when:
+        - model_name_list is defined
+        - "'cpu-llama-8b-specdec' in (model_name_list | regex_replace(',', ' ') | split())"
+        - uninstall_true == 'true'
+        - helm_release_installed.stdout != ""
+
 
     - name: Deploy CPU based LLM model  llama 8b
       block:
@@ -609,7 +448,6 @@
             namespace: default
             name: vllm-llama-8b-cpu-ingress
             state: absent
-          ignore_errors: yes
         - name: Delete Ingress resource Llama8b from auth-apisix namespace
           tags: install-cpu-llama-8b
           ignore_errors: yes
@@ -618,7 +456,6 @@
             namespace: auth-apisix
             name: vllm-llama-8b-cpu-ingress
             state: absent
-          ignore_errors: yes
         - name: Deploy CPU based LLM model  llama 8b Installation
           ansible.builtin.command: >-
             helm upgrade --install vllm-llama-8b-cpu "{{ remote_helm_charts_base }}/vllm"
@@ -627,7 +464,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -635,28 +472,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_llama8b
@@ -684,6 +513,85 @@
         - install_true == 'true'
         - model_name_list is defined
         - "'cpu-llama-8b' in (model_name_list | regex_replace(',', ' ') | split())"
+
+    - name: Deploy CPU based LLM model llama 8b with Speculative Decoding
+      block:
+        - name: Delete Ingress resource Llama8b specdec from default namespace
+          tags: install-cpu-llama-8b-specdec
+          ignore_errors: yes
+          kubernetes.core.k8s:
+            kind: Ingress
+            namespace: default
+            name: vllm-llama-8b-specdec-cpu-ingress
+            state: absent
+        - name: Delete Ingress resource Llama8b specdec from auth-apisix namespace
+          tags: install-cpu-llama-8b-specdec
+          ignore_errors: yes
+          kubernetes.core.k8s:
+            kind: Ingress
+            namespace: auth-apisix
+            name: vllm-llama-8b-specdec-cpu-ingress
+            state: absent
+        - name: Deploy CPU based LLM model llama 8b with Speculative Decoding Installation
+          ansible.builtin.command: >-
+            helm upgrade --install vllm-llama-8b-specdec-cpu "{{ remote_helm_charts_base }}/vllm"
+            --values "{{ xeon_values_file }}"
+            --set LLM_MODEL_ID="meta-llama/Llama-3.1-8B-Instruct"
+            --set SERVED_MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct-Specdec"
+            --set speculative.enabled=true
+            --set global.monitoring="{{ vllm_metrics_enabled }}"
+            --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
+            --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
+            --set cpu_balloon_annotation="vllm-balloon"
+            --set podLabels.name="vllm"
+            --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
+            --set memory="{{ optimal_memory_gb | default(8) }}Gi"
+            --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
+            --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
+            {% endif %}
+            {% if kubernetes_platform == 'openshift' %}
+              --set route.enabled=true
+              --set route.host={{ secret_name }}
+              --set route.tls.termination=edge
+              --set route.tls.insecureEdgeTerminationPolicy=Redirect
+              --set ingress.enabled=false
+            {% else %}
+              --set ingress.enabled=true
+              --set ingress.host={{ secret_name }}
+              --set ingress.secretname={{ secret_name }}
+              --set route.enabled=false
+              {% if kubernetes_platform == "eks" %}
+              --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
+              {% endif %}
+            {% endif %}
+            {{ helm_proxy_args | default('') }}
+          register: helm_upgrade_install_model_deployment_cpu_llama8b_specdec
+          failed_when: helm_upgrade_install_model_deployment_cpu_llama8b_specdec.rc != 0
+        - name: Register Xeon/CPU llama 8b with Speculative Decoding model
+          import_tasks: register-model-genai-gateway.yml
+          vars:
+            reg_model_name: "meta-llama/Llama-3.1-8B-Instruct-Specdec"
+            reg_litellm_model: "openai/meta-llama/Llama-3.1-8B-Instruct-Specdec"
+            reg_custom_llm_provider: "openai"
+            reg_api_base: "http://vllm-llama-8b-specdec-cpu-service.default/v1"
+            reg_input_cost_per_token: 0.001
+            reg_output_cost_per_token: 0.002
+            reg_speculative_decoding: true
+          tags:
+            - install-cpu-llama-8b-specdec
+            - install-genai-gateway
+          run_once: true
+          when:
+            - "'install-cpu-llama-8b-specdec' in ansible_run_tags"
+            - "'install-genai-gateway' in ansible_run_tags"
+      run_once: true
+      tags: install-cpu-llama-8b-specdec
+      when:
+        - cpu_playbook == 'true'
+        - install_true == 'true'
+        - model_name_list is defined
+        - "'cpu-llama-8b-specdec' in (model_name_list | regex_replace(',', ' ') | split())"
 
     - name: Check if CPU Deepseek R1 Distill Qwen 32b is installed
       ansible.builtin.command:
@@ -729,7 +637,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -737,28 +645,20 @@
             --set tensor_parallel_size={{ model_paralletensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_deepseek_qwen32b
@@ -786,7 +686,7 @@
         - cpu_playbook == 'true'
         - install_true == 'true'
         - "'cpu-deepseek-r1-distill-qwen-32b' in (model_name_list | regex_replace(',', ' ') | split())"
-    
+
     - name: Check if CPU Deepseek R1 Distill Llama 8B is installed
       ansible.builtin.command:
         cmd: "helm list --filter vllm-deepseek-r1-llama-8b-cpu --short"
@@ -830,7 +730,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -838,28 +738,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_deepseek_llama_8b
@@ -886,9 +778,6 @@
         - cpu_playbook == 'true'
         - install_true == 'true'
         - "'cpu-deepseek-r1-distill-llama8b' in (model_name_list | regex_replace(',', ' ') | split())"
-
-
-
 
     - name: Check if CPU Llama-3.2-3B is installed
       ansible.builtin.command:
@@ -934,7 +823,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -942,28 +831,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_llama3_2_3b_cpu
@@ -991,13 +872,6 @@
         - cpu_playbook == 'true'
         - install_true == 'true'
         - "'cpu-llama-3-2-3b' in (model_name_list | regex_replace(',', ' ') | split())"
-
-
-
-
-
-
-
 
     - name: Check if CPU Qwen-3-1-7B is installed
       ansible.builtin.command:
@@ -1043,7 +917,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -1051,28 +925,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_llama3_2_3b_cpu
@@ -1100,8 +966,6 @@
         - cpu_playbook == 'true'
         - install_true == 'true'
         - "'cpu-qwen3-1-7b' in (model_name_list | regex_replace(',', ' ') | split())"
-
-
 
     - name: Check if CPU Qwen-3-4B is installed
       ansible.builtin.command:
@@ -1147,7 +1011,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -1155,28 +1019,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_llama3_2_3b_cpu
@@ -1249,7 +1105,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -1257,28 +1113,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_qwen2_5_coder_7b_cpu
@@ -1325,6 +1173,24 @@
         - uninstall_true == 'true'
         - helm_release_installed.stdout != ""
 
+    - name: Check if CPU Qwen-2-5-Coder-14B with Speculative Decoding is installed
+      ansible.builtin.command:
+        cmd: "helm list --filter vllm-qwen-2-5-coder-14b-specdec-cpu --short"
+      register: helm_release_installed
+      ignore_errors: true
+      run_once: true
+      tags: uninstall-cpu-qwen2-5-coder-14b-specdec
+    - name: Uninstall Qwen-2-5-Coder-14B with Speculative Decoding
+      ansible.builtin.command:
+        cmd: "helm uninstall vllm-qwen-2-5-coder-14b-specdec-cpu"
+      run_once: true
+      tags: uninstall-cpu-qwen2-5-coder-14b-specdec
+      when:
+        - model_name_list is defined
+        - "'cpu-qwen2-5-coder-14b-specdec' in (model_name_list | regex_replace(',', ' ') | split())"
+        - uninstall_true == 'true'
+        - helm_release_installed.stdout != ""
+
     - name: Deploy CPU Qwen-2-5-Coder-14B LLM model
       block:
         - name: Delete Ingress resource Qwen-2-5-Coder-14B from default namespace
@@ -1357,7 +1223,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -1365,28 +1231,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_qwen2_5_coder_14b_cpu
@@ -1415,6 +1273,90 @@
         - install_true == 'true'
         - "'cpu-qwen2-5-coder-14b' in (model_name_list | regex_replace(',', ' ') | split())"
 
+    - name: Deploy CPU Qwen-2-5-Coder-14B with Speculative Decoding LLM model
+      block:
+        - name: Delete Ingress resource Qwen-2-5-Coder-14B specdec from default namespace
+          tags: install-cpu-qwen2-5-coder-14b-specdec
+          ignore_errors: yes
+          kubernetes.core.k8s:
+            kind: Ingress
+            namespace: default
+            name: vllm-qwen-2-5-coder-14b-specdec-cpu-ingress
+            state: absent
+        - name: Delete Ingress resource Qwen-2-5-Coder-14B specdec from auth-apisix namespace
+          tags: install-cpu-qwen2-5-coder-14b-specdec
+          ignore_errors: yes
+          kubernetes.core.k8s:
+            kind: Ingress
+            namespace: auth-apisix
+            name: vllm-cpu-qwen-2-5-coder-14b-specdec-cpu-ingress
+            state: absent
+        - name: Deploy CPU based LLM model Qwen-2-5-Coder-14B with Speculative Decoding Installation
+          ansible.builtin.command: >-
+            helm upgrade --install vllm-qwen-2-5-coder-14b-specdec-cpu "{{ remote_helm_charts_base }}/vllm"
+            --values "{{ xeon_values_file }}"
+            --set LLM_MODEL_ID="Qwen/Qwen2.5-Coder-14B-Instruct"
+            --set SERVED_MODEL_NAME="Qwen/Qwen2.5-Coder-14B-Instruct-Specdec"
+            --set speculative.enabled=true
+            --set chatTemplateConfigMap.enabled=true
+            --set clearHFLocks.enabled=true
+            --set podSecurityContext.runAsUser=0
+            --set podSecurityContext.fsGroup=0
+            --set securityContext.runAsUser=0
+            --set securityContext.runAsNonRoot=false
+            --set global.monitoring="{{ vllm_metrics_enabled }}"
+            --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
+            --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
+            --set cpu_balloon_annotation="vllm-balloon"
+            --set podLabels.name="vllm"
+            --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
+            --set memory="{{ optimal_memory_gb | default(8) }}Gi"
+            --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
+            --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
+            {% endif %}
+            {% if kubernetes_platform == 'openshift' %}
+              --set route.enabled=true
+              --set route.host={{ secret_name }}
+              --set route.tls.termination=edge
+              --set route.tls.insecureEdgeTerminationPolicy=Redirect
+              --set ingress.enabled=false
+            {% else %}
+              --set ingress.enabled=true
+              --set ingress.host={{ secret_name }}
+              --set ingress.secretname={{ secret_name }}
+              --set route.enabled=false
+              {% if kubernetes_platform == "eks" %}
+              --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
+              {% endif %}
+            {% endif %}
+            {{ helm_proxy_args | default('') }}
+          register: helm_upgrade_install_model_deployment_cpu_qwen2_5_coder_14b_specdec_cpu
+          failed_when: helm_upgrade_install_model_deployment_cpu_qwen2_5_coder_14b_specdec_cpu.rc != 0
+        - name: Register Xeon/CPU Qwen-2-5-Coder-14B with Speculative Decoding model
+          import_tasks: register-model-genai-gateway.yml
+          vars:
+            reg_model_name: "Qwen/Qwen2.5-Coder-14B-Instruct-Specdec"
+            reg_litellm_model: "openai/Qwen/Qwen2.5-Coder-14B-Instruct-Specdec"
+            reg_custom_llm_provider: "openai"
+            reg_api_base: "http://vllm-qwen-2-5-coder-14b-specdec-cpu-service.default/v1"
+            reg_input_cost_per_token: 0.001
+            reg_output_cost_per_token: 0.002
+          tags:
+            - install-cpu-qwen2-5-coder-14b-specdec
+            - install-genai-gateway
+          run_once: true
+          when:
+            - "'install-cpu-qwen2-5-coder-14b-specdec' in ansible_run_tags"
+            - "'install-genai-gateway' in ansible_run_tags"
+      run_once: true
+      tags: install-cpu-qwen2-5-coder-14b-specdec
+      when:
+        - model_name_list is defined
+        - cpu_playbook == 'true'
+        - install_true == 'true'
+        - "'cpu-qwen2-5-coder-14b-specdec' in (model_name_list | regex_replace(',', ' ') | split())"
+
     - name: Check if CPU Qwen3-Coder-30B is installed
       ansible.builtin.command:
         cmd: "helm list --filter vllm-qwen3-coder-30b-cpu --short"
@@ -1430,6 +1372,24 @@
       when:
         - model_name_list is defined
         - "'cpu-qwen3-coder-30b' in (model_name_list | regex_replace(',', ' ') | split())"
+        - uninstall_true == 'true'
+        - helm_release_installed.stdout != ""
+
+    - name: Check if CPU Qwen3-Coder-30B with Speculative Decoding is installed
+      ansible.builtin.command:
+        cmd: "helm list --filter vllm-qwen3-coder-30b-specdec-cpu --short"
+      register: helm_release_installed
+      ignore_errors: true
+      run_once: true
+      tags: uninstall-cpu-qwen3-coder-30b-specdec
+    - name: Uninstall Qwen3-Coder-30B with Speculative Decoding
+      ansible.builtin.command:
+        cmd: "helm uninstall vllm-qwen3-coder-30b-specdec-cpu"
+      run_once: true
+      tags: uninstall-cpu-qwen3-coder-30b-specdec
+      when:
+        - model_name_list is defined
+        - "'cpu-qwen3-coder-30b-specdec' in (model_name_list | regex_replace(',', ' ') | split())"
         - uninstall_true == 'true'
         - helm_release_installed.stdout != ""
 
@@ -1466,7 +1426,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -1474,28 +1434,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_qwen3_coder_30b_cpu
@@ -1523,6 +1475,92 @@
         - cpu_playbook == 'true'
         - install_true == 'true'
         - "'cpu-qwen3-coder-30b' in (model_name_list | regex_replace(',', ' ') | split())"
+
+    - name: Deploy CPU Qwen3-Coder-30B with Speculative Decoding LLM model
+      block:
+        - name: Delete Ingress resource Qwen3-Coder-30B specdec from default namespace
+          tags: install-cpu-qwen3-coder-30b-specdec
+          ignore_errors: yes
+          kubernetes.core.k8s:
+            kind: Ingress
+            namespace: default
+            name: vllm-qwen3-coder-30b-specdec-cpu-ingress
+            state: absent
+        - name: Delete Ingress resource Qwen3-Coder-30B specdec from auth-apisix namespace
+          tags: install-cpu-qwen3-coder-30b-specdec
+          ignore_errors: yes
+          kubernetes.core.k8s:
+            kind: Ingress
+            namespace: auth-apisix
+            name: vllm-cpu-qwen3-coder-30b-specdec-cpu-ingress
+            state: absent
+        - name: Deploy CPU based LLM model Qwen3-Coder-30B with Speculative Decoding Installation
+          ansible.builtin.command: >-
+            helm upgrade --install vllm-qwen3-coder-30b-specdec-cpu "{{ remote_helm_charts_base }}/vllm"
+            --values "{{ xeon_values_file }}"
+            --set LLM_MODEL_ID="Qwen/Qwen3-Coder-30B-A3B-Instruct"
+            --set SERVED_MODEL_NAME="Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec"
+            --set speculative.enabled=true
+            --set chatTemplateConfigMap.enabled=true
+            --set hostIPC=true
+            --set clearHFLocks.enabled=true
+            --set podSecurityContext.runAsUser=0
+            --set podSecurityContext.fsGroup=0
+            --set securityContext.runAsUser=0
+            --set securityContext.runAsNonRoot=false
+            --set global.monitoring="{{ vllm_metrics_enabled }}"
+            --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
+            --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
+            --set cpu_balloon_annotation="vllm-balloon"
+            --set podLabels.name="vllm"
+            --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
+            --set memory="{{ optimal_memory_gb | default(8) }}Gi"
+            --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
+            --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
+            {% endif %}
+            {% if kubernetes_platform == 'openshift' %}
+              --set route.enabled=true
+              --set route.host={{ secret_name }}
+              --set route.tls.termination=edge
+              --set route.tls.insecureEdgeTerminationPolicy=Redirect
+              --set ingress.enabled=false
+            {% else %}
+              --set ingress.enabled=true
+              --set ingress.host={{ secret_name }}
+              --set ingress.secretname={{ secret_name }}
+              --set route.enabled=false
+              {% if kubernetes_platform == "eks" %}
+              --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
+              {% endif %}
+            {% endif %}
+            {{ helm_proxy_args | default('') }}
+          register: helm_upgrade_install_model_deployment_cpu_qwen3_coder_30b_specdec_cpu
+          failed_when: helm_upgrade_install_model_deployment_cpu_qwen3_coder_30b_specdec_cpu.rc != 0
+        - name: Register Xeon/CPU Qwen3-Coder-30B with Speculative Decoding model
+          import_tasks: register-model-genai-gateway.yml
+          vars:
+            reg_model_name: "Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec"
+            reg_litellm_model: "hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec"
+            reg_custom_llm_provider: "hosted_vllm"
+            reg_api_base: "http://vllm-qwen3-coder-30b-specdec-cpu-service.default/v1"
+            reg_input_cost_per_token: 0.001
+            reg_output_cost_per_token: 0.002
+            reg_speculative_decoding: true
+          tags:
+            - install-cpu-qwen3-coder-30b-specdec
+            - install-genai-gateway
+          run_once: true
+          when:
+            - "'install-cpu-qwen3-coder-30b-specdec' in ansible_run_tags"
+            - "'install-genai-gateway' in ansible_run_tags"
+      run_once: true
+      tags: install-cpu-qwen3-coder-30b-specdec
+      when:
+        - model_name_list is defined
+        - cpu_playbook == 'true'
+        - install_true == 'true'
+        - "'cpu-qwen3-coder-30b-specdec' in (model_name_list | regex_replace(',', ' ') | split())"
 
 
     - name: Check if CPU vllm-whisper-small Model is deployed
@@ -1569,7 +1607,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -1577,28 +1615,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_whisper_small
@@ -1670,28 +1700,20 @@
             --set EMBEDDING_MODEL_ID="BAAI/bge-base-en-v1.5"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
             --set tensor_parallel_size=1
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             --set teirerank.namespace=default
             {{ helm_proxy_args | default('') }}
@@ -1766,28 +1788,20 @@
             --set RERANK_MODEL_ID="BAAI/bge-reranker-base"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
             --set tensor_parallel_size=1
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             --set teirerank.namespace=default
             {{ helm_proxy_args | default('') }}
@@ -1865,7 +1879,7 @@
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(48) }}"
@@ -1873,28 +1887,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_qwen3_30b_a3b
@@ -1964,10 +1970,12 @@
             helm upgrade --install vllm-gemma4-26b-a4b-cpu "{{ remote_helm_charts_base }}/vllm"
             --values "{{ xeon_values_file }}"
             --set LLM_MODEL_ID="google/gemma-4-26B-A4B-it"
+            --set chatTemplateConfigMap.enabled=true
+            --set hostIPC=true
             --set global.monitoring="{{ vllm_metrics_enabled }}"
             --set svcmonitor.enabled="{{ vllm_metrics_enabled }}"
             --set global.HUGGINGFACEHUB_API_TOKEN={{ hugging_face_token }}
-            {% if cpu_playbook == 'true' %}
+            {% if cpu_playbook == 'true' and balloon_policy_cpu == 'enabled' %}
             --set cpu_balloon_annotation="vllm-balloon"
             --set podLabels.name="vllm"
             --set cpu="{{ optimal_balloon_config.workload_cpus | default(8) }}"
@@ -1975,28 +1983,20 @@
             --set tensor_parallel_size={{ tensor_parallel_size | default(1) }}
             --set pipeline_parallel_size={{ pipeline_parallel_size | default(1) }}
             {% endif %}
-            {% if apisix_enabled %}
-              --set apisix.enabled={{ apisix_enabled }}
-              --set platform={{ kubernetes_platform }}
-            {% endif %}
             {% if kubernetes_platform == 'openshift' %}
               --set route.enabled=true
               --set route.host={{ secret_name }}
               --set route.tls.termination=edge
               --set route.tls.insecureEdgeTerminationPolicy=Redirect
               --set ingress.enabled=false
-            {% elif ingress_enabled %}
-              --set ingress.enabled={{ ingress_enabled }}
+            {% else %}
+              --set ingress.enabled=true
               --set ingress.host={{ secret_name }}
               --set ingress.secretname={{ secret_name }}
               --set route.enabled=false
               {% if kubernetes_platform == "eks" %}
               --set aws_certificate_arn={{ aws_certificate_arn | default('') }}
               {% endif %}
-            {% endif %}
-            {% if deploy_keycloak == 'yes' and apisix_enabled %}
-              --set oidc.client_id={{ keycloak_client_id | default('') }}
-              --set oidc.client_secret={{ client_secret | default('') }}
             {% endif %}
             {{ helm_proxy_args | default('') }}
           register: helm_upgrade_install_model_deployment_cpu_gemma4_26b

@@ -6,13 +6,27 @@ All shared backends are deployed into their own namespaces and are reachable fro
 
 | Instance | Kubernetes Service | URL | Scope |
 |---|---|---|---|
-| **Redis Stack** (`deploy_redis=on`) | `redis-stack-server.redis.svc.cluster.local:6379` | `redis://redis-stack-server.redis.svc.cluster.local:6379` | All namespaces |
+| **Redis Stack** (`deploy_redis=on`) | `redis-stack-server.redis.svc.cluster.local:6379` (ClusterIP) | `redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379` | All namespaces (in-cluster only) |
+
+Redis requires a password. The credentials and the full URL are stored in the `redis-stack-server-credentials` Secret:
 
 ```bash
+# Full connection URL (preferred — do not hardcode the password)
+kubectl get secret redis-stack-server-credentials -n redis \
+  -o jsonpath='{.data.REDIS_URL}' | base64 -d
+
+# Password only
+kubectl get secret redis-stack-server-credentials -n redis \
+  -o jsonpath='{.data.REDIS_PASSWORD}' | base64 -d
+
 # Quick connectivity test
-kubectl exec -n redis redis-stack-server-0 -- redis-cli ping
+kubectl exec -n redis redis-stack-server-0 -- sh -c \
+  'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning ping'
 # PONG
 ```
+
+> The `default:` username in the URL is required — Redis 6+ rejects the `redis://:<password>@...` form with `WRONGPASS`.
+> The Service is `ClusterIP` and a NetworkPolicy is applied; Redis is not reachable from outside the cluster. Use `kubectl port-forward` for local access instead of changing the Service type.
 
 ## Agent Sandbox (Sandboxed Execution)
 

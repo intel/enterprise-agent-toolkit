@@ -133,7 +133,7 @@ server:
   grpcPort: 8080
   # REST API port (internal container port)
   restPort: 8081
-  
+
   # Liveness probe configuration
   livenessProbe:
     enabled: true
@@ -144,7 +144,7 @@ server:
     periodSeconds: 30
     timeoutSeconds: 10
     failureThreshold: 3
-  
+
   # Readiness probe configuration
   readinessProbe:
     enabled: true
@@ -155,7 +155,7 @@ server:
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 5
-  
+
   # Extra arguments to pass to OVMS
   extraArgs: []
 
@@ -175,8 +175,8 @@ oidc:
   realm: master
   clientId: "my-client-id" # Replace with your client ID
   clientSecret: "tf29wNR5fZ7edbNmnLSWDEvL7Simx4CR" # Replace with your client secret
-  discovery: "http://keycloak.default.svc.cluster.local/realms/master/.well-known/openid-configuration"
-  introspectionEndpoint: "http://keycloak.default.svc.cluster.local/realms/master/protocol/openid-connect/token/introspect"
+  discovery: ""
+  introspectionEndpoint: ""
 
 # APISIX Route configuration
 apisixRoute:

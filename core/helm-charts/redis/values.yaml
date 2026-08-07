@@ -3,9 +3,15 @@
 # Standalone Redis Stack — shared memory backend for agentic workloads
 #
 # Deployed into the `redis` namespace as a single instance with RediSearch.
-# After deployment the in-cluster URL is:
+# Access requires a password, and the Service is ClusterIP — reachable only
+# from inside the cluster. After deployment the in-cluster URL is:
 #
-#   redis://redis.redis.svc.cluster.local:6379
+#   redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379
+#
+# The password and the full URL are stored in a Kubernetes Secret:
+#
+#   kubectl get secret redis-stack-server-credentials -n redis \
+#     -o jsonpath='{.data.REDIS_URL}' | base64 -d
 #
 # ---------------------------------------------------------------------------
 
@@ -14,6 +20,18 @@ redis:
     # Must match an existing StorageClass; this cluster uses local-path (provided by Kubespray).
     storage_class: local-path
     storage: 4Gi
+    auth:
+      # Required: set via --set or a custom values file. Do not use defaults in
+      # production. deploy_redis_controller reads this from vault.yml.
+      enabled: true
+      password: ""
+    service:
+      # Keep this ClusterIP. NodePort would publish Redis on every node IP.
+      type: ClusterIP
+    networkPolicy:
+      enabled: true
+      # Empty = any in-cluster pod may connect. List namespaces to restrict.
+      allowedNamespaces: []
     affinity:
       nodeAffinity:
         requiredDuringSchedulingIgnoredDuringExecution:

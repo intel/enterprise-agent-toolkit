@@ -9,7 +9,7 @@ spec:
   ports:
   - port: {{ .Values.redis_stack_server.port }}
     name: db
-  type: NodePort
+  type: {{ .Values.redis_stack_server.service.type }}
   selector:
     app: "{{ .Values.name }}"
 ---
@@ -52,6 +52,17 @@ spec:
         ports:
         - containerPort: {{ .Values.redis_stack_server.port }}
           name: db
+        {{- if .Values.redis_stack_server.auth.enabled }}
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: "{{ .Values.name }}-credentials"
+              key: REDIS_PASSWORD
+        # redis-stack-server appends REDIS_ARGS to the redis-server command line.
+        - name: REDIS_ARGS
+          value: "--requirepass $(REDIS_PASSWORD)"
+        {{- end }}
         volumeMounts:
         - name: db
           mountPath: /data
