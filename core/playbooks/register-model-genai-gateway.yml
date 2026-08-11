@@ -57,10 +57,12 @@
                         "api_key": "none",
                         "api_base": "{{ reg_api_base }}",
                         "input_cost_per_token": {{ reg_input_cost_per_token }},
-                        "output_cost_per_token": {{ reg_output_cost_per_token }}
+                        "output_cost_per_token": {{ reg_output_cost_per_token }}{{ ',' if reg_speculative_decoding is defined and reg_speculative_decoding }}
+                        {{ '"supports_speculative_decoding": true' if reg_speculative_decoding is defined and reg_speculative_decoding else '' }}
                       },
                       "model_info": {
-                        "mode": "{{ reg_model_mode | default('chat') }}"
+                        "mode": "{{ reg_model_mode | default('chat') }}"{{ ',' if reg_speculative_decoding is defined and reg_speculative_decoding }}
+                        {{ '"speculative_decoding": true' if reg_speculative_decoding is defined and reg_speculative_decoding else '' }}
                       }
                     }' \
                     "http://genai-gateway-service.genai-gateway.svc.cluster.local:4000/model/new")

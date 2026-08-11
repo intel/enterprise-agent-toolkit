@@ -1,0 +1,21 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# Agent Sandbox configuration
+agent_sandbox_namespace: "agent-sandbox-system"
+agent_sandbox_release_name: "agent-sandbox"
+helm_charts_base_agent_sandbox: "{{ lookup('env', 'PWD') }}/helm-charts/agent-sandbox"
+
+# Published images (no local builds needed)
+# Controller image is included in the upstream manifest at registry.k8s.io/agent-sandbox/agent-sandbox-controller:{{ agent_sandbox_version }}
+sandbox_router_image: "us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/sandbox-router:latest-main"  # Staging only
+python_runtime_sandbox_image: "registry.k8s.io/agent-sandbox/python-runtime-sandbox:{{ agent_sandbox_version }}"  # Production
+
+# Official release URLs (no git clone needed)
+agent_sandbox_core_manifest_url: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/{{ agent_sandbox_version }}/manifest.yaml"
+agent_sandbox_extensions_manifest_url: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/{{ agent_sandbox_version }}/extensions.yaml"
+agent_sandbox_router_manifest_url: "https://raw.githubusercontent.com/kubernetes-sigs/agent-sandbox/{{ agent_sandbox_version }}/clients/python/agentic-sandbox-client/sandbox-router/sandbox_router.yaml"
+
+# Default warm pool for python-sandbox-template
+agent_sandbox_python_warm_pool_name: "python-pool"
+agent_sandbox_python_warm_pool_size: 5

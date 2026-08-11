@@ -12,4 +12,6 @@ data:
 {{ .Files.Get "files/tool_chat_template_qwen3coder.jinja" | indent 4 }}
   tool_chat_template_hermes.jinja: |-
 {{ .Files.Get "files/tool_chat_template_hermes.jinja" | indent 4 }}
+  tool_chat_template_gemma4.jinja: |-
+{{ .Files.Get "files/tool_chat_template_gemma4.jinja" | indent 4 }}
 {{- end }}

@@ -22,11 +22,11 @@
 # To extend with warm pools, create a SandboxWarmPool CR referencing this
 # template after the controller is running.
 # ---------------------------------------------------------------------------
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
-  namespace: agent-sandbox
+  namespace: agent-sandbox-system
   labels:
     app.kubernetes.io/managed-by: agentic-ai-stack
 spec:

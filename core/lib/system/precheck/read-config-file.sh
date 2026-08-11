@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -60,20 +61,27 @@ read_config_file() {
         # Includes namespace-level wildcards (.default, .genai-gateway, etc.) to cover
         # short-form service DNS names (e.g. vllm-service.default) in addition to
         # fully-qualified names (e.g. vllm-service.default.svc.cluster.local).
-        # Node's own primary IP — kubectl talks to the local apiserver at
-        # https://<node-ip>:6443; without this the corporate proxy intercepts it
-        # and returns 403 Forbidden (breaks "Apply Calico CNI" and other kubectl tasks).
-        local _node_ip; _node_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-        # Cluster CIDRs: 10.96.0.0/12 (service) + 192.168.0.0/16 (pod) keep
-        # in-cluster pod/service traffic off the corporate proxy.
-        # These MUST match the --service-cidr / --pod-network-cidr passed to
-        # `kubeadm init` in core/playbooks/cluster.yml — keep in sync if changed there.
-        local _k8s_no_proxy=".svc,.svc.cluster.local,.default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.flowise,169.254.0.0/16,10.96.0.0/12,192.168.0.0/16${_node_ip:+,${_node_ip}}${cluster_url:+,${cluster_url}}"
+        # Mandatory cluster entries (loopback, apiserver IP, service/pod CIDRs,
+        # svc suffixes, node IP) are derived from kubespray's live k8s-cluster.yml
+        # by _build_k8s_no_proxy(), defined in lib/system/setup-env.sh which is
+        # sourced before this file. These are added unconditionally and can never
+        # be lost if a user trims no_proxy in agentic-config.cfg.
+        local _k8s_base; _k8s_base="$(_build_k8s_no_proxy)"
+        # Namespace-level wildcards cover short-form service DNS names
+        # (e.g. vllm-service.default) in addition to fully-qualified ones.
+        local _ns_suffixes=".default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.flowise"
+        local _k8s_no_proxy="${_k8s_base},${_ns_suffixes}${cluster_url:+,${cluster_url}}"
         if [[ -n "${no_proxy:-}" ]]; then
             no_proxy="${no_proxy},${_k8s_no_proxy}"
         else
             no_proxy="${_k8s_no_proxy}"
         fi
+        # De-duplicate while preserving order. This function runs on every
+        # invocation (and read_config_file is called from many entry points), so
+        # without this the list grows with repeated entries on each re-run.
+        no_proxy="$(echo "${no_proxy}" | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | awk 'NF && !seen[$0]++' | paste -sd, -)"
         # Also write the updated no_proxy back to all.yml — BOTH nested (under
         # env_proxy:) AND top-level. http_proxy/https_proxy above are written
         # top-level too; no_proxy was previously ONLY nested, so the bare Ansible

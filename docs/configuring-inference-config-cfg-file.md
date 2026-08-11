@@ -32,7 +32,7 @@ Make sure to update the values in the agentic-config.cfg file according to your 
 > - If `deploy_kubernetes_fresh` is set to `on`, a fresh Kubernetes cluster will be initialized as per the deployment configuration.
 > - If `deploy_ingress_controller` is set to `on`, ingress controller will be configured to route external traffic to the cluster
 > - If `deploy_genai_gateway` is set to `on`, the GenAI Gateway will be deployed.
-> - If `deploy_observability` is set to `on`, the observability stack will be deployed for monitoring.
+> - If `deploy_observability` is set to `on`, the Langfuse LLM tracing stack will be deployed.
 > - If `deploy_llm_models` is set to `on`, the selected models will be deployed for inferencing
 > - The `cert_file` and `key_file` paths should be set according to the instructions for generating certificates for development and production environments, as documented.
 > - The `models` value corresponds to the pre-validated LLM models listed in the documentation.

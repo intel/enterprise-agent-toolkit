@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -232,6 +233,63 @@ install_ansible_collection() {
 }
 
 # ---------------------------------------------------------------------------
+# _build_k8s_no_proxy
+#
+# Returns the set of NO_PROXY entries that MUST always be present for a
+# Kubernetes cluster to function behind a corporate proxy.
+#
+# This mirrors kubespray's own canonical formula, defined in
+#   roles/kubespray-defaults/tasks/no_proxy.yml
+#     127.0.0.1,localhost,{{ kube_service_addresses }},{{ kube_pods_subnet }},svc,svc.{{ dns_domain }}
+#
+# Kubespray builds that list at runtime, but only for playbooks that include
+# the kubespray-defaults role.  Our own playbooks (label-nodes.yml,
+# deploy-*.yml) use the static env_proxy from inventory/metadata/all.yml
+# instead, so the same guarantees have to be reproduced here.
+#
+# Values are read from kubespray's live k8s-cluster.yml — the single source of
+# truth — rather than hardcoded, so NO_PROXY can never drift from the actual
+# cluster networking.  Falls back to kubespray defaults when the file does not
+# exist yet (first run, before kubespray has been cloned).
+#
+# Entries beyond kubespray's formula, and why each is required:
+#   127.0.0.0/8, ::1  - the kubernetes Python SDK (kubernetes.core.k8s* modules)
+#                       dials the apiserver by IP literal (https://127.0.0.1:6443);
+#                       NO_PROXY hostname entries such as "localhost" do NOT
+#                       match IP literals, so the proxy returns 403 Forbidden.
+#   <svc-cidr>.1      - the apiserver ClusterIP that Calico's CNI plugin calls.
+#   .svc/.<domain>    - dotted forms, matched by Go/Python proxy libs which
+#                       require a leading dot for suffix matching.
+#   169.254.0.0/16    - link-local (cloud metadata, kubelet local endpoints).
+# ---------------------------------------------------------------------------
+_build_k8s_no_proxy() {
+    local _f="${KUBESPRAYDIR}/inventory/mycluster/group_vars/k8s_cluster/k8s-cluster.yml"
+    local _svc="" _pod="" _domain=""
+    if [[ -f "${_f}" ]]; then
+        _svc=$(grep -E '^kube_service_addresses:' "${_f}" 2>/dev/null | awk '{print $2}' | tr -d "\"'")
+        _pod=$(grep -E '^kube_pods_subnet:'       "${_f}" 2>/dev/null | awk '{print $2}' | tr -d "\"'")
+        # dns_domain is normally "{{ cluster_name }}" — resolve that indirection
+        _domain=$(grep -E '^dns_domain:'          "${_f}" 2>/dev/null | awk '{print $2}' | tr -d "\"'")
+        if [[ "${_domain}" == *'{{'* || -z "${_domain}" ]]; then
+            _domain=$(grep -E '^cluster_name:'    "${_f}" 2>/dev/null | awk '{print $2}' | tr -d "\"'")
+        fi
+    fi
+    # Kubespray defaults
+    _svc="${_svc:-10.233.0.0/18}"
+    _pod="${_pod:-10.233.64.0/18}"
+    _domain="${_domain:-cluster.local}"
+
+    # Apiserver ClusterIP = first usable address (.1) of the service CIDR
+    local _api; _api=$(echo "${_svc}" | sed 's|/.*||' | awk -F. '{print $1"."$2"."$3".1"}')
+
+    # Node's own primary IP — kubectl/helm talk to the local apiserver at
+    # https://<node-ip>:6443 and must bypass the proxy.
+    local _node_ip; _node_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+
+    echo "127.0.0.1,127.0.0.0/8,::1,localhost,${_api},${_svc},${_pod},svc,svc.${_domain},.svc,.svc.${_domain},169.254.0.0/16${_node_ip:+,${_node_ip}}"
+}
+
+# ---------------------------------------------------------------------------
 # setup_kernel_and_containerd
 #
 # Fixes the three kubeadm preflight failures seen on fresh machines:
@@ -325,11 +383,10 @@ EOF
     local _https_proxy="${https_proxy:-${HTTPS_PROXY:-}}"
     local _no_proxy="${no_proxy:-${NO_PROXY:-}}"
 
-    # Always ensure k8s service CIDR (10.96.0.0/12), pod CIDR (192.168.0.0/16),
-    # and the service cluster IP (10.96.0.1) are excluded from proxy so that the
-    # Calico CNI binary (which inherits containerd's env) never proxies traffic to
-    # the k8s API server — a proxied TLS connection causes x509 IP SAN failures.
-    local _k8s_noproxy="10.96.0.1,10.96.0.0/12,192.168.0.0/16"
+    # Derive the mandatory k8s NO_PROXY set from kubespray's live config so it
+    # always matches actual cluster networking — prevents Calico CNI from routing
+    # API-server traffic through the corporate proxy (x509 IP SAN failure).
+    local _k8s_noproxy; _k8s_noproxy="$(_build_k8s_no_proxy)"
 
     if [[ -n "${_no_proxy}" ]]; then
         _no_proxy="${_no_proxy},${_k8s_noproxy}"
@@ -373,28 +430,4 @@ EOF
         sudo systemctl enable --now containerd
     fi
 
-    # ── Configure containerd proxy so image pulls (registry.k8s.io) work ──────
-    # containerd is installed via apt above (not Kubespray's containerd role), so
-    # it has NO proxy env. Behind a corporate proxy, kubeadm init's preflight image
-    # pulls fail with "dial tcp ... i/o timeout". Apply the drop-in unconditionally
-    # so the re-run case (containerd already running, install block skipped) is
-    # also covered.
-    if [[ -n "${http_proxy:-}" || -n "${https_proxy:-}" ]]; then
-        echo "Configuring containerd proxy (systemd drop-in)..."
-        # Cluster-internal traffic must bypass the proxy: service CIDR + pod CIDR
-        # (the CIDRs kubeadm init uses), plus whatever no_proxy already carries.
-        # These MUST match the --service-cidr / --pod-network-cidr passed to
-        # `kubeadm init` in core/playbooks/cluster.yml — keep in sync if changed there.
-        local _ctr_no_proxy="${no_proxy:-localhost,127.0.0.1},10.96.0.0/12,192.168.0.0/16"
-        sudo mkdir -p /etc/systemd/system/containerd.service.d
-        sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf > /dev/null <<EOF
-[Service]
-Environment="HTTP_PROXY=${http_proxy:-${https_proxy}}"
-Environment="HTTPS_PROXY=${https_proxy:-${http_proxy}}"
-Environment="NO_PROXY=${_ctr_no_proxy}"
-EOF
-        sudo systemctl daemon-reload
-        sudo systemctl restart containerd
-        echo -e "${GREEN}containerd proxy configured.${NC}"
-    fi
 }

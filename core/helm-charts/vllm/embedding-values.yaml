@@ -7,7 +7,7 @@ port: 2081
 
 image:
   repository: vllm/vllm-openai-cpu
-  tag: "v0.23.0"
+  tag: "v0.24.0"
   pullPolicy: IfNotPresent
 
 pvc:
@@ -50,8 +50,6 @@ affinity:
         - key: ei-inference-eligible
           operator: In
           values: ["true"]
-        - key: node-role.kubernetes.io/control-plane
-          operator: DoesNotExist
 
 global:
   HUGGINGFACEHUB_API_TOKEN: ""

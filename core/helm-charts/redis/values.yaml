@@ -15,10 +15,11 @@
 #
 # ---------------------------------------------------------------------------
 
-redis:
+redis-stack-server:
   redis_stack_server:
-    # Must match an existing StorageClass; this cluster uses local-path (provided by Kubespray).
-    storage_class: local-path
+    # Leave storage_class empty to use the cluster's default StorageClass automatically.
+    # Override via --set "redis-stack-server.redis_stack_server.storage_class=<name>" if needed.
+    storage_class: ""
     storage: 4Gi
     auth:
       # Required: set via --set or a custom values file. Do not use defaults in

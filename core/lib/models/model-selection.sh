@@ -31,9 +31,12 @@ model_selection(){
                         echo "24. BAAI/bge-reranker-base (Reranker)"
                         echo "25. Qwen/Qwen3-30B-A3B-Instruct-2507"
                         echo "26. google/gemma-4-26B-A4B-it"
+                        echo "27. meta-llama/Llama-3.1-8B-Instruct"
+                        echo "28. meta-llama/Llama-3.1-8B-Instruct (Speculative Decoding)"
+                        echo "29. Qwen/Qwen3-Coder-30B-A3B-Instruct (Speculative Decoding)"
                         read -p "Enter the number of the CPU model you want to deploy/remove: " cpu_model
                         # Validate input
-                        if ! [[  "$cpu_model" =~ ^(21|22|23|24|25|26)$ ]]; then
+                        if ! [[  "$cpu_model" =~ ^(21|22|23|24|25|26|27|28|29)$ ]]; then
                             echo "Error: Invalid model selected ($cpu_model). Exiting." >&2
                             exit 1
                         fi
@@ -88,7 +91,16 @@ get_model_names() {
             26)
                 model_names+=("cpu-gemma4-26b-a4b")
                 ;;
-            "cpu-llama-8b"|"cpu-qwen3-coder-30b"|"cpu-qwen2-5-coder-14b"|"cpu-whisper-small"|"cpu-bge-base-en"|"cpu-bge-reranker-base"|"cpu-qwen3-30b-a3b"|"cpu-gemma4-26b-a4b")
+            27)
+                model_names+=("cpu-llama-8b")
+                ;;
+            28)
+                model_names+=("cpu-llama-8b-specdec")
+                ;;
+            29)
+                model_names+=("cpu-qwen3-coder-30b-specdec")
+                ;;
+            "cpu-llama-8b"|"cpu-qwen3-coder-30b"|"cpu-qwen2-5-coder-14b"|"cpu-whisper-small"|"cpu-bge-base-en"|"cpu-bge-reranker-base"|"cpu-qwen3-30b-a3b"|"cpu-gemma4-26b-a4b"|"cpu-llama-8b-specdec"|"cpu-qwen3-coder-30b-specdec"|"cpu-qwen2-5-coder-14b-specdec")
                 model_names+=("$model")
                 ;;
             *)

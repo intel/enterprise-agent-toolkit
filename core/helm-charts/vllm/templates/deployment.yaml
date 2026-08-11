@@ -162,6 +162,12 @@ spec:
             - "--pipeline-parallel-size"
             - {{ .Values.pipeline_parallel_size | default (index .Values.modelConfigs $modelName | default dict).pipeline_parallel_size | default .Values.defaultModelConfigs.pipeline_parallel_size | quote}}
             {{- end }}
+            {{- if and .Values.speculative .Values.speculative.enabled }}
+            {{- if $modelConfig.speculativeConfig }}
+            - "--speculative_config"
+            - {{ $modelConfig.speculativeConfig | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.finetune.enabled }}
             - "--trust-remote-code"
             - "--tokenizer-mode"

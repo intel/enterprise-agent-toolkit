@@ -8,8 +8,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Usage:
-#   ./deploy-agentic-stack.sh        # Deploy full base stack
-#   ./deploy-agentic-stack.sh --menu # Interactive cluster management menu
+#   ./deploy-agentic-stack.sh                        # Deploy full base stack
+#   ./deploy-agentic-stack.sh --menu                 # Interactive cluster management menu
 #
 # Target: Single Ubuntu node (this machine)
 # =============================================================================
@@ -51,15 +51,46 @@ fi
 # ──────────────────────────────────────────────────────────────────────────────
 # PARSE FLAGS
 # ──────────────────────────────────────────────────────────────────────────────
+PLATFORM="kubernetes"  # Default to Kubernetes deployment
+DO_DOWN=false
 SHOW_MENU=false
 
 for arg in "$@"; do
     case "${arg}" in
+        --docker)               PLATFORM="docker" ;;
+        --platform=docker)      PLATFORM="docker" ;;
+        --platform=kubernetes)  PLATFORM="kubernetes" ;;
+        --platform=*)
+            echo "ERROR: Unknown platform '${arg#--platform=}'" >&2
+            echo "Supported platforms: docker, kubernetes" >&2
+            exit 1 ;;
+        --down)                 DO_DOWN=true ;;
         --menu)                 SHOW_MENU=true ;;
         --help|-h)
-            echo "Usage: $0 [--menu]"
-            echo "  (no flags)  Deploy full base stack"
-            echo "  --menu      Open the interactive cluster management menu"
+            echo "Usage: $0 [--docker | --platform=<platform>] [OPTIONS]"
+            echo ""
+            echo "Platform:"
+            echo "  --docker                Deploy with Docker Compose"
+            echo "  --platform=kubernetes   Deploy to Kubernetes (default)"
+            echo "  --platform=docker       Deploy with Docker Compose (alias for --docker)"
+            echo ""
+            echo "Options:"
+            echo "  (no flags)          Deploy base stack only (recommended first run)"
+            echo "  --menu              Open interactive cluster management menu (K8s only)"
+            echo ""
+            echo "Docker-specific options:"
+            echo "  --down              Stop containers and delete all volumes"
+            echo ""
+            echo "Kubernetes-specific options:"
+            echo "  ray_enabled=true          Connect Coding Agent to Ray cluster"
+            echo "  ray_enabled=false         Disable Ray (default)"
+            echo "  ray_address=ray://<host>  Override Ray head address"
+            echo ""
+            echo "Examples:"
+            echo "  $0                                    # Kubernetes deployment (default)"
+            echo "  $0 --docker                           # Docker Compose deployment"
+            echo "  $0 --docker --down                    # Tear down Docker deployment"
+            echo "  $0 ray_enabled=true                   # K8s with Ray integration"
             exit 0 ;;
         *)
             echo "ERROR: Unknown argument '${arg}'" >&2
@@ -67,6 +98,13 @@ for arg in "$@"; do
             exit 1 ;;
     esac
 done
+
+# --down is only valid with --docker / --platform=docker
+if [[ "${DO_DOWN}" == "true" && "${PLATFORM}" != "docker" ]]; then
+    echo "ERROR: --down requires --docker or --platform=docker" >&2
+    echo "Usage: $0 --docker --down" >&2
+    exit 1
+fi
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SYSTEM DETECTION — OS family, architecture, package manager
@@ -194,6 +232,9 @@ _model_display_name() {
         24|cpu-bge-reranker-base)   echo "BAAI/bge-reranker-base" ;;
         25|cpu-qwen3-30b-a3b)        echo "Qwen/Qwen3-30B-A3B-Instruct-2507" ;;
         26|cpu-gemma4-26b-a4b)      echo "google/gemma-4-26B-A4B-it" ;;
+        27|cpu-llama-8b)            echo "meta-llama/Llama-3.1-8B-Instruct" ;;
+        28|cpu-llama-8b-specdec)    echo "meta-llama/Llama-3.1-8B-Instruct-Specdec" ;;
+        29|cpu-qwen3-coder-30b-specdec) echo "Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec" ;;
         *) echo "${1:-unknown}" ;;
     esac
 }
@@ -433,14 +474,6 @@ write_config() {
     mkdir -p "${CORE_DIR}/inventory"
     local _cfg="${CORE_DIR}/inventory/agentic-config.cfg"
 
-    # Helper: append key=value only when the key is not already in the file
-    _cfg_set_default() {
-        local _key="$1" _val="$2"
-        if ! grep -qE "^${_key}=" "${_cfg}" 2>/dev/null; then
-            echo "${_key}=${_val}" >> "${_cfg}"
-        fi
-    }
-
     # Compute proxy values (env vars take priority over nothing)
     local _http_proxy="${http_proxy:-${HTTP_PROXY:-}}"
     local _https_proxy="${https_proxy:-${HTTPS_PROXY:-}}"
@@ -476,32 +509,7 @@ no_proxy=${_no_proxy}
 EOF
         success "agentic-config.cfg created with defaults"
     else
-        # ── File already exists: only fill in any keys that are missing ─────
-        warn "agentic-config.cfg already exists — preserving all existing values"
-        info "Adding any missing config keys with defaults…"
-
-        _cfg_set_default "cluster_url"              "${CLUSTER_DOMAIN}"
-        _cfg_set_default "cert_file"                "${CERT_DIR}/cert.pem"
-        _cfg_set_default "key_file"                 "${CERT_DIR}/key.pem"
-        _cfg_set_default "hugging_face_token"        "${HUGGINGFACE_TOKEN}"
-        _cfg_set_default "models"                   "cpu-qwen2-5-coder-14b"
-        _cfg_set_default "deploy_kubernetes_fresh"  "on"
-        _cfg_set_default "deploy_ingress_controller" "on"
-        _cfg_set_default "deploy_genai_gateway"     "on"
-        _cfg_set_default "deploy_observability"     "on"
-        _cfg_set_default "deploy_llm_models"        "on"
-        _cfg_set_default "deploy_agenticai_plugin"  "off"
-        _cfg_set_default "deploy_redis"             "on"
-        _cfg_set_default "deploy_kuberay"            "off"
-        _cfg_set_default "deploy_agent_sandbox"     "off"
-        _cfg_set_default "http_proxy"               "${_http_proxy}"
-        _cfg_set_default "https_proxy"              "${_https_proxy}"
-        # no_proxy gets k8s suffixes injected only when the key is absent
-        if ! grep -qE "^no_proxy=" "${_cfg}" 2>/dev/null; then
-            echo "no_proxy=${_no_proxy}" >> "${_cfg}"
-        fi
-
-        success "agentic-config.cfg verified — all existing values preserved"
+        info "agentic-config.cfg already exists — skipping config write"
     fi
 
     # ── kuberay-config.yaml — only create if absent; never overwrite ──────────
@@ -731,6 +739,9 @@ _auto_skip_deployed_components() {
         24|cpu-bge-reranker-base)            _model_helm_release="vllm-rerank-cpu" ;;
         25|cpu-qwen3-30b-a3b)      _model_helm_release="vllm-qwen3-30b-a3b-cpu" ;;
         26|cpu-gemma4-26b-a4b)    _model_helm_release="vllm-gemma4-26b-a4b-cpu" ;;
+        27|cpu-llama-8b)          _model_helm_release="vllm-llama-8b-cpu" ;;
+        28|cpu-llama-8b-specdec)  _model_helm_release="vllm-llama-8b-specdec-cpu" ;;
+        29|cpu-qwen3-coder-30b-specdec) _model_helm_release="vllm-qwen3-coder-30b-specdec-cpu" ;;
     esac
     if [[ -n "${_model_helm_release}" ]] && \
        helm list -n default --short 2>/dev/null | grep -q "^${_model_helm_release}$"; then
@@ -888,13 +899,31 @@ except Exception:
                 _m_label="Qwen3-30B-A3B-Instruct-2507"
                 _m_release="vllm-qwen3-30b-a3b-cpu"
                 _m_test_label="Qwen3-30B-A3B-Instruct-2507 via LiteLLM"
-                _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"hosted_vllm/Qwen/Qwen3-30B-A3B-Instruct-2507\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
+                _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"openai/Qwen/Qwen3-30B-A3B-Instruct-2507\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
                 ;;
             26|cpu-gemma4-26b-a4b)
                 _m_label="gemma-4-26B-A4B-it"
                 _m_release="vllm-gemma4-26b-a4b-cpu"
                 _m_test_label="Gemma-4-26B via LiteLLM"
                 _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"openai/google/gemma-4-26B-A4B-it\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
+                ;;
+            27|cpu-llama-8b)
+                _m_label="Llama-3.1-8B-Instruct"
+                _m_release="vllm-llama-8b-cpu"
+                _m_test_label="Llama-3.1-8B via LiteLLM"
+                _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"openai/meta-llama/Llama-3.1-8B-Instruct\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
+                ;;
+            28|cpu-llama-8b-specdec)
+                _m_label="Llama-3.1-8B-Instruct-Specdec"
+                _m_release="vllm-llama-8b-specdec-cpu"
+                _m_test_label="Llama-3.1-8B-Specdec via LiteLLM"
+                _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"openai/meta-llama/Llama-3.1-8B-Instruct-Specdec\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
+                ;;
+            29|cpu-qwen3-coder-30b-specdec)
+                _m_label="Qwen3-Coder-30B-Specdec"
+                _m_release="vllm-qwen3-coder-30b-specdec-cpu"
+                _m_test_label="Qwen3-Coder-30B-Specdec via LiteLLM"
+                _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"openai/Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
                 ;;
             *)
                 _m_label="${_m_display}"
@@ -986,11 +1015,60 @@ except Exception:
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# DOCKER DEPLOYMENT DELEGATION
+# Validates Docker prerequisites and delegates to docker/deploy.sh
+# ──────────────────────────────────────────────────────────────────────────────
+deploy_with_docker() {
+    banner "Agentic AI Stack — Docker Compose Deployment"
+
+    # Validate incompatible flag combinations (docker/deploy.sh handles Docker installation)
+    if [[ "${SHOW_MENU}" == "true" ]]; then
+        error "--menu is only available for Kubernetes deployments.\n  For Docker, use: $0 --platform=docker"
+    fi
+
+    if [[ -n "${RAY_CLI_ENABLED:-}" || -n "${RAY_CLI_ADDRESS:-}" ]]; then
+        warn "Ray integration (ray_enabled, ray_address) is only supported in Kubernetes mode"
+        warn "Ignoring Ray options and continuing with Docker deployment..."
+    fi
+
+    # Map flags to docker/deploy.sh arguments
+    local docker_args=()
+    if [[ "${DO_DOWN}" == "true" ]]; then
+        docker_args+=(--down)
+    fi
+
+    # Auto-skip confirmation when running with --docker flag
+    # (user already confirmed by choosing to run with --docker)
+    docker_args+=(--skip-confirmation)
+
+    # Execute docker deployment script
+    echo ""
+
+    "${REPO_DIR}/docker/deploy.sh" "${docker_args[@]}"
+    local exit_code=$?
+
+    # docker/deploy.sh prints its own summary, so just exit with its status
+    exit ${exit_code}
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 main() {
     # detect_system MUST run first — sets OS_ID, ARCH, PKG_MGR, ANSIBLE_USER, CONTAINERD_SOCK
     detect_system
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # EARLY EXIT FOR DOCKER PLATFORM — ALL DOCKER LOGIC IN docker/deploy.sh
+    # ═══════════════════════════════════════════════════════════════════════════
+    if [[ "${PLATFORM}" == "docker" ]]; then
+        deploy_with_docker
+        # Function exits script; this line is never reached
+    fi
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # KUBERNETES DEPLOYMENT PATH — EVERYTHING BELOW IS UNCHANGED
+    # ═══════════════════════════════════════════════════════════════════════════
 
     # Load settings from existing config so re-runs and one-click runs work without
     # requiring env vars for values that are already stored in agentic-config.cfg.

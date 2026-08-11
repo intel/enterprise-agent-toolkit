@@ -4,7 +4,7 @@ redis_stack_server:
   tag: "7.4.0-v8"
   port: 6379
   replicas: 1
-  storage_class: local-path
+  storage_class: ""
   storage: 1Gi
   affinity: {}
   auth:

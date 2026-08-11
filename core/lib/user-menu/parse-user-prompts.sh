@@ -53,13 +53,22 @@ prompt_for_input() {
     fi
            
     if [ -z "$deploy_nri_balloon_policy" ]; then
-        # Automatically enable NRI balloon policy for CPU deployments
+        # Automatically enable NRI balloon policy for CPU deployments when the
+        # flag is not specified in agentic-config.cfg. Set
+        # deploy_nri_balloon_policy=off in the config to opt out (e.g. to run
+        # multiple models on one node without the single-model CPU reservation).
         deploy_nri_balloon_policy="yes"
         if [ "$balloon_policy_cpu" == "enabled" ]; then
             echo "NRI CPU Balloon Policy automatically enabled for CPU deployment"
         fi
     else
         echo "Proceeding with the setup of NRI CPU Balloon Policy: $deploy_nri_balloon_policy"
+    fi
+    
+    if [ "$deploy_nri_balloon_policy" == "yes" ]; then
+        balloon_policy_cpu="enabled"
+    else
+        balloon_policy_cpu="disabled"
     fi
 
     model_selection "$@"    

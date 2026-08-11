@@ -1,0 +1,318 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Deploy Agent Sandbox
+  hosts: "{{ inference_delegate | default('kube_control_plane') }}"
+  gather_facts: false
+  any_errors_fatal: "{{ any_errors_fatal | default(true) }}"
+  environment: "{{ proxy_disable_env | default(env_proxy | default({})) }}"
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/metadata/vars/inference_common.yml"
+    - "{{ playbook_dir }}/../inventory/metadata/vars/inference_delegate.yml"
+    - "{{ playbook_dir }}/../inventory/metadata/vars/inference_agent_sandbox.yml"
+
+  roles:
+    - role: inference-tools
+
+  tasks:
+    # ========================================================================
+    # Task Group 1: Prerequisites
+    # ========================================================================
+    - name: Check Kubernetes cluster connectivity
+      command: kubectl get nodes
+      register: k8s_nodes
+      changed_when: false
+      run_once: true
+
+    - name: Display cluster status
+      debug:
+        msg: "Kubernetes cluster is reachable"
+      run_once: true
+
+    # ========================================================================
+    # Task Group 2: Install Core Components via Official Manifests
+    # ========================================================================
+    - name: Create Agent Sandbox namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ agent_sandbox_namespace }}"
+      run_once: true
+
+    - name: Apply core manifest (CRDs + controller)
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ agent_sandbox_core_manifest_url }}"
+      run_once: true
+      register: core_manifest_output
+
+    - name: Apply extensions manifest (SandboxTemplate, SandboxClaim, SandboxWarmPool)
+      kubernetes.core.k8s:
+        state: present
+        src: "{{ agent_sandbox_extensions_manifest_url }}"
+      run_once: true
+      register: extensions_manifest_output
+
+    # ========================================================================
+    # Task Group 3: Wait for Controller Readiness
+    # ========================================================================
+    - name: Wait for agent-sandbox-controller deployment
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ agent_sandbox_namespace }}"
+        name: agent-sandbox-controller
+      register: controller_deployment
+      until: >
+        controller_deployment.resources | length > 0 and
+        controller_deployment.resources[0].status.readyReplicas is defined and
+        controller_deployment.resources[0].status.readyReplicas == controller_deployment.resources[0].spec.replicas
+      retries: 60
+      delay: 10
+      run_once: true
+
+    - name: Controller is ready
+      debug:
+        msg: "Agent Sandbox controller deployment is ready"
+      run_once: true
+
+    # ========================================================================
+    # Task Group 4: Deploy Sandbox Router
+    # ========================================================================
+    - name: Generate ROUTER_AUTH_TOKEN if secret does not exist
+      shell: |
+        if ! kubectl get secret sandbox-router-auth -n {{ agent_sandbox_namespace }} > /dev/null 2>&1; then
+          TOKEN=$(openssl rand -hex 32)
+          kubectl create secret generic sandbox-router-auth \
+            --from-literal=ROUTER_AUTH_TOKEN="${TOKEN}" \
+            -n {{ agent_sandbox_namespace }}
+        fi
+      run_once: true
+      changed_when: false
+
+    - name: Download sandbox_router.yaml manifest
+      ansible.builtin.get_url:
+        url: "{{ agent_sandbox_router_manifest_url }}"
+        dest: "/tmp/sandbox_router.yaml"
+        mode: '0644'
+      run_once: true
+
+    - name: Read sandbox_router.yaml content
+      ansible.builtin.slurp:
+        src: "/tmp/sandbox_router.yaml"
+      register: router_manifest_content
+      run_once: true
+
+    - name: Template and apply sandbox-router manifest
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ agent_sandbox_namespace }}"
+        definition: "{{ router_manifest_content['content'] | b64decode | regex_replace('\\${ROUTER_IMAGE}', sandbox_router_image) | regex_replace('#[\\s]*imagePullPolicy:[\\s]*Never', 'imagePullPolicy: IfNotPresent') | from_yaml_all | list }}"
+      run_once: true
+
+    - name: Inject ROUTER_AUTH_TOKEN and scheduling constraints into sandbox-router deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: sandbox-router-deployment
+            namespace: "{{ agent_sandbox_namespace }}"
+          spec:
+            template:
+              spec:
+                affinity:
+                  nodeAffinity:
+                    requiredDuringSchedulingIgnoredDuringExecution:
+                      nodeSelectorTerms:
+                      - matchExpressions:
+                        - key: ei-inference-eligible
+                          operator: In
+                          values: ["true"]
+                containers:
+                  - name: router
+                    env:
+                      - name: ROUTER_AUTH_TOKEN
+                        valueFrom:
+                          secretKeyRef:
+                            name: sandbox-router-auth
+                            key: ROUTER_AUTH_TOKEN
+      run_once: true
+
+    - name: Pin agent-sandbox-controller to infra-eligible nodes
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: agent-sandbox-controller
+            namespace: "{{ agent_sandbox_namespace }}"
+          spec:
+            template:
+              spec:
+                tolerations:
+                  - key: "node-role.kubernetes.io/control-plane"
+                    operator: "Exists"
+                    effect: "NoSchedule"
+                  - key: "node-role.kubernetes.io/master"
+                    operator: "Exists"
+                    effect: "NoSchedule"
+                affinity:
+                  nodeAffinity:
+                    requiredDuringSchedulingIgnoredDuringExecution:
+                      nodeSelectorTerms:
+                      - matchExpressions:
+                        - key: ei-infra-eligible
+                          operator: In
+                          values: ["true"]
+      run_once: true
+
+    - name: Wait for sandbox-router deployment
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ agent_sandbox_namespace }}"
+        name: sandbox-router-deployment
+      register: router_deployment
+      until: >
+        router_deployment.resources | length > 0 and
+        router_deployment.resources[0].status.readyReplicas is defined and
+        router_deployment.resources[0].status.readyReplicas == router_deployment.resources[0].spec.replicas
+      retries: 60
+      delay: 10
+      run_once: true
+
+    - name: Router is ready
+      debug:
+        msg: "Sandbox router deployment is ready"
+      run_once: true
+
+    # ========================================================================
+    # Task Group 5: Apply Default SandboxTemplate
+    # ========================================================================
+    - name: Copy default-templates.yaml to temporary location
+      ansible.builtin.copy:
+        src: "{{ helm_charts_base_agent_sandbox }}/default-templates.yaml"
+        dest: "/tmp/agent-sandbox-default-templates.yaml"
+        mode: '0644'
+      run_once: true
+
+    - name: Read default-templates.yaml content
+      ansible.builtin.slurp:
+        src: "/tmp/agent-sandbox-default-templates.yaml"
+      register: templates_content
+      run_once: true
+
+    - name: Template and apply SandboxTemplate
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ templates_content['content'] | b64decode | regex_replace('AGENT_SANDBOX_VERSION', agent_sandbox_version) | regex_replace('python-runtime-sandbox:' + agent_sandbox_version, python_runtime_sandbox_image) | regex_replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent') | from_yaml_all | list }}"
+      run_once: true
+
+    - name: Verify SandboxTemplate created
+      kubernetes.core.k8s_info:
+        api_version: extensions.agents.x-k8s.io/v1beta1
+        kind: SandboxTemplate
+        namespace: "{{ agent_sandbox_namespace }}"
+        name: python-sandbox-template
+      register: sandbox_template
+      run_once: true
+
+    - name: SandboxTemplate is created
+      debug:
+        msg: "SandboxTemplate 'python-sandbox-template' is available"
+      when: sandbox_template.resources | length > 0
+      run_once: true
+
+    - name: Create default python SandboxWarmPool
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ default_python_warm_pool_manifest | from_yaml }}"
+      vars:
+        default_python_warm_pool_manifest: |
+          apiVersion: extensions.agents.x-k8s.io/v1beta1
+          kind: SandboxWarmPool
+          metadata:
+            name: "{{ agent_sandbox_python_warm_pool_name }}"
+            namespace: "{{ agent_sandbox_namespace }}"
+            labels:
+              app: "{{ agent_sandbox_python_warm_pool_name }}"
+          spec:
+            replicas: {{ agent_sandbox_python_warm_pool_size }}
+            sandboxTemplateRef:
+              name: python-sandbox-template
+      run_once: true
+
+    - name: Verify default SandboxWarmPool created
+      kubernetes.core.k8s_info:
+        api_version: extensions.agents.x-k8s.io/v1beta1
+        kind: SandboxWarmPool
+        namespace: "{{ agent_sandbox_namespace }}"
+        name: "{{ agent_sandbox_python_warm_pool_name }}"
+      register: python_warm_pool
+      run_once: true
+
+    - name: Default SandboxWarmPool is created
+      debug:
+        msg: "SandboxWarmPool '{{ agent_sandbox_python_warm_pool_name }}' is available with size {{ agent_sandbox_python_warm_pool_size }}"
+      when: python_warm_pool.resources | length > 0
+      run_once: true
+
+    # ========================================================================
+    # Task Group 6: Final Verification
+    # ========================================================================
+    - name: Wait for all Agent Sandbox pods to be ready
+      shell: |
+        kubectl get pods -n {{ agent_sandbox_namespace }} -o json | jq -r '
+          .items[] |
+          select(.status.phase != "Running" or (.status.containerStatuses[] | select(.ready != true))) |
+          .metadata.name' | wc -l
+      register: pod_status
+      until: pod_status.stdout == "0" and pod_status.rc == 0
+      retries: 60
+      delay: 10
+      failed_when: pod_status.rc != 0 and pod_status.stdout != "0"
+      run_once: true
+
+    - name: Verify CRD API versions
+      shell: kubectl get crd sandboxes.agents.x-k8s.io -o jsonpath='{.spec.versions[*].name}'
+      register: crd_versions
+      failed_when: "'v1beta1' not in crd_versions.stdout"
+      changed_when: false
+      run_once: true
+
+    - name: Display API versions
+      debug:
+        msg: "Sandbox CRD API versions: {{ crd_versions.stdout }}"
+      run_once: true
+
+    - name: Deployment summary
+      debug:
+        msg:
+          - "============================================================"
+          - "  Agent Sandbox deployed successfully!"
+          - "  Version    : {{ agent_sandbox_version }}"
+          - "  Namespace  : {{ agent_sandbox_namespace }}"
+          - "  Controller : agent-sandbox-controller (registry.k8s.io)"
+          - "  Router     : sandbox-router-deployment (staging)"
+          - "  Router SVC : sandbox-router-svc.{{ agent_sandbox_namespace }}.svc.cluster.local:8080"
+          - "  Template   : python-sandbox-template"
+          - "  WarmPool   : {{ agent_sandbox_python_warm_pool_name }} (size={{ agent_sandbox_python_warm_pool_size }})"
+          - "  Runtime    : python-runtime-sandbox (registry.k8s.io)"
+          - "============================================================"
+      run_once: true
+
+    # ========================================================================
+    # Task Group 7: Cleanup
+    # ========================================================================
+    - name: Cleanup temporary files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/sandbox_router.yaml
+        - /tmp/agent-sandbox-default-templates.yaml
+      run_once: true

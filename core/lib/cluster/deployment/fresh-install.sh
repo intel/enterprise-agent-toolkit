@@ -47,8 +47,10 @@ fresh_installation() {
 
             if [[ "$deploy_kubernetes_fresh" == "yes" ]]; then
                 echo "Starting fresh installation of Intel AI for Enterprise Agent Toolkit..."
-                setup_kernel_and_containerd
                 install_kubernetes "$@"
+                echo "Restarting containerd and kubelet on all nodes to ensure CNI is initialized..."
+                ansible -i "${INVENTORY_PATH}" all -b -m shell -a "systemctl restart containerd && sleep 5 && systemctl restart kubelet" --timeout=60 2>/dev/null || true
+                sleep 20
             else
                 echo "Skipping Kubernetes installation..."
             fi
@@ -221,12 +223,7 @@ fresh_installation() {
             echo -e "${GREEN}|  This may take some time depending on system resources and other factors.         |${NC}"
             echo -e "${GREEN}|  Please standby...                                                                |${NC}"
             echo -e "${BLUE}--------------------------------------------------------------------------------------${NC}"
-            echo ""
-            echo "Accessing Deployed Models for Inference"
-            echo "https://github.com/opea-project/Enterprise-Inference/blob/main/docs/accessing-deployed-models.md"
-            echo ""
-            echo "Please refer to this comprehensive guide for detailed instructions."
-            echo ""
+
             else
             echo -e "${BLUE}-------------------------------------------------------------------------------------${NC}"
             echo -e "${GREEN}|  AI Inference Deployment Complete!                                                |${NC}"
@@ -235,11 +232,7 @@ fresh_installation() {
             echo -e "${GREEN}|  Please standby...                                                                |${NC}"
             echo -e "${BLUE}--------------------------------------------------------------------------------------${NC}"
             echo ""
-            echo "Accessing Deployed Resources for Inference"
-            echo "https://github.com/opea-project/Enterprise-Inference/blob/main/docs/accessing-deployed-models.md"
-            echo ""
-            echo "Please refer to this comprehensive guide for detailed instructions."
-            echo ""
+
             fi
         else
             echo "-------------------------------------------------------------------"
