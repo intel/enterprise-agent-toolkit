@@ -25,7 +25,7 @@ image:
   # Uncomment the following line to set desired image pull policy if needed, as one of Always, IfNotPresent, Never.
   # pullPolicy: ""
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "v0.23.0"
+  tag: "v0.24.0"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -168,6 +168,10 @@ max_num_seqs: "256"
 # Parallelism configuration (root level for global access)
 tensor_parallel_size: "1"
 pipeline_parallel_size: "1"
+
+# Speculative decoding configuration
+speculative:
+  enabled: false
 
 svcmonitor:
   enabled: false

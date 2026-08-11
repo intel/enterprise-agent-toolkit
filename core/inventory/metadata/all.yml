@@ -55,19 +55,18 @@ loadbalancer_apiserver_healthcheck_port: 8081
 # external_cloud_provider:
 
 ## Set these proxy values in order to update package manager and docker daemon to use proxies and custom CA for https_proxy if needed
-## Update to match your environment's proxy settings (or leave empty if no proxy is required).
-http_proxy: ""
-https_proxy: ""
+# http_proxy: ""
+# https_proxy: ""
 # https_proxy_cert_file: ""
 
 # DO NOT CHANGE INDENTATION - used by Automation
 env_proxy:
   http_proxy: ""
   https_proxy: ""
-  no_proxy: ".svc,.svc.cluster.local,.default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.flowise,169.254.0.0/16,10.96.0.0/12,192.168.0.0/16,10.115.150.163,api.example.com"
+  no_proxy: ""
 
 ## Refer to roles/kubespray-defaults/defaults/main/main.yml before modifying no_proxy
-no_proxy: ".svc,.svc.cluster.local,.default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.flowise,169.254.0.0/16,10.96.0.0/12,192.168.0.0/16,10.115.150.163,api.example.com"
+# no_proxy: ""
 
 ## Some problems may occur when downloading files over https proxy due to ansible bug
 ## https://github.com/ansible/ansible/issues/32750. Set this variable to False to disable

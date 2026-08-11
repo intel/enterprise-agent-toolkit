@@ -61,6 +61,23 @@ Set the `models` field in `agentic-config.cfg` to one value from the table below
 | `24` | `cpu-bge-reranker-base` | BAAI/bge-reranker-base *(reranking)* |
 | `25` | `cpu-qwen3-30b-a3b` | Qwen/Qwen3-30B-A3B-Instruct-2507 |
 | `26` | `cpu-gemma4-26b-a4b` | google/gemma-4-26B-A4B-it |
+| `27` | `cpu-llama-8b` | meta-llama/Llama-3.1-8B-Instruct |
+| `28` | `cpu-llama-8b-specdec` | meta-llama/Llama-3.1-8B-Instruct *(with speculative decoding)* |
+| `29` | `cpu-qwen3-coder-30b-specdec` | Qwen/Qwen3-Coder-30B-A3B-Instruct *(with speculative decoding)* |
+
+> **Note:** `meta-llama/Llama-3.1-8B-Instruct` does not support parallel tool calling. Only sequential tool calls are supported with this model.
+
+**Speculative Decoding:**
+
+Models that support speculative decoding are available with a `-specdec` suffix (e.g. `cpu-qwen3-coder-30b-specdec`, `cpu-qwen2-5-coder-14b-specdec`, `cpu-llama-8b-specdec`). This technique uses a smaller draft model to generate candidate tokens quickly, which are then verified by the larger target model in parallel — reducing time-to-first-token and overall generation latency while preserving output quality.
+
+These models are registered in LiteLLM with a `-Specdec` suffix to distinguish them from their non-speculative counterparts (e.g. `Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec`). The draft model is automatically configured during deployment.
+
+To deploy a speculative decoding variant, set the `-specdec` model in `agentic-config.cfg`:
+
+```ini
+models=cpu-qwen3-coder-30b-specdec
+```
 
 Multiple models can be deployed together using a comma-separated list: `models=cpu-qwen3-coder-30b,cpu-bge-base-en`
 

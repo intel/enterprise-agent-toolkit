@@ -74,6 +74,3 @@ affinity:
         - key: ei-infra-eligible
           operator: In
           values: ["true"]
-      - matchExpressions:
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists

@@ -16,15 +16,9 @@ add_inference_nodes_playbook() {
 
     invoke_prereq_workflows "$@"
 
-    # Use core/playbooks/scale.yml to join only the new worker node(s) to the
-    # existing kubeadm cluster. This playbook only runs the join flow (generates
-    # a token on the control plane, then runs kubeadm join on the worker) —
-    # it does NOT run kubeadm reset/init and will not disrupt running workloads.
-    local _limit_targets="kube_control_plane,${worker_node_name}"
-    ansible-playbook -i "${INVENTORY_PATH}" \
-        playbooks/scale.yml \
-        --limit="${_limit_targets}" \
-        --become --become-user=root
+    # Use cluster.yml (consistent with infra-automation) to join the new worker
+    # node to the existing cluster.
+    ansible-playbook -i "${INVENTORY_PATH}" playbooks/cluster.yml --become --become-user=root
 
     echo "Labeling new worker node with ei-inference-eligible=true..."
     ansible-playbook -i "${INVENTORY_PATH}" playbooks/label-nodes.yml

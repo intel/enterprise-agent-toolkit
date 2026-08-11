@@ -1,0 +1,11 @@
+# LiteLLM Configuration for Agentic AI Stack
+litellm_settings:
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+
+model_list:
+  - model_name: Qwen/Qwen2.5-Coder-14B-Instruct
+    litellm_params:
+      model: openai/Qwen/Qwen2.5-Coder-14B-Instruct
+      api_base: http://agentic-vllm-qwen2-5-coder-14b-instruct:8000/v1
+      api_key: dummy

@@ -54,7 +54,7 @@
       ignore_errors: true
 
 - name: Phase 2 — Stop all pods and containers, then kubeadm reset
-  hosts: "{{ inference_delegate | default('kube_control_plane') }}"
+  hosts: "{{ inference_delegate | default('k8s_cluster') }}"
   gather_facts: false
   become: true
   tasks:
@@ -97,7 +97,7 @@
       ignore_errors: true
 
 - name: Phase 3 — Wipe all K8s state, CNI, iptables and network interfaces
-  hosts: "{{ inference_delegate | default('kube_control_plane') }}"
+  hosts: "{{ inference_delegate | default('k8s_cluster') }}"
   gather_facts: false
   become: true
   tasks:

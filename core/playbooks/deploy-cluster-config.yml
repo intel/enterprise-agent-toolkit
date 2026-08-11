@@ -113,22 +113,6 @@
               name: dashboard-user
               namespace: kube-system
       tags: deploy_cluster_dashboard
-    - name: Install local-path-provisioner StorageClass
-      ansible.builtin.shell: |
-        kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.30/deploy/local-path-storage.yaml
-      register: local_path_install
-      changed_when: "'created' in local_path_install.stdout or 'configured' in local_path_install.stdout"
-      tags: always
-
-    - name: Wait for local-path-provisioner to be ready
-      ansible.builtin.shell: |
-        kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=300s
-      register: local_path_ready
-      retries: 5
-      delay: 15
-      until: local_path_ready.rc == 0
-      tags: always
-
     - name: Set local-path as default StorageClass
       ansible.builtin.shell: |
         kubectl patch storageclass local-path \

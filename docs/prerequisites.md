@@ -70,6 +70,7 @@ Log in as a non-root user with `sudo` privileges. Using `root` or a password-bas
   | `trace-api.example.com` | Langfuse trace UI |
   | `coding-agent-api.example.com` | Coding Agent UI |
 
+
   Request a **multi-SAN** or **wildcard** (`*.api.example.com`) certificate from your CA that includes all of the above.
 - Set up automatic renewal or calendar reminders before certificates expire.
 - Ensure required firewall ports (e.g., port 80 for HTTP validation) are open during certificate issuance.
@@ -100,6 +101,7 @@ For local testing, `api.example.com` can be mapped to `localhost` or the node's 
    | `api.example.com` | GenAI Gateway (LiteLLM) |
    | `trace-api.example.com` | Langfuse trace UI |
    | `coding-agent-api.example.com` | Coding Agent UI |
+
 
 2. **Generate a self-signed SSL certificate** covering all subdomains:
 

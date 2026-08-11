@@ -181,6 +181,54 @@ All provider blocks run on a common infrastructure foundation:
 | **Single-node Kubernetes** | K8s + Helm | Pilot, staging, edge |
 | **Docker Compose** | Docker Compose | Development, demos, single machine |
 
+
+## Deployment Platform
+
+The Agentic AI Stack supports two deployment platforms:
+
+### Kubernetes (Default)
+
+Production-grade orchestration with Helm charts, designed for:
+- **Multi-node clusters** 
+- **High availability** 
+- **Production workloads** 
+
+**Deploy with:**
+```bash
+./deploy-agentic-stack.sh 
+```
+
+See [Kubernetes Deployment](#kubernetes-deployment) below for full setup.
+
+### Docker Compose
+
+Simplified single-node deployment with Docker containers, designed for:
+- **Development and testing** 
+- **Proof-of-concept** 
+- **Resource-constrained environments** (no Kubernetes overhead)
+
+
+**Deploy with:**
+```bash
+./deploy-agentic-stack.sh --docker
+```
+
+See [`docker/README.md`](docker/README.md) for comprehensive Docker deployment guide, including [Multi-Model Deployment](docker/README.md#multi-model-deployment).
+
+### Decision Tree
+
+| Your Need | Platform | Rationale |
+|-----------|----------|-----------|
+| Production deployment | Kubernetes | HA, scaling, resource management |
+| Multi-node cluster | Kubernetes | Only K8s supports distributed execution |
+| Local development | Docker | Faster setup, no K8s overhead |
+| Testing multi-model | Docker | Easy config changes, faster iteration |
+| CI/CD integration | Docker | Simpler automation, `--skip-confirmation` flag |
+| SLA requirements | Kubernetes | Rolling updates, auto-healing, monitoring |
+| Learning the stack | Docker | Lower complexity, direct container access |
+
+---
+
 ### How to Deploy
 
 ### 1. Clone the repository

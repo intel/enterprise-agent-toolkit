@@ -42,12 +42,7 @@ deploy_from_huggingface() {
         echo -e "${GREEN}|  This may take some time depending on system resources and other factors.         |${NC}"
         echo -e "${GREEN}|  Please standby...                                                                |${NC}"
         echo -e "${BLUE}--------------------------------------------------------------------------------------${NC}"
-        echo ""
-        echo "Accessing Deployed Models for Inference"
-        echo "https://github.com/opea-project/Enterprise-Inference/blob/main/docs/accessing-deployed-models.md"
-        echo ""
-        echo "Please refer to this comprehensive guide for detailed instructions."          
-        echo ""
+
     else
         echo "Required huggingface model name and model id not provided. Exiting!!"
     fi

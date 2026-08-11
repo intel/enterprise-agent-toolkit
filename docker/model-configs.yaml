@@ -1,0 +1,671 @@
+# Docker vLLM Model Configuration Library
+# ========================================
+#
+# This file defines model-specific configurations for vLLM deployments in Docker.
+# Each model can specify custom environment variables, command arguments, and resources.
+#
+# Configuration Structure:
+# ------------------------
+# models:
+#   "org/model-name":                    # Full HuggingFace model ID (required)
+#     served_name: "url-safe-identifier" # Used ONLY for Docker resource naming (container, hostname)
+#                                         # The API uses the full HuggingFace model ID
+#                                         # Auto-generated if omitted
+#     environment:                        # Container environment variables
+#       VLLM_CPU_KVCACHE_SPACE: "40"     # KV cache size in GB
+#       VLLM_RPC_TIMEOUT: "100000"       # RPC timeout in milliseconds
+#       # ... additional env vars
+#     command_args:                       # vLLM CLI arguments (array)
+#       - "--block-size"
+#       - "128"
+#       - "--dtype"
+#       - "bfloat16"
+#       # ... additional args
+#     resources:                          # Resource limits (optional)
+#       memory: "128g"
+#       shm_size: "16g"                   # Shared memory size
+#
+# Usage:
+# ------
+# 1. Set models in docker/config.cfg:
+#    models=Qwen/Qwen2.5-Coder-14B-Instruct,meta-llama/Llama-3.1-8B-Instruct
+#
+# 2. Generate docker-compose.vllm.yml:
+#    bash docker/scripts/generate-docker-compose.sh
+#
+# 3. Deploy:
+#    ./deploy-agentic-stack.sh --platform=docker
+#
+# Notes:
+# ------
+# - Use full HuggingFace IDs only (no aliases)
+# - served_name is auto-generated for Docker resource naming (containers, volumes)
+# - API calls use the full HuggingFace model ID (e.g., "Qwen/Qwen2.5-Coder-14B-Instruct")
+# - Unknown models fallback to default configuration
+# - Memory requirements: ~80GB per LLM model
+
+models:
+  "google/gemma-4-26B-A4B-it":
+    served_name: "google-gemma-4-26b-a4b-it"
+    environment:
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-model-len"
+      - "32768"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "gemma4"
+      - "--chat-template"
+      - "/vllm-workspace/examples/tool_chat_template_gemma4.jinja"
+    volumes:
+      - "../core/helm-charts/vllm/files:/vllm-workspace/examples:ro"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "meta-llama/Llama-3.1-8B-Instruct":
+    served_name: "llama-3-1-8b-instruct"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_CPU_SGL_KERNEL: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "llama3_json"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "meta-llama/Llama-3.1-8B-Instruct-Specdec":
+    served_name: "llama-3-1-8b-instruct-specdec"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_CPU_SGL_KERNEL: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "llama3_json"
+    speculative_decoding:
+      draft_model: "meta-llama/Llama-3.2-1B-Instruct"
+      num_speculative_tokens: 5
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "meta-llama/Llama-3.2-3B-Instruct":
+    served_name: "llama-3-2-3b-instruct"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "llama3_json"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B":
+    served_name: "deepseek-r1-distill-qwen-32b"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--max-model-len"
+      - "32768"
+      - "--enable-prefix-caching"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "deepseek-ai/DeepSeek-R1-Distill-Llama-8B":
+    served_name: "deepseek-r1-distill-llama-8b"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen3-1.7B":
+    served_name: "qwen3-1-7b"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "hermes"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen3-4B-Instruct-2507":
+    served_name: "qwen3-4b-instruct-2507"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "hermes"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen2.5-Coder-7B-Instruct":
+    served_name: "qwen2-5-coder-7b-instruct"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_coder"
+      - "--chat-template"
+      - "/vllm-workspace/examples/tool_chat_template_qwen3coder.jinja"
+    volumes:
+      - "../core/helm-charts/vllm/files:/vllm-workspace/examples:ro"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen2.5-Coder-14B-Instruct":
+    served_name: "qwen2-5-coder-14b-instruct"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      TORCHDYNAMO_DISABLE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--max-model-len"
+      - "32768"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+      - "--chat-template"
+      - "/vllm-workspace/examples/tool_chat_template_qwen3coder.jinja"
+    volumes:
+      - "../core/helm-charts/vllm/files:/vllm-workspace/examples:ro"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen2.5-Coder-14B-Instruct-Specdec":
+    served_name: "qwen2-5-coder-14b-instruct-specdec"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "40"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      TORCHDYNAMO_DISABLE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--max-model-len"
+      - "32768"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+      - "--chat-template"
+      - "/vllm-workspace/examples/tool_chat_template_qwen3coder.jinja"
+    volumes:
+      - "../core/helm-charts/vllm/files:/vllm-workspace/examples:ro"
+    speculative_decoding:
+      draft_model: "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+      num_speculative_tokens: 5
+      # NOTE: requires vLLM PR #42775 (Qwen2.5-Coder vocab-padding fix)
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen3-Coder-30B-A3B-Instruct":
+    served_name: "qwen3-coder-30b-a3b-instruct"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "60"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "2"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--trust-remote-code"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--max-model-len"
+      - "32768"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+      - "--chat-template"
+      - "/vllm-workspace/examples/tool_chat_template_qwen3coder.jinja"
+    volumes:
+      - "../core/helm-charts/vllm/files:/vllm-workspace/examples:ro"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec":
+    served_name: "qwen3-coder-30b-a3b-instruct-specdec"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "60"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "2"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--trust-remote-code"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--max-model-len"
+      - "32768"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+      - "--chat-template"
+      - "/vllm-workspace/examples/tool_chat_template_qwen3coder.jinja"
+    volumes:
+      - "../core/helm-charts/vllm/files:/vllm-workspace/examples:ro"
+    speculative_decoding:
+      draft_model: "Qwen/Qwen3-0.6B"
+      num_speculative_tokens: 5
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "Qwen/Qwen3-30B-A3B-Instruct-2507":
+    served_name: "qwen3-30b-a3b-instruct-2507"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "60"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TORCHINDUCTOR_CACHE_DIR: "/tmp/.torch_compile"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      HF_HOME: "/tmp/.cache/huggingface"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--distributed_executor_backend"
+      - "mp"
+      - "--enable_chunked_prefill"
+      - "--max-model-len"
+      - "32768"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+      - "--chat-template"
+      - "/vllm-workspace/examples/tool_chat_template_qwen3coder.jinja"
+    volumes:
+      - "../core/helm-charts/vllm/files:/vllm-workspace/examples:ro"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1":
+    served_name: "llama-3-1-nemotron-nano-4b-v1-1"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "20"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_OFFLINE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--enable_chunked_prefill"
+      - "--enforce-eager"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--max-num-seqs"
+      - "256"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "llama3_json"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
+  "BAAI/bge-base-en-v1.5":
+    served_name: "bge-base-en-v1-5"
+    litellm_mode: "embedding"
+    environment:
+      XDG_CACHE_HOME: "/tmp/.cache"
+      TORCHINDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+      LOGNAME: "vllm"
+    command_args:
+      - "--dtype"
+      - "bfloat16"
+    resources:
+      memory: "128g"
+      shm_size: "4g"
+  "BAAI/bge-reranker-base":
+    served_name: "bge-reranker-base"
+    litellm_mode: "rerank"
+    environment:
+      XDG_CACHE_HOME: "/tmp/.cache"
+      TORCHINDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
+      HF_HUB_DISABLE_XET: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+      LOGNAME: "vllm"
+    command_args:
+      - "--dtype"
+      - "bfloat16"
+    resources:
+      memory: "128g"
+      shm_size: "4g"
+  "openai/whisper-small":
+    served_name: "whisper-small"
+    litellm_mode: "audio_transcription"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "10"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      TORCHDYNAMO_DISABLE: "1"
+      TORCH_INDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      HF_HOME: "/tmp/huggingface"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--dtype"
+      - "float32"
+      - "--enforce-eager"
+    resources:
+      memory: "128g"
+      shm_size: "8g"
+# Default fallback configuration for unknown models
+default:
+  served_name: "auto-generated" # Will be auto-generated from model ID
+  environment:
+    VLLM_CPU_KVCACHE_SPACE: "40"
+    VLLM_RPC_TIMEOUT: "100000"
+    VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+    VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+    VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+    VLLM_CPU_SGL_KERNEL: "1"
+    HF_HUB_DISABLE_XET: "1"
+    TORCH_INDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
+    VLLM_NO_USAGE_STATS: "1"
+    DO_NOT_TRACK: "1"
+    USER: "vllm"
+  command_args:
+    - --block-size
+    - "128"
+    - --dtype
+    - bfloat16
+    - --distributed_executor_backend
+    - mp
+    - --enable_chunked_prefill
+    - --enforce-eager
+    - --max-num-batched-tokens
+    - "2048"
+    - --max-num-seqs
+    - "256"
+    - --enable-prefix-caching
+  resources:
+    memory: "80g"
+    shm_size: "16g"
