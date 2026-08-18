@@ -7,7 +7,7 @@
 [![Frameworks: LangGraph · CrewAI · Flowise](https://img.shields.io/badge/Frameworks-LangGraph%20%C2%B7%20CrewAI%20%C2%B7%20Flowwise-orange)](https://github.com/intel/enterprise-agent-toolkit)
 
 > **Deploy a production-grade, open source agentic AI stack on Intel® Xeon® in hours — not months.**
-> A batteries-included Kubernetes platform with API gateway, intelligent inference routing, agent memory, sandboxed code execution, MCP tool integration, and full agent and system observability — all pre-integrated and ready to run.
+> A batteries-included Kubernetes platform with API gateway, intelligent inference routing, agent memory,  sandboxed code execution, MCP tool integration, and full agent and system observability — all pre-integrated and ready to run.
 
 **Keywords:** agentic AI platform · enterprise AI agents · open source AI agent stack · Kubernetes AI deployment · LLM inference on CPU · Intel Xeon AI · LiteLLM gateway · AI agent memory RAG · on-premise LLM deployment · private AI infrastructure · AI agent observability · MCP server Kubernetes · vLLM sglang Intel · Enterprise Agnet Toolkit 
 
