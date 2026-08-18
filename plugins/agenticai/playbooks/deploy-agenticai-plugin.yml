@@ -31,6 +31,27 @@
       run_once: true
 
     ###########################################################################
+    # First-boot owner protection — see agenticai-plugin-vars.yml for the
+    # rationale.  Flowise bootstraps its first organization owner through an
+    # unauthenticated POST /api/v1/account/register; that path is published on
+    # its own Ingress rule restricted to agenticai_setup_source_ranges so only
+    # the administrator's network can claim the deployment.
+    ###########################################################################
+    - name: Resolve First-Boot Protection Settings
+      set_fact:
+        # Empty agenticai_setup_source_ranges means "no network may create the
+        # administrator account".  127.0.0.1/32 expresses that in the one thing
+        # ingress-nginx accepts here — a CIDR list — because no external client can
+        # present a loopback source address to the controller.  Account setup is
+        # then done over `kubectl port-forward`, which talks to the pod through the
+        # API server and so never passes this rule at all.
+        agenticai_setup_ranges_effective: >-
+          {{ (agenticai_setup_source_ranges | default('', true) | trim) or '127.0.0.1/32' }}
+        agenticai_setup_open_to_network: "{{ (agenticai_setup_source_ranges | default('', true) | trim) | length > 0 }}"
+        agenticai_denylist_urls: "{{ '/api/v1/account/register' if agenticai_lock_registration | bool else '' }}"
+      run_once: true
+
+    ###########################################################################
     # Namespace
     ###########################################################################
     - name: Ensure Flowise Namespace Exists
@@ -146,8 +167,69 @@
           --set extraEnvVars[2].value={{ agenticai_inference_model }} \
           --set extraEnvVars[3].name=FLOWISE_PGVECTOR_URL \
           --set extraEnvVars[3].value={{ agenticai_pgvector_connection_url }} \
+          --set extraEnvVars[4].name=DENYLIST_URLS \
+          --set extraEnvVars[4].value='{{ agenticai_denylist_urls }}' \
+          --set extraEnvVars[5].name=SECURE_COOKIES \
+          --set extraEnvVars[5].value='true' \
+          --set extraEnvVars[6].name=APP_URL \
+          --set extraEnvVars[6].value=https://flowise-{{ cluster_url }} \
           --wait \
           --timeout 10m
+      run_once: true
+
+    ###########################################################################
+    # Account-Setup Ingress (source-restricted)
+    #
+    # POST /api/v1/account/register is how Flowise creates its first organization
+    # owner, and it is unauthenticated by design.  It gets its own Ingress rule
+    # carrying a source-range restriction: nginx answers 403 to every other
+    # source, so those requests never reach Flowise.
+    #
+    # The path is a regex rather than pathType: Exact on purpose.  Express routes
+    # with case-insensitive, non-strict matching by default, so an Exact rule on
+    # "/api/v1/account/register" is trivially side-stepped with a trailing slash
+    # ("/api/v1/account/register/") or different case ("/API/v1/account/register")
+    # — both of which still reach the register handler.  ingress-nginx renders
+    # regex paths as `location ~* "..."`, which is case-insensitive and takes
+    # precedence over the root prefix rule; "/?$" keeps it from also swallowing
+    # sibling paths such as /api/v1/account/register-anything.
+    #
+    # The administrator's browser flow is unchanged: same host, same UI, same
+    # "Setup Account" page, as long as they browse from an allowed range.
+    ###########################################################################
+    - name: Create Source-Restricted Ingress for Flowise Account Setup
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: flowise-account-setup
+            namespace: "{{ agenticai_namespace }}"
+            annotations:
+              nginx.ingress.kubernetes.io/whitelist-source-range: "{{ agenticai_setup_ranges_effective }}"
+              nginx.ingress.kubernetes.io/use-regex: "true"
+          spec:
+            ingressClassName: "{{ agenticai_ingress_class }}"
+            tls:
+              - secretName: "flowise-{{ cluster_url }}"
+                hosts:
+                  - "flowise-{{ cluster_url }}"
+            rules:
+              - host: "flowise-{{ cluster_url }}"
+                http:
+                  paths:
+                    # Regex requires pathType ImplementationSpecific in ingress-nginx.
+                    - path: /api/v1/account/register/?$
+                      pathType: ImplementationSpecific
+                      backend:
+                        service:
+                          name: flowise
+                          port:
+                            number: 3000
+      when:
+        - kubernetes_platform != 'openshift'
+        - agenticai_ingress_enabled | bool
       run_once: true
 
     ###########################################################################
@@ -179,7 +261,9 @@
                           name: flowise
                           port:
                             number: 3000
-      when: kubernetes_platform != 'openshift' and agenticai_ingress_enabled | bool
+      when:
+        - kubernetes_platform != 'openshift'
+        - agenticai_ingress_enabled | bool
       run_once: true
 
     ###########################################################################
@@ -216,13 +300,30 @@
     - name: Display Deployment Summary
       debug:
         msg:
-          - "=============================================="
+          - "=================================================================="
           - "Flowise Agentic Plugin Deployed Successfully!"
-          - "=============================================="
+          - "=================================================================="
           - "Namespace: {{ agenticai_namespace }}"
           - "Access URL: https://flowise-{{ cluster_url }}"
           - "Database: PostgreSQL"
           - "Cache: Redis"
           - "Worker Mode: {{ agenticai_worker_enabled }}"
-          - "=============================================="
+          - "Secure cookies: enabled"
+          - "=================================================================="
+          - "FIRST-TIME SETUP — create the administrator account now."
+          - "Flowise creates its first owner through an unauthenticated request,"
+          - "so the first submission wins. Account creation is restricted to:"
+          - "  {{ agenticai_setup_ranges_effective }}"
+          - ""
+          - >-
+            {{ "Open https://flowise-" ~ cluster_url ~ " from one of those networks and
+            complete the 'Setup Account' page. Requests from anywhere else get 403."
+            if agenticai_setup_open_to_network | bool else
+            "No network can reach it, so use a port-forward (it bypasses the Ingress):
+            kubectl port-forward -n " ~ agenticai_namespace ~ " svc/flowise 3000:3000
+            then open http://localhost:3000 and complete the 'Setup Account' page." }}
+          - ""
+          - "Then sign in normally at https://flowise-{{ cluster_url }}."
+          - "{{ 'Registration endpoint: CLOSED — DENYLIST_URLS is set, so setup is no longer possible at all.' if agenticai_lock_registration | bool else 'To open browser-based setup instead, set agenticai_setup_source_ranges in plugins/agenticai/vars/agenticai-plugin-vars.yml.' }}"
+          - "=================================================================="
       run_once: true

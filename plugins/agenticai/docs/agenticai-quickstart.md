@@ -27,7 +27,7 @@ The **Agentic AI Plugin** provides a visual platform for building AI agents, mul
 
 Edit the main configuration:
 ```bash
-vim core/inventory/inference-config.cfg
+vim core/inventory/agentic-config.cfg
 ```
 
 Set:
@@ -59,6 +59,19 @@ flowise-redis-master-0               1/1     Running   0          5m
 flowise-worker-xxxxx                 1/1     Running   0          5m
 ```
 
+Two Ingress objects are expected — the site itself, and the source-restricted rule that
+protects account creation:
+
+```bash
+kubectl get ingress -n flowise
+```
+
+```
+NAME                    CLASS   HOSTS                    PORTS
+flowise-account-setup   nginx   flowise-<your-domain>    80, 443
+flowise-root            nginx   flowise-<your-domain>    80, 443
+```
+
 ---
 
 ## Initial Setup
@@ -72,9 +85,37 @@ https://flowise-<your-domain>
 
 > **Note:** The subdomain is "flowise" as this is the current implementation. Future versions may support custom subdomains.
 
+### Step 4: Create the Administrator Account
+
+Flowise creates its first organization owner through an **unauthenticated** request, so
+whoever submits the Setup Account page first becomes the sole owner — everyone after them
+is rejected with `You can only have one organization`. The deployment therefore publishes
+that one endpoint (`POST /api/v1/account/register`) on a source-restricted Ingress rule,
+and by default it admits nothing from the network.
+
+So create the owner once over a port-forward, which reaches the pod through the API server
+and never passes the Ingress rule at all:
+
+```bash
+kubectl port-forward -n flowise svc/flowise 3000:3000
+```
+
+Leave that running and open **http://localhost:3000**.
+
+Everything else — login and all normal use — happens at `https://flowise-<your-domain>`,
+which is live from the first deployment. Only account creation is restricted.
+
+> **Prefer to do setup in the browser at the domain instead?** Set your network in
+> `plugins/agenticai/vars/agenticai-plugin-vars.yml` and redeploy the plugin:
+> ```yaml
+> agenticai_setup_source_ranges: "192.0.2.0/24"   # replace with your own network
+> ```
+> Comma-separate multiple ranges. Account creation is then accepted from those networks at
+> `https://flowise-<your-domain>` and answered `403` everywhere else.
+
 ### First Time Setup (Account Creation)
 
-When you first access the platform, you'll see the **Setup Account** page:
+You'll see the **Setup Account** page:
 
 1. **Administrator Name:** Your display name (e.g., "John Doe")
 2. **Administrator Email:** Valid email address - **this becomes your login ID**
@@ -91,9 +132,34 @@ When you first access the platform, you'll see the **Setup Account** page:
 
 ### Subsequent Logins
 
-After account creation, use:
+Stop the port-forward and use the Ingress from here on:
+```
+https://flowise-<your-domain>
+```
 - **Email:** The email you registered
 - **Password:** Your chosen password
+
+Login is not source-restricted — only account creation is.
+
+### Optional: close the registration endpoint
+
+Once the owner account exists, Flowise itself rejects every further call to
+`/api/v1/account/register` with `You can only have one organization`, so nothing more is
+strictly needed. For defence in depth you can drop the endpoint from Flowise's public
+whitelist entirely — set this in `plugins/agenticai/vars/agenticai-plugin-vars.yml` and
+redeploy the plugin:
+
+```yaml
+agenticai_lock_registration: true
+```
+
+The endpoint then answers `401` to every caller, from any source and including over a
+port-forward. This costs no functionality in open-source mode — but do it only *after* the
+administrator account exists, or there will be no way to create one.
+
+> ⚠ **Leave this off if you ever configure `FLOWISE_EE_LICENSE_KEY`** (Flowise
+> Enterprise). Enterprise mode reuses that same endpoint to let **invited** users complete
+> their signup with an invite code, so locking it would block multi-user onboarding.
 
 ---
 
@@ -215,6 +281,41 @@ kubectl describe ingress flowise -n flowise
 ```bash
 openssl s_client -connect flowise-<your-domain>:443 -servername flowise-<your-domain> < /dev/null | openssl x509 -noout -text | grep DNS
 ```
+
+### "Setup Account" Returns 403 Forbidden
+
+Expected when going through the Ingress with the default settings — use the port-forward in
+Step 4 instead. If you *have* set `agenticai_setup_source_ranges`, your client address is
+not inside it. Check what the ingress controller is allowing and what it sees as your
+source address:
+
+```bash
+kubectl get ingress flowise-account-setup -n flowise \
+  -o jsonpath='{.metadata.annotations.nginx\.ingress\.kubernetes\.io/whitelist-source-range}{"\n"}'
+
+kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx --tail=50 \
+  | grep 'account/register'
+```
+
+Add your range in `plugins/agenticai/vars/agenticai-plugin-vars.yml` and redeploy the
+plugin, or patch it directly for a one-off:
+
+```bash
+kubectl annotate ingress flowise-account-setup -n flowise --overwrite \
+  nginx.ingress.kubernetes.io/whitelist-source-range="192.0.2.0/24,198.51.100.9/32"
+```
+
+> If the logged source address is a cluster node IP rather than your workstation, an
+> upstream load balancer is SNAT-ing the traffic. Enable
+> `controller.config.use-forwarded-headers` on ingress-nginx so the real client address is
+> used, or list the load balancer's ranges instead.
+
+### "Setup Account" Returns 401 Unauthorized
+
+`agenticai_lock_registration` is on, which removes the endpoint from Flowise's public
+whitelist. That is only meant to be enabled *after* the owner account exists — set it back
+to `false` in `plugins/agenticai/vars/agenticai-plugin-vars.yml` and redeploy if you still
+need to create the administrator.
 
 ### Pods Not Starting
 

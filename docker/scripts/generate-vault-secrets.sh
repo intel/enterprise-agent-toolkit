@@ -52,8 +52,13 @@ LANGFUSE_REDIS_PASSWORD="$(_pass 20)"
 # ---------------------------------------------------------------------------
 # Flowise — Agent Builder
 # ---------------------------------------------------------------------------
-FLOWISE_ADMIN_EMAIL="flowise-admin@flowise.local"
-FLOWISE_ADMIN_PASSWORD="$(_pass 20)"
+# No admin credentials are generated here on purpose.  Flowise 3.1.2 has no
+# environment-based admin bootstrap (the image contains no reference to
+# FLOWISE_ADMIN_EMAIL / FLOWISE_ADMIN_PASSWORD, and its `user` CLI can only reset
+# the password of an existing account).  The owner is created by an administrator
+# through the UI's "Setup Account" page on first run, over a loopback-bound port.
+# Generating credentials that nothing consumes would imply a pre-provisioned admin
+# that does not exist.  See docker/README.md.
 AGENTICAI_POSTGRES_PASSWORD="${FLOWISE_DB_PASSWORD}"  # k8s compat alias (same value)
 
 # ---------------------------------------------------------------------------
@@ -123,8 +128,7 @@ langfuse_redis_password: "${LANGFUSE_REDIS_PASSWORD}"
 # ---------------------------------------------------------------------------
 # Flowise — Agent Builder
 # ---------------------------------------------------------------------------
-flowise_admin_email: "${FLOWISE_ADMIN_EMAIL}"
-flowise_admin_password: "${FLOWISE_ADMIN_PASSWORD}"
+# Owner account is created interactively on first run — see note above.
 
 # ---------------------------------------------------------------------------
 # Consumer Portal
