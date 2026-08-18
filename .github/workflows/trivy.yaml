@@ -1,0 +1,39 @@
+name: trivy
+on:
+  push:
+    branches: [ci-checks]
+  pull_request:
+    branches: [ci-checks]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  trivy-scan-dockerfiles:
+    name: Scan Dockerfiles
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+    - name: Run Trivy in config mode for dockerfiles
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+      with:
+        scan-type: config
+        scan-ref: .
+        exit-code: 1
+        severity: CRITICAL,HIGH
+
+  trivy-scan-vulns:
+    name: Scan vulnerabilities
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+    - name: Run Trivy in fs mode
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+      with:
+        scan-type: fs
+        scan-ref: .
+        exit-code: 1
+        format: table
