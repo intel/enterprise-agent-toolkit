@@ -168,11 +168,11 @@
           --set extraEnvVars[3].name=FLOWISE_PGVECTOR_URL \
           --set extraEnvVars[3].value={{ agenticai_pgvector_connection_url }} \
           --set extraEnvVars[4].name=DENYLIST_URLS \
-          --set extraEnvVars[4].value='{{ agenticai_denylist_urls }}' \
+          --set-string extraEnvVars[4].value='{{ agenticai_denylist_urls }}' \
           --set extraEnvVars[5].name=SECURE_COOKIES \
-          --set extraEnvVars[5].value='true' \
+          --set-string extraEnvVars[5].value=true \
           --set extraEnvVars[6].name=APP_URL \
-          --set extraEnvVars[6].value=https://flowise-{{ cluster_url }} \
+          --set-string extraEnvVars[6].value=https://flowise-{{ cluster_url }} \
           --wait \
           --timeout 10m
       run_once: true
