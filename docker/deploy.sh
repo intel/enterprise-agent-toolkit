@@ -937,9 +937,10 @@ fi
 # Post-start: Flowise first-boot protection (flowise profile)
 # ---------------------------------------------------------------------------
 # Flowise 3.1.2 creates its first organization owner through an UNAUTHENTICATED
-# POST /api/v1/account/register.  Until that account exists, whichever caller reaches
-# the endpoint first becomes the sole owner and locks the real administrator out
-# ("You can only have one organization").  Two mitigations, applied here:
+# POST /api/v1/account/register.  Only the first caller to reach that endpoint can ever
+# become the owner — every later attempt is refused with "You can only have one
+# organization" — so that account needs to be claimed by the administrator.  Two
+# measures, applied here:
 #   1. Flowise is published on loopback only (FLOWISE_BIND_ADDR), so an instance with
 #      an empty database is not reachable from an untrusted network.
 #   2. Once an owner exists, /api/v1/account/register is dropped from Flowise's public
