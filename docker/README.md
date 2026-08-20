@@ -184,7 +184,39 @@ Secrets are auto-generated and stored in `docker/vault.yml`.
 | vLLM | `http://localhost:2080/v1` |
 | Langfuse | `http://localhost:3002` |
 
-Credentials are in `docker/.env`
+Service credentials (databases, API keys) are in `docker/.env`, generated from
+`docker/vault.yml`.
+
+### Flowise First-Time Setup
+
+Flowise has no environment-based admin bootstrap: the first administrator is created in the
+browser on the **Setup Account** page, and that creation request is *unauthenticated* —
+whoever submits it first becomes the sole organization owner, and everyone after them is
+rejected with `You can only have one organization`.
+
+So port 3000 is published on **loopback only**. Open `http://localhost:3000` on the Docker
+host and complete Setup Account. Browsing from another machine? Tunnel rather than
+publishing the port:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 <user>@<docker-host>
+```
+
+Once the owner exists, any later `deploy.sh` run detects it and sets
+`DENYLIST_URLS=/api/v1/account/register`, closing the endpoint for good. No manual step is
+required, and nothing is lost: in open-source mode that endpoint only ever succeeds for the
+first organization.
+
+To publish the port on all interfaces anyway — only after Setup Account is done, and only
+if the host is on a trusted network — set in `docker/.env`:
+
+```properties
+FLOWISE_BIND_ADDR=0.0.0.0
+```
+
+> ⚠ Clear `FLOWISE_DENYLIST_URLS` in `docker/.env` if you ever set
+> `FLOWISE_EE_LICENSE_KEY`. Flowise Enterprise reuses that same endpoint to let invited
+> users complete their signup with an invite code.
 
 ---
 

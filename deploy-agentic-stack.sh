@@ -973,6 +973,13 @@ except Exception:
     echo -e "${YELLOW}── FLOWISE ADMIN (${_flowise_status}) ─────────────────────────────────────────────${NC}"
     if [[ "${_flowise_status}" == "deployed" ]]; then
         echo -e "  Flowise UI      : ${GREEN}https://flowise-${CLUSTER_DOMAIN}${NC}"
+        if ! kubectl get ingress flowise-account-setup -n flowise &>/dev/null 2>&1; then
+            echo -e "  ${YELLOW}Account setup is NOT source-restricted (flowise-account-setup Ingress missing)${NC}"
+            echo -e "  ${YELLOW}— redeploy the Agentic AI plugin to add it.${NC}"
+        fi
+        echo -e "  First run       : create the admin account over a port-forward —"
+        echo -e "                    ${CYAN}kubectl port-forward -n flowise svc/flowise 3000:3000${NC}"
+        echo -e "                    then open http://localhost:3000 ('Setup Account')."
     else
         echo -e "  Not deployed — enable with: ${CYAN}deploy_agenticai_plugin=on${NC} in agentic-config.cfg"
     fi

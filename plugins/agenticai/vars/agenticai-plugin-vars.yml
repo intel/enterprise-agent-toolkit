@@ -6,7 +6,8 @@
 # Agentic AI Plugin - Internal Variables
 ##############################################################################
 # These are internal implementation variables for the Agentic AI plugin.
-# Users should not need to modify these values.
+# Users should not need to modify these values, with one exception: the
+# "First-Boot Owner Protection" section below is site-specific and may be tuned.
 # Currently implements: Flowise (visual AI agent builder)
 ##############################################################################
 
@@ -51,6 +52,61 @@ agenticai_ingress_enabled: true
 agenticai_ingress_class: nginx
 agenticai_ingress_path: /
 agenticai_tls_enabled: true
+
+##############################################################################
+# First-Boot Owner Protection
+##############################################################################
+# Flowise 3.1.2 creates its first organization owner through an UNAUTHENTICATED
+# POST /api/v1/account/register.  Until an administrator has completed the
+# "Setup Account" page, whichever caller reaches that endpoint first becomes the
+# sole organization owner; everyone after them is rejected with "You can only
+# have one organization".  The account therefore needs to be claimed by the
+# administrator rather than by whoever reaches the endpoint first, so that one
+# path is not served to the whole network by default.
+#
+# The site is published at https://flowise-<cluster_url> as always; what changes is
+# WHO can reach the registration endpoint.  That single path is served by its own
+# Ingress rule carrying a source restriction, so nginx answers 403 to every other
+# source before the request ever reaches Flowise.  The administrator still creates
+# the account by hand on the "Setup Account" page — nothing is provisioned in code.
+#
+# agenticai_setup_source_ranges — who may create the administrator account.
+#
+#   ""  (default)  No external network may.  Create the owner once over a
+#                  port-forward, which reaches the pod directly and bypasses the
+#                  Ingress entirely:
+#                      kubectl port-forward -n flowise svc/flowise 3000:3000
+#                      then open http://localhost:3000
+#
+#   CIDR list      Do the same thing in the browser at https://flowise-<cluster_url>
+#                  instead, from the listed networks.  Comma-separated, e.g.
+#                      agenticai_setup_source_ranges: "192.0.2.0/24,198.51.100.9/32"
+#
+# Either way the site itself is published at https://flowise-<cluster_url> from the
+# first deployment, and everything else about it (login, canvas, chatflow APIs)
+# stays reachable from anywhere the Ingress serves.  Only account creation is
+# narrowed, and only until the owner exists.
+#
+# Note: this relies on nginx seeing the real client address.  The stack's
+# ingress-nginx runs with hostPort enabled, so it does.  Behind an external L4
+# load balancer that SNATs, set controller.config.use-forwarded-headers and list
+# the client ranges accordingly.
+#
+# agenticai_lock_registration — OPTIONAL defence in depth.  Adds
+# DENYLIST_URLS=/api/v1/account/register, which drops the endpoint from Flowise's
+# public whitelist entirely: it then answers 401 to everyone, including over a
+# port-forward.  Only turn this on AFTER the owner account exists, or there will be
+# no way to create one.  It costs no functionality in open-source mode: the endpoint
+# only ever succeeds for the first organization and returns 400 for every later
+# caller, authenticated or not.
+#
+# ⚠  Leave agenticai_lock_registration=false if you ever configure
+#    FLOWISE_EE_LICENSE_KEY.  Flowise Enterprise reuses that same endpoint to let
+#    INVITED users complete their signup with an invite code, so locking it would
+#    block multi-user onboarding.
+##############################################################################
+agenticai_setup_source_ranges: ""
+agenticai_lock_registration: false
 
 # Storage Configuration
 agenticai_persistence_enabled: true

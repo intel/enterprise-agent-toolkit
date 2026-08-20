@@ -164,11 +164,27 @@ services:
     cap_drop:
       - ALL
     ports:
-      - "3000:3000"
+      # Loopback-only by default.  Flowise 3.1.2 bootstraps its first owner via an
+      # UNAUTHENTICATED POST /api/v1/account/register, and only the first caller to
+      # reach it can ever become the organization owner, so an instance with an empty
+      # database should not be published to a wider network before that account exists.
+      # Complete first-time "Setup Account" over localhost (or an SSH tunnel), then
+      # set FLOWISE_BIND_ADDR=0.0.0.0 in docker/.env only if remote access is needed.
+      - "${FLOWISE_BIND_ADDR:-127.0.0.1}:3000:3000"
     environment:
-      # Use development mode to relax strict production validations (e.g., HTTPS requirements)
-      NODE_ENV: development
+      # NODE_ENV is deliberately left unset.  Flowise reads it in exactly two places:
+      # it returns exception stack traces to the caller when NODE_ENV=development, and
+      # it forces `Secure` session cookies when NODE_ENV=production.  Unset avoids both
+      # — no stack traces in responses, and cookies still work over plain HTTP, which
+      # this compose stack serves.  Set it to production only behind a TLS terminator.
       PORT: "3000"
+      # Removes /api/v1/account/register from Flowise's public whitelist once an owner
+      # exists.  deploy.sh sets this automatically after first-time setup is complete.
+      # Costs nothing in open-source mode: that endpoint only ever succeeds for the
+      # first organization and returns 400 for everyone afterwards.
+      # WARNING: clear this if FLOWISE_EE_LICENSE_KEY is ever set — in Enterprise mode
+      # invited users complete their signup through that same endpoint.
+      DENYLIST_URLS: "${FLOWISE_DENYLIST_URLS:-}"
       # Database
       DATABASE_TYPE: postgres
       DATABASE_HOST: postgres
