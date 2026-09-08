@@ -9,6 +9,7 @@
       - distribution
       - distribution_version
       - distribution_major_version
+      - os_family
 
   tags: always
 
@@ -39,7 +40,7 @@
         os_supported: >-
           {{
             (ansible_distribution == "Ubuntu" and (ansible_distribution_version == "22.04" or ansible_distribution_version == "24.04")) or
-            (ansible_distribution == "RedHat" and ansible_distribution_major_version == "9")
+            ((ansible_distribution in ["RedHat", "CentOS", "CentOS Stream", "Rocky", "AlmaLinux"] or ansible_os_family == "RedHat") and ansible_distribution_major_version == "9")
           }}
     
     - name: Display OS support status

@@ -68,6 +68,11 @@ run_system_prerequisites_check() {
     
 
 
+    # Ensure python3_interpreter points to Python 3.10+
+    if ! command -v "${python3_interpreter:-python3}" &>/dev/null || ! "${python3_interpreter:-python3}" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+        python3_interpreter="$(command -v python3.11 || command -v python3)"
+    fi
+
     # Check for python3 (version 3.10 or above) using configured interpreter
     if [ -z "$python3_interpreter" ]; then
         echo -e "${RED}✗ python3_interpreter not configured${NC}"

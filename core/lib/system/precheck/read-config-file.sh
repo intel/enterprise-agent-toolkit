@@ -42,6 +42,11 @@ read_config_file() {
             echo "Enterprise Inference Metadata configuration file not found"
             exit 1        
         fi
+
+        # Default to python3.11 if configured interpreter is missing or Python < 3.10
+        if ! command -v "${python3_interpreter:-python3}" &>/dev/null || ! "${python3_interpreter:-python3}" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+            python3_interpreter="$(command -v python3.11 || command -v python3)"
+        fi
                 
         echo -n "place-holder-123" > "$HOMEDIR/inventory/.vault-passfile"
         vault_pass_file="$HOMEDIR/inventory/.vault-passfile"        

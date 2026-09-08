@@ -274,23 +274,27 @@ install_prereqs() {
             pkg_install \
                 git curl wget openssl sshpass python3 python3-pip python3-venv \
                 software-properties-common apt-transport-https ca-certificates \
-                jq unzip
+                jq unzip conntrack socat ebtables
             ;;
         dnf)
             sudo dnf makecache -q 2>/dev/null || true
             pkg_install epel-release 2>/dev/null || true
             pkg_install \
                 git curl wget openssl sshpass python3 python3-pip \
-                ca-certificates jq unzip
+                ca-certificates jq unzip conntrack-tools socat ebtables \
+                python3.11 python3.11-pip 2>/dev/null || true
             ;;
         yum)
             sudo yum makecache -q 2>/dev/null || true
             pkg_install epel-release 2>/dev/null || true
             pkg_install \
                 git curl wget openssl python3 python3-pip \
-                ca-certificates jq unzip
+                ca-certificates jq unzip conntrack-tools socat ebtables \
+                python3.11 python3.11-pip 2>/dev/null || true
             ;;
     esac
+    [[ -f /usr/local/bin/kubectl ]] && sudo ln -sf /usr/local/bin/kubectl /usr/bin/kubectl 2>/dev/null || true
+    [[ -f /usr/local/bin/helm ]] && sudo ln -sf /usr/local/bin/helm /usr/bin/helm 2>/dev/null || true
     success "System packages installed"
 }
 
