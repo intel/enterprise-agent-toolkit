@@ -300,7 +300,7 @@ Pick a `MODEL` your GenAI Gateway serves that supports tool calling (from the `/
 ### 1. Create the sandbox and add a minimal OpenCode config
 
 ```bash
-MODEL=us.anthropic.claude-opus-4-7   # a tool-calling model your gateway serves
+MODEL=<your-deployed-model>          # a tool-calling model your GenAI Gateway serves
 
 # Deny-all network policy: the sandbox's ONLY egress is the genai-gateway provider endpoint.
 # Without it, the community image's default policy lets python/pip reach PyPI. Filesystem and
@@ -358,9 +358,6 @@ Quit with `ctrl+c`, then clean up:
 ```bash
 openshell sandbox delete opencode
 ```
-
-> The model must do reliable tool calling (a Claude model works well). Small local models on this
-> stack often emit tool calls as plain text, and OpenCode ends the turn without acting.
 
 > In the community image, `opencode` is a Node launcher that starts the bundled executable
 > `/usr/lib/node_modules/opencode-ai/bin/.opencode`, which makes the model calls. That path is
