@@ -20,6 +20,7 @@ deploy_redis=on
 deploy_pgvector=off
 deploy_kuberay=off
 deploy_agent_sandbox=off
+deploy_openshell=off
 http_proxy=
 https_proxy=
 no_proxy=
@@ -43,6 +44,7 @@ Make sure to update the values in the agentic-config.cfg file according to your 
 > - If `deploy_pgvector` is set to `on`, PostgreSQL 16 with the pgvector extension will be deployed as a vector store and long-term memory backend.
 > - If `deploy_kuberay` is set to `on`, KubeRay will be deployed to provide Ray distributed computing inside the cluster. Tuning parameters (namespace, worker replicas, CPU/memory limits, Ray image) are configured separately in `core/inventory/kuberay-config.yaml` — see [docs/kuberay.md](./kuberay.md) for the full guide.
 > - If `deploy_agent_sandbox` is set to `on`, the Agent Sandbox controller will be deployed for isolated pod-based code execution.
+> - If `deploy_openshell` is set to `on`, NVIDIA OpenShell will be deployed for policy-enforced sandboxes on top of Agent Sandbox, with the GenAI Gateway registered as a provider. Requires `deploy_agent_sandbox=on` — see [docs/openshell.md](./openshell.md).
 
 ---
 

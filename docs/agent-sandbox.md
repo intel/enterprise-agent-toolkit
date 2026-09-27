@@ -9,6 +9,12 @@ or other workloads.
 The implementation is based on
 [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox).
 
+> **Optional policy layer:** [NVIDIA OpenShell](openshell.md) (`deploy_openshell=on`, off by
+> default) runs on this controller. Its gateway creates its own `Sandbox` resources in
+> `openshell-sandboxes` and applies a per-sandbox egress and filesystem policy. It does not use
+> the router, `SandboxTemplate`, `WarmPool` or the SDK described here; both kinds of sandbox
+> can run on the same cluster.
+
 ---
 
 ## Architecture

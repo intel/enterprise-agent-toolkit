@@ -1,0 +1,49 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# NVIDIA OpenShell configuration (policy-enforced sandboxes on top of Agent Sandbox)
+# The two namespaces and the release name are also read by deploy-agentic-stack.sh (resume
+# check, summary), so change them here rather than through extra vars.
+openshell_namespace: "openshell-system"             # gateway (holds provider credentials)
+openshell_sandbox_namespace: "openshell-sandboxes"  # sandbox workload + supervisor pods
+openshell_release_name: "openshell"
+openshell_chart_ref: "oci://ghcr.io/nvidia/openshell/helm-chart"
+helm_charts_base_openshell: "{{ lookup('env', 'PWD') }}/helm-charts/openshell"
+
+# CLI used from the control plane to register the GenAI Gateway provider
+openshell_cli_url: "https://github.com/NVIDIA/OpenShell/releases/download/{{ openshell_release_tag }}/openshell-x86_64-unknown-linux-musl.tar.gz"
+# Empty = ~/.cache/eat/openshell-cli-<release tag> of the deploying user (mode 0700): private,
+# and versioned so a release bump fetches a matching CLI.
+openshell_cli_dir: ""
+
+# Set by openshell-controller.sh; stored in ConfigMap openshell-deploy-state after a
+# successful run so resume mode can tell a complete deployment from a partial one.
+openshell_deploy_fingerprint: ""
+
+# User authentication. OpenShell on Kubernetes authenticates users via OIDC only
+# (mTLS covers transport + supervisors). Set openshell_oidc_issuer (e.g. Keycloak realm URL),
+# or explicitly accept the single-admin mode: gateway stays ClusterIP-only and is reached
+# via `kubectl port-forward`, so access is gated by Kubernetes RBAC on openshell_namespace.
+openshell_oidc_issuer: ""
+openshell_oidc_audience: "openshell-cli"
+openshell_allow_unauthenticated_clusterip_only: false
+
+# Pod-level NetworkPolicy for sandbox pods the chart leaves unselected (all-in-one pods of
+# chart <= 0.0.116; split supervisor/workload pods of newer charts carry their own policies).
+# Egress: DNS, gateway, GenAI Gateway, upstream proxy, public internet; add private CIDRs
+# that sandbox policies may target.
+openshell_sandbox_network_policy: true
+openshell_sandbox_egress_cidrs: []
+openshell_upstream_proxy_cidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]  # proxy port only
+
+# GenAI Gateway (LiteLLM) provider: sandboxes see a placeholder, the supervisor injects a
+# per-deployment LiteLLM virtual key only toward the gateway service.
+openshell_genai_provider_enabled: true
+openshell_genai_namespace: "genai-gateway"
+openshell_genai_deployment: "genai-gateway-deployment"
+openshell_genai_service_host: "genai-gateway-service.{{ openshell_genai_namespace }}.svc.cluster.local"
+openshell_genai_service_port: 4000
+openshell_genai_provider_name: "genai-gateway"
+openshell_genai_key_alias: "openshell-sandboxes"
+openshell_genai_key_models: []          # empty = all models the gateway serves
+openshell_genai_key_max_budget: 50

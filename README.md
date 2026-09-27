@@ -111,6 +111,8 @@ Enables agents to safely execute code and run arbitrary actions in isolated envi
 
 **Default provider:** `kubernetes-sigs/agent-sandbox`
 
+**Optional policy layer:** [NVIDIA OpenShell](docs/openshell.md) — policy-enforced sandboxes on top of Agent Sandbox (egress default-deny, L7 rules, Landlock where the kernel supports it, GenAI Gateway key kept out of the sandbox). Off by default; enable with `deploy_openshell=on`.
+
 ---
 
 ### Memory, State & Context
@@ -243,7 +245,7 @@ Hardware requirements, SSH key setup, and DNS/TLS configuration are covered in *
 
 ### 3. Quick Start
 
-The full step-by-step deployment guide — covering the base stack, semantic routing, Redis, pgvector, and Agent Sandbox — is in **[Quick Start Guide](docs/README.md)**.
+The full step-by-step deployment guide — covering the base stack, semantic routing, Redis, pgvector, Agent Sandbox, and OpenShell — is in **[Quick Start Guide](docs/README.md)**.
 
 
 **Estimated time to first running agent: hours, not months.**
@@ -252,7 +254,7 @@ The full step-by-step deployment guide — covering the base stack, semantic rou
 
 ## Backend Connection Reference
 
-In-cluster URLs for all shared backends (Redis, Agent Sandbox, pgvector, KubeRay, Flowise). See **[Backend Connection Reference](docs/backend-connection-reference.md)** for the full reference.
+In-cluster URLs for all shared backends (Redis, Agent Sandbox, OpenShell, pgvector, KubeRay, Flowise). See **[Backend Connection Reference](docs/backend-connection-reference.md)** for the full reference.
 
 ---
 

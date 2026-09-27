@@ -1,0 +1,383 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Deploy NVIDIA OpenShell
+  hosts: "{{ inference_delegate | default('kube_control_plane') }}"
+  gather_facts: false
+  any_errors_fatal: "{{ any_errors_fatal | default(true) }}"
+  environment: "{{ proxy_disable_env | default(env_proxy | default({})) }}"
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/metadata/vars/inference_common.yml"
+    - "{{ playbook_dir }}/../inventory/metadata/vars/inference_delegate.yml"
+    - "{{ playbook_dir }}/../inventory/metadata/vars/inference_openshell.yml"
+  vars:
+    openshell_node_selector_label: "ei-infra-eligible"
+    openshell_upstream_proxy: "{{ (env_proxy | default({})).https_proxy | default('') }}"
+    openshell_upstream_no_proxy: "{{ (env_proxy | default({})).no_proxy | default('') }}"
+    openshell_client_tls_secret: "openshell-client-tls"
+    # CLI talks to 127.0.0.1 via port-forward; never route that through a corporate proxy.
+    openshell_cli_env:
+      XDG_CONFIG_HOME: "{{ openshell_cli_path }}/config"
+      NO_PROXY: "127.0.0.1,localhost"
+      no_proxy: "127.0.0.1,localhost"
+      OPENSHELL_GATEWAY: "eat"
+
+  roles:
+    - role: inference-tools
+
+  tasks:
+    # ========================================================================
+    # Task Group 1: Prerequisites
+    # ========================================================================
+    - name: Check Kubernetes cluster connectivity
+      command: kubectl get nodes
+      changed_when: false
+      run_once: true
+
+    - name: Require an explicit user-authentication mode
+      ansible.builtin.assert:
+        that: openshell_oidc_issuer | length > 0 or openshell_allow_unauthenticated_clusterip_only | bool
+        fail_msg: >-
+          OpenShell on Kubernetes authenticates users via OIDC only. Set openshell_oidc_issuer
+          (e.g. a Keycloak realm URL) or openshell_allow_unauthenticated_clusterip_only=true
+          to accept single-admin access gated by Kubernetes RBAC (port-forward).
+      run_once: true
+
+    - name: Check Agent Sandbox API is served (deploy_agent_sandbox=on)
+      command: kubectl get crd sandboxes.agents.x-k8s.io -o jsonpath='{.spec.versions[*].name}'
+      register: sandbox_crd
+      changed_when: false
+      failed_when: sandbox_crd.rc != 0 or 'v1beta1' not in sandbox_crd.stdout
+      run_once: true
+
+    # ========================================================================
+    # Task Group 2: Install OpenShell gateway (Helm)
+    # ========================================================================
+    - name: Create OpenShell namespaces
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ item }}"
+      loop:
+        - "{{ openshell_namespace }}"
+        - "{{ openshell_sandbox_namespace }}"
+      run_once: true
+
+    - name: Install OpenShell Helm chart
+      command: >
+        helm upgrade --install {{ openshell_release_name }} {{ openshell_chart_ref }}
+        --version {{ openshell_chart_version }}
+        --namespace {{ openshell_namespace }}
+        -f {{ helm_charts_base_openshell }}/values.yaml
+        --set global.image.tag={{ openshell_image_tag }}
+        {% if openshell_image_tag == 'dev' %}
+        --set global.image.pullPolicy=Always
+        {% endif %}
+        --set server.sandboxNamespace={{ openshell_sandbox_namespace }}
+        --set-string nodeSelector.{{ openshell_node_selector_label }}=true
+        {% if openshell_oidc_issuer | length > 0 %}
+        --set server.oidc.issuer={{ openshell_oidc_issuer }}
+        --set server.oidc.audience={{ openshell_oidc_audience }}
+        {% else %}
+        --set server.auth.allowUnauthenticatedUsers=true
+        {% endif %}
+        {% if openshell_upstream_proxy | length > 0 %}
+        --set upstreamProxy.url={{ openshell_upstream_proxy }}
+        --set-string upstreamProxy.noProxy="{{ openshell_upstream_no_proxy | replace(',', '\,') }}"
+        {% endif %}
+        --wait --timeout 10m
+      register: openshell_helm
+      run_once: true
+
+    # Chart gap: supervisor pods in server.sandboxNamespace mount the client TLS secret,
+    # but the chart only creates it in the release namespace.
+    - name: Replicate client TLS secret into the sandbox namespace
+      shell: |
+        set -o pipefail
+        kubectl get secret {{ openshell_client_tls_secret }} -n {{ openshell_namespace }} -o json \
+          | jq '{apiVersion, kind, type, data, metadata: {name: .metadata.name, namespace: "{{ openshell_sandbox_namespace }}"}}' \
+          | kubectl apply -f -
+      args:
+        executable: /bin/bash
+      register: tls_copy
+      changed_when: "'configured' in tls_copy.stdout or 'created' in tls_copy.stdout"
+      run_once: true
+
+    # Selects only pods without openshell.ai/boundary-role, so split-pod charts keep their
+    # own (stricter) policies: NetworkPolicy allows are additive.
+    - name: Apply sandbox pod NetworkPolicy
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ sandbox_np | from_yaml }}"
+      vars:
+        # Proxy hostnames behind GSLB resolve to varying IPs: allow the proxy port on
+        # openshell_upstream_proxy_cidrs (default: private ranges) instead of pinning /32s.
+        proxy_cidrs: "{{ openshell_upstream_proxy_cidrs if openshell_upstream_proxy | length > 0 else [] }}"
+        sandbox_np: |
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: eat-openshell-sandbox-pods
+            namespace: {{ openshell_sandbox_namespace }}
+            labels:
+              app.kubernetes.io/managed-by: agentic-ai-stack
+          spec:
+            podSelector:
+              matchExpressions:
+              - {key: openshell.ai/boundary-role, operator: DoesNotExist}
+            policyTypes: [Ingress, Egress]
+            ingress:
+            - from:
+              - namespaceSelector:
+                  matchLabels: {kubernetes.io/metadata.name: {{ openshell_namespace }}}
+            egress:
+            - to:
+              - namespaceSelector:
+                  matchLabels: {kubernetes.io/metadata.name: kube-system}
+                podSelector:
+                  matchLabels: {k8s-app: kube-dns}
+              ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+            - to:
+              - namespaceSelector:
+                  matchLabels: {kubernetes.io/metadata.name: {{ openshell_namespace }}}
+            - to:
+              - namespaceSelector:
+                  matchLabels: {kubernetes.io/metadata.name: {{ openshell_genai_namespace }}}
+              ports: [{port: {{ openshell_genai_service_port }}, protocol: TCP}]
+          {% if proxy_cidrs | length > 0 %}
+            - to:
+          {% for cidr in proxy_cidrs %}
+              - ipBlock: {cidr: {{ cidr }}}
+          {% endfor %}
+              ports: [{port: {{ openshell_upstream_proxy | urlsplit('port') | default(3128, true) }}, protocol: TCP}]
+          {% endif %}
+          {% if openshell_sandbox_egress_cidrs | length > 0 %}
+            - to:
+          {% for cidr in openshell_sandbox_egress_cidrs %}
+              - ipBlock: {cidr: {{ cidr }}}
+          {% endfor %}
+          {% endif %}
+            - to:
+              - ipBlock:
+                  cidr: 0.0.0.0/0
+                  except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
+      when: openshell_sandbox_network_policy | bool
+      run_once: true
+
+    - name: Verify OpenShell gateway is ready
+      command: >
+        kubectl rollout status statefulset/{{ openshell_release_name }}
+        -n {{ openshell_namespace }} --timeout=300s
+      changed_when: false
+      run_once: true
+
+    # ========================================================================
+    # Task Group 3: GenAI Gateway provider (per-deployment LiteLLM virtual key)
+    # ========================================================================
+    - name: Check GenAI Gateway is deployed
+      command: kubectl get deploy {{ openshell_genai_deployment }} -n {{ openshell_genai_namespace }}
+      register: genai_present
+      changed_when: false
+      failed_when: false
+      when: openshell_genai_provider_enabled | bool
+      run_once: true
+
+    - name: Configure GenAI Gateway provider
+      when: openshell_genai_provider_enabled | bool and genai_present.rc == 0
+      run_once: true
+      block:
+        - name: Check for existing LiteLLM virtual key secret
+          command: kubectl get secret openshell-genai-key -n {{ openshell_namespace }}
+          register: vk_secret
+          changed_when: false
+          failed_when: false
+
+        # Minted inside the LiteLLM pod so the master key never leaves it.
+        - name: Mint LiteLLM virtual key for OpenShell sandboxes
+          command:
+            argv:
+              - kubectl
+              - exec
+              - -n
+              - "{{ openshell_genai_namespace }}"
+              - "deploy/{{ openshell_genai_deployment }}"
+              - -c
+              - litellm-container
+              - --
+              - python
+              - -c
+              - |
+                import json, os, urllib.request
+                body = {"key_alias": "{{ openshell_genai_key_alias }}",
+                        "models": {{ openshell_genai_key_models | to_json }},
+                        "max_budget": {{ openshell_genai_key_max_budget }}}
+                req = urllib.request.Request("http://127.0.0.1:4000/key/generate", json.dumps(body).encode(),
+                    {"Authorization": "Bearer " + os.environ["LITELLM_MASTER_KEY"], "Content-Type": "application/json"})
+                print(json.load(urllib.request.urlopen(req))["key"])
+          register: vk_mint
+          no_log: true
+          when: vk_secret.rc != 0
+
+        - name: Store LiteLLM virtual key
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: openshell-genai-key
+                namespace: "{{ openshell_namespace }}"
+              type: Opaque
+              stringData:
+                api_key: "{{ vk_mint.stdout | trim }}"
+          no_log: true
+          when: vk_secret.rc != 0
+
+        # Resolved on the host: XDG_CONFIG_HOME below cannot take a literal "~".
+        - name: Resolve home directory of the deploying user
+          command: printenv HOME
+          register: cli_home
+          changed_when: false
+          when: openshell_cli_dir | length == 0
+
+        - name: Set CLI directory
+          ansible.builtin.set_fact:
+            openshell_cli_path: >-
+              {{ openshell_cli_dir if openshell_cli_dir | length > 0
+                 else cli_home.stdout ~ '/.cache/eat/openshell-cli-' ~ openshell_release_tag }}
+
+        # Private before anything is extracted or run from it; fails if another user owns it.
+        - name: Prepare CLI directories
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0700"
+          loop:
+            - "{{ openshell_cli_path }}"
+            - "{{ openshell_cli_path }}/config/openshell/gateways/eat/mtls"
+
+        - name: Fetch OpenShell CLI
+          ansible.builtin.unarchive:
+            src: "{{ openshell_cli_url }}"
+            dest: "{{ openshell_cli_path }}"
+            remote_src: true
+            creates: "{{ openshell_cli_path }}/openshell"
+
+        - name: Write CLI mTLS bundle from the chart secret
+          shell: |
+            set -o pipefail
+            for k in ca.crt tls.crt tls.key; do
+              kubectl get secret {{ openshell_client_tls_secret }} -n {{ openshell_namespace }} \
+                -o jsonpath="{.data.${k//./\\.}}" | base64 -d > "$k"
+            done
+            chmod 600 ca.crt tls.crt tls.key
+          args:
+            executable: /bin/bash
+            chdir: "{{ openshell_cli_path }}/config/openshell/gateways/eat/mtls"
+          changed_when: false
+          no_log: true
+
+        - name: Render provider profile
+          ansible.builtin.copy:
+            src: "{{ helm_charts_base_openshell }}/genai-gateway-provider.yaml"
+            dest: "{{ openshell_cli_path }}/genai-gateway-provider.yaml"
+            mode: "0644"
+
+        - name: Set GenAI Gateway endpoint in provider profile
+          ansible.builtin.replace:
+            path: "{{ openshell_cli_path }}/genai-gateway-provider.yaml"
+            regexp: "{{ item.key }}"
+            replace: "{{ item.value }}"
+          loop:
+            - {key: "GENAI_HOST", value: "{{ openshell_genai_service_host }}"}
+            - {key: "GENAI_PORT", value: "{{ openshell_genai_service_port }}"}
+
+        - name: Register profile and provider through a temporary port-forward
+          shell: |
+            set -eo pipefail
+            kubectl port-forward -n {{ openshell_namespace }} svc/{{ openshell_release_name }} 0:8080 > pf.log 2>&1 &
+            PF=$!
+            trap 'kill $PF 2>/dev/null' EXIT
+            for _ in $(seq 30); do grep -q 'Forwarding from 127.0.0.1' pf.log && break; sleep 1; done
+            PORT=$(sed -nE 's/^Forwarding from 127\.0\.0\.1:([0-9]+).*/\1/p' pf.log | head -1)
+            ./openshell gateway add "https://127.0.0.1:${PORT}" --local --name eat > /dev/null
+            # <= 0.0.116 composes provider endpoints into sandbox policy only behind this flag
+            # (dev builds dropped the key and always compose).
+            if ./openshell settings get --global | grep -q providers_v2_enabled; then
+              ./openshell settings set --global --key providers_v2_enabled --value true --yes > /dev/null
+            fi
+            # Match the gRPC NotFound text: the CLI line-wraps the "provider profile not found" message.
+            for _ in 1 2 3; do
+              OUT=$(./openshell provider profile export eat-genai-gateway 2>&1) && break
+              grep -q 'entity was not found' <<< "$OUT" && break
+              sleep 2
+            done
+            RV=$(sed -nE 's/^resource_version: *([0-9]+).*/\1/p' <<< "$OUT")
+            if [ -n "$RV" ]; then
+              # update is optimistic-concurrency: requires the stored resource_version
+              sed -i "/^id: /a resource_version: ${RV}" genai-gateway-provider.yaml
+              ./openshell provider profile update --file genai-gateway-provider.yaml eat-genai-gateway
+            elif grep -q 'entity was not found' <<< "$OUT"; then
+              ./openshell provider profile import -f genai-gateway-provider.yaml
+            else
+              echo "$OUT" >&2
+              exit 1
+            fi
+            if ./openshell provider get {{ openshell_genai_provider_name }} > /dev/null 2>&1; then
+              echo "provider exists"
+            elif ! OUT=$(OPENAI_API_KEY="$(kubectl get secret openshell-genai-key -n {{ openshell_namespace }} -o jsonpath='{.data.api_key}' | base64 -d)" \
+                ./openshell provider create --name {{ openshell_genai_provider_name }} \
+                  --type eat-genai-gateway --credential OPENAI_API_KEY 2>&1); then
+              # a transient get failure must not fail a re-run
+              grep -q 'already exists' <<< "$OUT" || { echo "$OUT" >&2; exit 1; }
+              echo "provider exists"
+            fi
+          args:
+            executable: /bin/bash
+            chdir: "{{ openshell_cli_path }}"
+          environment: "{{ openshell_cli_env }}"
+          register: provider_reg
+          changed_when: "'provider exists' not in provider_reg.stdout"
+
+      always:
+        - name: Remove CLI credentials
+          ansible.builtin.file:
+            path: "{{ openshell_cli_path }}/config"
+            state: absent
+          when: openshell_cli_path is defined
+
+    # ========================================================================
+    # Task Group 4: Record completion and summary
+    # ========================================================================
+    # Written last, so resume mode (deploy-agentic-stack.sh) re-runs a partial deployment.
+    - name: Record deployment fingerprint
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: openshell-deploy-state
+            namespace: "{{ openshell_namespace }}"
+            labels:
+              app.kubernetes.io/managed-by: agentic-ai-stack
+          data:
+            fingerprint: "{{ openshell_deploy_fingerprint }}"
+      when: openshell_deploy_fingerprint | length > 0
+      run_once: true
+
+    - name: Deployment summary
+      debug:
+        msg:
+          - "============================================================"
+          - "  OpenShell deployed successfully!"
+          - "  Chart      : {{ openshell_chart_ref }}:{{ openshell_chart_version }} (images {{ openshell_image_tag }})"
+          - "  Gateway    : {{ openshell_release_name }}.{{ openshell_namespace }}.svc.cluster.local:8080 (mTLS)"
+          - "  Sandboxes  : namespace {{ openshell_sandbox_namespace }} (Agent Sandbox CRs)"
+          - "  Auth       : {{ 'OIDC ' + openshell_oidc_issuer if openshell_oidc_issuer | length > 0 else 'ClusterIP-only, Kubernetes RBAC (port-forward)' }}"
+          - "  Provider   : {{ openshell_genai_provider_name if (genai_present.rc | default(1)) == 0 else 'none (GenAI Gateway not deployed)' }}"
+          - "============================================================"
+      run_once: true

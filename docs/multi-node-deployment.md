@@ -16,6 +16,7 @@ The Kubernetes layer is provisioned by **Kubespray**, which natively supports mu
 - [Step 7 — Redis (Shared Memory Backend)](#step-7--redis-shared-memory-backend)
 - [Step 8 — PostgreSQL + pgvector (Vector Store)](#step-8--postgresql--pgvector-vector-store--long-term-memory)
 - [Step 9 — Agent Sandbox (Sandboxed Code Execution)](#step-9--agent-sandbox-sandboxed-code-execution)
+- [Step 10 — OpenShell (Policy-Enforced Sandboxes, optional)](#step-10--openshell-policy-enforced-sandboxes-optional)
 - [Adding a Worker Node to a Running Cluster](#adding-a-worker-node-to-a-running-cluster)
 - [Supported Deployment Topologies](#supported-deployment-topologies)
 - [Notes](#notes)
@@ -132,6 +133,7 @@ deploy_llm_models=on
 deploy_redis=on          # standalone Redis Stack in its own namespace
 deploy_pgvector=off      # optional: PostgreSQL 16 + pgvector — shared vector store and long-term memory backend
 deploy_agent_sandbox=on  # optional: Agent Sandbox controller — isolated pod environments for safe code execution
+deploy_openshell=off     # optional: NVIDIA OpenShell policy-enforced sandboxes (requires deploy_agent_sandbox=on)
 deploy_kuberay=off       # optional
 ```
 
@@ -509,6 +511,46 @@ kubectl get sandboxtemplate -n agent-sandbox
 > `http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080`
 
 For the full guide — adding custom templates, WarmPools, and SDK usage — see **[agent-sandbox.md](agent-sandbox.md)**.
+
+---
+
+## Step 10 — OpenShell (Policy-Enforced Sandboxes, optional)
+
+NVIDIA OpenShell is an optional policy layer on top of Agent Sandbox. It is off by default. Its
+gateway creates sandboxes whose egress, filesystem access and credentials are controlled by a
+per-sandbox policy, and it registers the GenAI Gateway as a provider, so sandboxes call models
+with a placeholder key instead of the LiteLLM key. It requires Agent Sandbox, and it is
+validated with OpenShell `0.0.116` in single-admin mode (no user authentication; access is
+gated by Kubernetes RBAC).
+
+```ini
+# core/inventory/agentic-config.cfg
+deploy_agent_sandbox=on
+deploy_openshell=on
+```
+
+```yaml
+# core/inventory/metadata/vars/inference_openshell.yml — single-admin mode
+openshell_allow_unauthenticated_clusterip_only: true
+```
+
+```bash
+./deploy-agentic-stack.sh
+```
+
+The gateway is placed on `ei-infra-eligible` nodes. The sandbox NetworkPolicy the toolkit adds is enforced only if the CNI enforces
+`NetworkPolicy` (Calico does).
+
+**Verify:**
+
+```bash
+kubectl get pods -n openshell-system
+# NAME          READY   STATUS    RESTARTS
+# openshell-0   1/1     Running   0
+```
+
+For CLI setup, running a sandbox against the GenAI Gateway, and known limitations, see
+**[openshell.md](openshell.md)**.
 
 ---
 

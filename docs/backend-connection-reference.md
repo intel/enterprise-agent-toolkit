@@ -46,6 +46,24 @@ curl -s http://localhost:8080/healthz
 # {"status":"ok"}
 ```
 
+## OpenShell (Policy-Enforced Sandboxes)
+
+Enabled with `deploy_openshell=on` (requires `deploy_agent_sandbox=on`). See [openshell.md](openshell.md) for full details.
+
+| Resource | Value |
+|---|---|
+| **Gateway namespace** | `openshell-system` |
+| **Gateway service** | `openshell.openshell-system.svc.cluster.local:8080` (gRPC, mTLS) |
+| **Sandbox namespace** | `openshell-sandboxes` |
+| **Client mTLS bundle** | Secret `openshell-client-tls` in `openshell-system` |
+| **CLI** | [OpenShell v0.0.116 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.116) |
+| **GenAI provider** | `genai-gateway` (attach with `openshell sandbox create --provider genai-gateway`) |
+
+```bash
+# Admin access (ClusterIP only)
+kubectl port-forward -n openshell-system svc/openshell 8080:8080 &
+```
+
 ## PostgreSQL + pgvector (Vector Store & Long-Term Memory)
 
 Enabled with `deploy_pgvector=on`. See [README.md](README.md#step-2b--postgresql--pgvector-vector-store--long-term-memory) for deployment details.

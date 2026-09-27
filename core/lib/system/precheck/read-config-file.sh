@@ -69,7 +69,7 @@ read_config_file() {
         local _k8s_base; _k8s_base="$(_build_k8s_no_proxy)"
         # Namespace-level wildcards cover short-form service DNS names
         # (e.g. vllm-service.default) in addition to fully-qualified ones.
-        local _ns_suffixes=".default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.flowise"
+        local _ns_suffixes=".default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.openshell-system,.flowise"
         local _k8s_no_proxy="${_k8s_base},${_ns_suffixes}${cluster_url:+,${cluster_url}}"
         if [[ -n "${no_proxy:-}" ]]; then
             no_proxy="${no_proxy},${_k8s_no_proxy}"

@@ -18,9 +18,17 @@ fresh_installation() {
 
     read_config_file
 
+    # OpenShell creates Agent Sandbox CRs: require the controller in this run or already on the cluster.
+    if [[ "${deploy_openshell:-no}" == "yes" && "${deploy_agent_sandbox:-no}" != "yes" ]]; then
+        if [[ "$deploy_kubernetes_fresh" == "yes" ]] || ! kubectl get crd sandboxes.agents.x-k8s.io &>/dev/null; then
+            echo "${RED}deploy_openshell=on requires deploy_agent_sandbox=on (Agent Sandbox CRDs not found). Exiting.${NC}"
+            exit 1
+        fi
+    fi
+
     echo "Deployment configuration: $deploy_kubernetes_fresh"
 
-    if [[  "$deploy_kubernetes_fresh" == "no" && "$deploy_ingress_controller" == "no" && "$deploy_llm_models" == "no" && "$deploy_observability" == "no" && "$deploy_genai_gateway" == "no" && "$deploy_istio" == "no" && "$deploy_ceph" == "no" && "$uninstall_ceph" == "no"  && "$deploy_nri_balloon_policy" == "no" && "$deploy_agenticai_plugin" == "no" && "$deploy_finetune_plugin" == "no" && "$deploy_redis" == "no" && "$deploy_pgvector" == "no" && "${deploy_agent_sandbox:-no}" == "no" ]]; then
+    if [[  "$deploy_kubernetes_fresh" == "no" && "$deploy_ingress_controller" == "no" && "$deploy_llm_models" == "no" && "$deploy_observability" == "no" && "$deploy_genai_gateway" == "no" && "$deploy_istio" == "no" && "$deploy_ceph" == "no" && "$uninstall_ceph" == "no"  && "$deploy_nri_balloon_policy" == "no" && "$deploy_agenticai_plugin" == "no" && "$deploy_finetune_plugin" == "no" && "$deploy_redis" == "no" && "$deploy_pgvector" == "no" && "${deploy_agent_sandbox:-no}" == "no" && "${deploy_openshell:-no}" == "no" ]]; then
 
     # Check if all deployment steps are set to "no" after getting user input
         echo "No installation or deployment steps selected. Skipping setup_initial_env..."
@@ -212,6 +220,14 @@ fresh_installation() {
                     "Failed to deploy Agent Sandbox. Exiting!."
             else
                 echo "Skipping Agent Sandbox deployment..."
+            fi
+
+            if [[ "${deploy_openshell:-no}" == "yes" ]]; then
+                execute_and_check "Deploying OpenShell (policy-enforced sandboxes)..." deploy_openshell_controller \
+                    "OpenShell deployed successfully." \
+                    "Failed to deploy OpenShell. Exiting!."
+            else
+                echo "Skipping OpenShell deployment..."
             fi
 
 

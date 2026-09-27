@@ -1,0 +1,35 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# OpenShell provider profile for the EAT GenAI Gateway (LiteLLM, OpenAI-compatible).
+# GENAI_HOST / GENAI_PORT are substituted by deploy-openshell.yml.
+id: eat-genai-gateway
+display_name: EAT GenAI Gateway (LiteLLM)
+description: Intel Enterprise Agent Toolkit LiteLLM gateway (OpenAI-compatible)
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: LiteLLM virtual key (model-scoped, budgeted)
+    env_vars: [OPENAI_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+endpoints:
+  - host: GENAI_HOST
+    port: GENAI_PORT
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+# Binary identity matches the resolved executable path: a venv python resolves to its base
+# interpreter. Listed symlinks are resolved when the policy loads; globs are not, so the
+# uv-managed interpreter of the default community image is matched by its real path.
+binaries:
+  - /usr/bin/curl
+  - /usr/bin/python3
+  - /usr/bin/python3.12
+  - /usr/local/bin/python3
+  - /usr/local/bin/python3.12
+  - /sandbox/.uv/python/**
+  # OpenCode (community image): its Node launcher execs this binary.
+  - /usr/lib/node_modules/opencode-ai/bin/.opencode

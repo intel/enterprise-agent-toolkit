@@ -9,6 +9,7 @@ This guide provides step-by-step instructions on how to deploy the Intel AI for 
 - [Step 2 — Redis (Shared Memory Backend)](#step-2--redis-shared-memory-backend)
 - [Step 2b — PostgreSQL + pgvector (Vector Store)](#step-2b--postgresql--pgvector-vector-store--long-term-memory)
 - [Step 2c — Agent Sandbox (Sandboxed Code Execution)](#step-2c--agent-sandbox-sandboxed-code-execution)
+- [Step 2d — OpenShell (Policy-Enforced Sandboxes)](#step-2d--openshell-policy-enforced-sandboxes)
 
 ---
 
@@ -44,6 +45,7 @@ deploy_llm_models=on
 deploy_redis=on          # standalone Redis Stack in its own namespace
 deploy_pgvector=off      # optional: PostgreSQL 16 + pgvector — shared vector store and long-term memory backend
 deploy_agent_sandbox=on  # optional: Agent Sandbox controller — isolated pod environments for safe code execution
+deploy_openshell=off     # optional: NVIDIA OpenShell policy-enforced sandboxes (requires deploy_agent_sandbox=on)
 deploy_kuberay=off       # optional
 ```
 
@@ -500,5 +502,42 @@ kubectl get sandboxtemplate -n agent-sandbox
 
 For the full guide — adding custom templates, WarmPools, and SDK usage — see
 **[agent-sandbox.md](agent-sandbox.md)**.
+
+---
+
+## Step 2d — OpenShell (Policy-Enforced Sandboxes)
+
+NVIDIA OpenShell is an optional policy layer on top of Agent Sandbox (off by default). A
+supervisor in each sandbox applies that sandbox's policy: egress is denied unless the policy
+allows it (optionally per HTTP method and path), and filesystem access is restricted with
+Landlock where the node kernel supports it. The GenAI Gateway is registered as a provider:
+sandboxes see a placeholder key and the supervisor injects a dedicated LiteLLM virtual key.
+Validated with OpenShell `0.0.116` in single-admin mode.
+
+```ini
+# core/inventory/agentic-config.cfg
+deploy_agent_sandbox=on
+deploy_openshell=on
+```
+
+```yaml
+# core/inventory/metadata/vars/inference_openshell.yml — single-admin mode
+openshell_allow_unauthenticated_clusterip_only: true
+```
+
+```bash
+./deploy-agentic-stack.sh
+```
+
+**Verify:**
+
+```bash
+kubectl get pods -n openshell-system
+# NAME          READY   STATUS    RESTARTS
+# openshell-0   1/1     Running   0
+```
+
+For CLI setup, running a sandbox against the GenAI Gateway, and known limitations, see
+**[openshell.md](openshell.md)**.
 
 ---

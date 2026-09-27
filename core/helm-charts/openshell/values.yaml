@@ -1,0 +1,18 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# EAT overlay for the upstream OpenShell Helm chart (oci://ghcr.io/nvidia/openshell/helm-chart).
+# Namespace, image tag, proxy, auth and node placement are set by deploy-openshell.yml.
+
+global:
+  image:
+    pullPolicy: IfNotPresent
+
+server:
+  # Upstream default sends anonymous usage telemetry; enterprise deployments opt out.
+  telemetryEnabled: false
+
+# Agent Sandbox CRDs/controller come from deploy_agent_sandbox; fail fast if absent.
+agentSandbox:
+  preflight:
+    enabled: true
