@@ -1,0 +1,83 @@
+---
+name: Bandit
+
+# There is no Python in this tree yet, so this passes trivially. It is here so
+# the first .py file is covered on the commit that adds it.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-[0-9]+.[0-9]+'
+      - 'release/**'
+  pull_request:
+    branches:
+      - main
+      - 'release-[0-9]+.[0-9]+'
+      - 'release/**'
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # Only fires on the default branch; dormant until merged to main.
+    - cron: '20 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bandit:
+    name: Bandit (Python security)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Harden the runner (audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+
+      - name: Install Bandit
+        run: >-
+          pip install --disable-pip-version-check
+          "bandit[sarif,toml]==1.9.4"
+
+      # Skipped: B101 (asserts in tests), B601 (paramiko is not a dependency),
+      # B404 (importing subprocess is not a defect), and B603 -- which fires on
+      # the *recommended* argv-list form and cannot judge whether the input is
+      # trusted. The dangerous variants (B602/B604/B605/B609, shell=True and
+      # friends) stay enabled.
+      #
+      # Severity is deliberately unfiltered: real tests such as B105 hardcoded
+      # password report LOW, so raising the floor would hide them.
+      - name: Run Bandit
+        run: |
+          bandit -r . -x ./venv,./.venv -s B101,B404,B601,B603 \
+            -f sarif -o bandit-results.sarif --exit-zero
+          jq -r '"Bandit: \(.runs[0].results | length) finding(s)",
+            (.runs[0].results[]
+              | "  \(.level)\t\(.ruleId)\t"
+                + "\(.locations[0].physicalLocation.artifactLocation.uri)"
+                + ":\(.locations[0].physicalLocation.region.startLine)\t"
+                + "\(.message.text | split("\n")[0])")' \
+            bandit-results.sarif
+
+      - name: Upload Bandit SARIF
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always() && hashFiles('bandit-results.sarif') != ''
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
