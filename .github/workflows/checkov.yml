@@ -1,0 +1,69 @@
+---
+name: Checkov
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-[0-9]+.[0-9]+'
+      - 'release/**'
+  pull_request:
+    branches:
+      - main
+      - 'release-[0-9]+.[0-9]+'
+      - 'release/**'
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # Only fires on the default branch; dormant until merged to main.
+    - cron: '40 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checkov:
+    name: Checkov (Kubernetes / Actions / secrets)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Harden the runner (audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.14'
+
+      - name: Install Checkov
+        run: pip install --disable-pip-version-check "checkov==3.3.16"
+
+      - name: Run Checkov
+        continue-on-error: true
+        run: |
+          checkov -d . \
+            --framework kubernetes github_actions secrets \
+            --skip-path 'core/helm-charts/' \
+            --soft-fail --compact --quiet \
+            -o sarif --output-file-path console,. || true
+          ls -la results.sarif 2>/dev/null || echo "no results.sarif produced"
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always() && hashFiles('results.sarif') != ''
+        with:
+          sarif_file: results.sarif
+          category: checkov

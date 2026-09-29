@@ -1,0 +1,108 @@
+---
+name: Trivy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'release-[0-9]+.[0-9]+'
+      - 'release/**'
+  pull_request:
+    branches:
+      - main
+      - 'release-[0-9]+.[0-9]+'
+      - 'release/**'
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # Only fires on the default branch; dormant until merged to main.
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy:
+    name: Trivy (vuln, secret, misconfig, license)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Harden the runner (audit all outbound calls)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Two scans, because one severity threshold cannot serve both halves.
+      # CVEs, secrets and licences are triaged at CRITICAL,HIGH. Trivy rates
+      # nearly every Kubernetes misconfiguration LOW or MEDIUM, so that same
+      # threshold would silence the misconfig scanner entirely.
+      #
+      # `limit-severities-for-sarif` must be set: it defaults to false, and
+      # unset the action drops --severity for the SARIF run only -- the table
+      # reports 0 findings while the uploaded SARIF carries LOW/MEDIUM ones.
+      #
+      # The Trivy binary is pinned but its vulnerability database is fetched
+      # fresh each run; a scanner pinned to stale CVE data is worse than none.
+      - name: Trivy vuln / secret / licence scan (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,license
+          severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
+          format: sarif
+          output: trivy-vuln.sarif
+          exit-code: '0'
+
+      - name: Upload Trivy vuln SARIF
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always() && hashFiles('trivy-vuln.sarif') != ''
+        with:
+          sarif_file: trivy-vuln.sarif
+          category: trivy-vuln
+
+      # core/helm-charts/ is vendored upstream (Istio, APISIX, Redis, KubeRay,
+      # pgvector, vLLM, plus packaged .tgz subcharts); its defaults are not ours
+      # to change here, and left in it dominates the finding count.
+      - name: Trivy misconfiguration scan (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: misconfig
+          skip-dirs: core/helm-charts
+          format: sarif
+          output: trivy-misconfig.sarif
+          exit-code: '0'
+
+      - name: Upload Trivy misconfiguration SARIF
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always() && hashFiles('trivy-misconfig.sarif') != ''
+        with:
+          sarif_file: trivy-misconfig.sarif
+          category: trivy-misconfig
+
+      - name: Trivy summary (table)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig,license
+          skip-dirs: core/helm-charts
+          format: table
+          exit-code: '0'
