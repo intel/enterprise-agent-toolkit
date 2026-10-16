@@ -1,0 +1,29 @@
+---
+# =============================================================================
+# Redis Stack Role Defaults
+# =============================================================================
+# Redis Stack with RediSearch module — provides short-term memory,
+# session state, and semantic vector cache for agentic workloads.
+#
+# In-cluster URL after deployment:
+#   redis://redis-stack-server.{{ redis_stack_namespace }}.svc.cluster.local:6379
+# =============================================================================
+
+redis_stack_namespace: "redis"
+redis_stack_release_name: "redis"
+# Empty = use the cluster's default StorageClass (provided by the ai-solutions
+# `storage` platform component). Override to pin a specific class.
+redis_stack_storage_class: ""
+redis_stack_persistence_size: "10Gi"
+
+redis_stack_auth_enabled: true
+redis_stack_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+
+# Resources
+redis_stack_resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"

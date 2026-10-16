@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  role_name: redis_stack
+  description: Redis Stack with RediSearch — short-term memory and semantic cache
+  min_ansible_version: "2.15"
+dependencies: []

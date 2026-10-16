@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  role_name: agent_sandbox
+  description: Agent Sandbox — ephemeral code execution with policy-based isolation
+  min_ansible_version: "2.15"
+dependencies: []

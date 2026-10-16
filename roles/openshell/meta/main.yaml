@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  role_name: openshell
+  description: NVIDIA OpenShell — policy-enforced agent sandboxes on top of Agent Sandbox
+  min_ansible_version: "2.15"
+dependencies: []

@@ -1,0 +1,40 @@
+---
+# =============================================================================
+# OpenShell — Teardown
+# =============================================================================
+# Removes what install applied: the Helm release and both namespaces (which
+# also removes the openshell-genai-key Secret, the replicated client TLS
+# secret and the sandbox NetworkPolicy), plus the LiteLLM PeerAuthentication.
+# =============================================================================
+
+- name: "openshell | teardown | Remove Helm release"
+  kubernetes.core.helm:
+    name: "{{ openshell_release_name }}"
+    release_namespace: "{{ openshell_namespace }}"
+    state: absent
+    wait: true
+  failed_when: false
+
+- name: "openshell | teardown | Remove LiteLLM PeerAuthentication"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: security.istio.io/v1
+    kind: PeerAuthentication
+    name: openshell-sandbox-ingress
+    namespace: "{{ openshell_genai_namespace }}"
+  failed_when: false
+
+- name: "openshell | teardown | Remove namespaces"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ item }}"
+  loop:
+    - "{{ openshell_sandbox_namespace }}"
+    - "{{ openshell_namespace }}"
+  failed_when: false
+
+- name: "openshell | teardown | Complete"
+  ansible.builtin.debug:
+    msg: "OpenShell removed from namespaces '{{ openshell_namespace }}' and '{{ openshell_sandbox_namespace }}'"

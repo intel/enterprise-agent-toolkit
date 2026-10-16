@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# pgvector — Teardown
+# =============================================================================
+
+- name: "pgvector | teardown | Remove Helm release"
+  kubernetes.core.helm:
+    name: "{{ pgvector_release_name }}"
+    release_namespace: "{{ pgvector_namespace }}"
+    state: absent
+    wait: true
+  failed_when: false
+
+- name: "pgvector | teardown | Remove credentials secret"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    name: pgvector-credentials
+    namespace: "{{ pgvector_namespace }}"
+  failed_when: false
+
+- name: "pgvector | teardown | Remove namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ pgvector_namespace }}"
+  failed_when: false
+
+- name: "pgvector | teardown | Complete"
+  ansible.builtin.debug:
+    msg: "pgvector removed from namespace '{{ pgvector_namespace }}'"

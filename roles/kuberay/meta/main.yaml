@@ -1,0 +1,6 @@
+---
+galaxy_info:
+  role_name: kuberay
+  description: KubeRay — Ray distributed compute for parallel tool execution
+  min_ansible_version: "2.15"
+dependencies: []

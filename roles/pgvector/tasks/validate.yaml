@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# pgvector — Validate
+# =============================================================================
+
+- name: "pgvector | validate | Check pods are running"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ pgvector_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=pgvector
+  register: _val_pods
+  failed_when: >-
+    _val_pods.resources | default([]) | length == 0 or
+    _val_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length == 0
+
+- name: "pgvector | validate | Check pgvector extension"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ pgvector_namespace }}"
+    pod: "{{ _val_pods.resources[0].metadata.name }}"
+    command: >
+      psql -U {{ pgvector_username }} -d {{ pgvector_database }}
+      -c "SELECT extname FROM pg_extension WHERE extname='vector';"
+  register: _val_ext
+  failed_when: "'vector' not in _val_ext.stdout | default('')"
+
+- name: "pgvector | validate | Check credentials secret exists"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: pgvector-credentials
+    namespace: "{{ pgvector_namespace }}"
+  register: _val_secret
+  failed_when: _val_secret.resources | default([]) | length == 0
+
+- name: "pgvector | validate | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "pgvector pods: OK ({{ _val_pods.resources | length }} running)"
+      - "pgvector extension: {{ 'OK' if 'vector' in _val_ext.stdout | default('') else 'FAIL' }}"
+      - "Credentials secret: {{ 'OK' if _val_secret.resources | length > 0 else 'FAIL' }}"

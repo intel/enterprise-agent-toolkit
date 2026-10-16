@@ -1,0 +1,52 @@
+---
+# =============================================================================
+# Agent Toolkit Configuration — enterprise.agent-toolkit
+# =============================================================================
+# Role defaults live in roles/<name>/defaults/main.yaml.
+# Override any of them here.  This file is loaded by the core installer
+# via:  -e @ext/enterprise.agent-toolkit/config.yaml
+# =============================================================================
+
+# --- Default model (inference layer, applied only where this layer is provisioned) ---
+# Deployed on install.
+# Set [] to install without a chat model; deploy others with ./model-manager deploy <name>.
+llm_services_autodeploy_models: ["qwen2-5-coder-14b"]
+
+# --- vLLM Semantic Router dashboard (inference layer; applies only with vllm_sr_enabled) ---
+# Served at https://vllm-sr.<base_domain_name>/
+vllm_sr_dashboard_enabled: true
+# Client-facing name of the vLLM Semantic Router model in LiteLLM (litellm mode).
+vllm_sr_litellm_model_name: "vllm-sr/auto"
+
+# --- In-cluster image registry (platform; kubespray addon) ---
+kubernetes_registry_enabled: true
+
+# --- Redis Stack ---
+redis_stack_namespace: "redis"
+redis_stack_storage_class: ""          # empty = cluster default StorageClass
+redis_stack_persistence_size: "10Gi"
+
+# --- pgvector ---
+pgvector_namespace: "pgvector"
+pgvector_database: "agentdb"
+pgvector_username: "agentuser"
+pgvector_storage_size: "20Gi"
+
+# --- Agent Sandbox ---
+agent_sandbox_namespace: "agent-sandbox-system"
+agent_sandbox_version: "v0.5.0"
+
+# --- OpenShell  ---
+openshell_enabled: false
+# OpenShell authenticates users via OIDC only — when enabling it, set ONE of:
+openshell_oidc_issuer: ""                               # e.g. a Keycloak realm URL
+openshell_allow_unauthenticated_clusterip_only: false   # true = single-admin, ClusterIP + port-forward
+
+# --- KubeRay (optional — disabled by default) ---
+kuberay_enabled: false
+kuberay_namespace: "ray-system"
+kuberay_operator_version: "1.3.0"
+
+# --- Keycloak ---
+keycloak_agent_realm: "agent-toolkit"
+keycloak_agent_client_id: "agent-toolkit-client"

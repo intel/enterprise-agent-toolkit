@@ -1,0 +1,24 @@
+---
+# =============================================================================
+# Redis Stack — Teardown
+# =============================================================================
+
+- name: "redis_stack | teardown | Remove Helm release"
+  kubernetes.core.helm:
+    name: "{{ redis_stack_release_name }}"
+    release_namespace: "{{ redis_stack_namespace }}"
+    state: absent
+    wait: true
+  failed_when: false
+
+- name: "redis_stack | teardown | Remove namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ redis_stack_namespace }}"
+  failed_when: false
+
+- name: "redis_stack | teardown | Complete"
+  ansible.builtin.debug:
+    msg: "Redis Stack removed from namespace '{{ redis_stack_namespace }}'"

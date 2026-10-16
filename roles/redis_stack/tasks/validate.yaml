@@ -1,0 +1,48 @@
+---
+# =============================================================================
+# Redis Stack — Validate
+# =============================================================================
+
+- name: "redis_stack | validate | Check pods are running"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ redis_stack_namespace }}"
+    label_selectors:
+      - app=redis-stack-server
+  register: _val_pods
+  failed_when: >-
+    _val_pods.resources | default([]) | length == 0 or
+    _val_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length == 0
+
+- name: "redis_stack | validate | Get Redis password from secret"
+  ansible.builtin.shell: |
+    kubectl get secret -n {{ redis_stack_namespace }} redis-stack-server-credentials -o jsonpath='{.data.REDIS_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null || \
+    kubectl exec -n {{ redis_stack_namespace }} pod/{{ _val_pods.resources[0].metadata.name }} -- printenv REDIS_PASSWORD 2>/dev/null || echo ""
+  register: _redis_pass
+  changed_when: false
+  no_log: true
+  ignore_errors: true
+
+- name: "redis_stack | validate | Check Redis PING"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ redis_stack_namespace }}"
+    pod: "{{ _val_pods.resources[0].metadata.name }}"
+    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}PING"
+  register: _val_ping
+  failed_when: "'PONG' not in _val_ping.stdout | default('')"
+
+- name: "redis_stack | validate | Check RediSearch module loaded"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ redis_stack_namespace }}"
+    pod: "{{ _val_pods.resources[0].metadata.name }}"
+    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}MODULE LIST"
+  register: _val_modules
+  failed_when: "'search' not in _val_modules.stdout | default('')"
+
+- name: "redis_stack | validate | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "Redis pods: OK ({{ _val_pods.resources | length }} running)"
+      - "Redis PING: {{ 'OK' if 'PONG' in _val_ping.stdout | default('') else 'FAIL' }}"
+      - "RediSearch module: {{ 'OK' if 'search' in _val_modules.stdout | default('') else 'FAIL' }}"

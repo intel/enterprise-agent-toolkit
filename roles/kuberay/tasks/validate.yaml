@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# KubeRay — Validate
+# =============================================================================
+
+- name: "kuberay | validate | Check operator deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ kuberay_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=kuberay-operator
+  register: _val_operator
+  failed_when: _val_operator.resources | default([]) | length == 0
+
+- name: "kuberay | validate | Check Ray head pod"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ kuberay_namespace }}"
+    label_selectors:
+      - ray.io/node-type=head
+  register: _val_head
+  failed_when: >-
+    _val_head.resources | default([]) | length == 0 or
+    _val_head.resources | selectattr('status.phase', 'eq', 'Running') | list | length == 0
+
+- name: "kuberay | validate | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "KubeRay operator: OK"
+      - "Ray head pod: OK (Running)"
+      - "Dashboard: http://{{ kuberay_release_name }}-head-svc.{{ kuberay_namespace }}.svc.cluster.local:8265"
