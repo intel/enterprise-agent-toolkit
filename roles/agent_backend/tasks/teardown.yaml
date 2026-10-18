@@ -10,16 +10,17 @@
     state: absent
     wait: true
 
-- name: "agent_backend | teardown | Remove the API client credentials"
+- name: "agent_backend | teardown | Remove the client credentials"
   kubernetes.core.k8s:
     state: absent
     api_version: v1
     kind: Secret
-    name: "{{ agent_backend_api_secret }}"
+    name: "{{ item }}"
     namespace: "{{ agent_operator_namespace }}"
+  loop: ["{{ agent_backend_api_secret }}", "{{ claw_console_oidc_secret }}"]
 
 - name: "agent_backend | teardown | Remove the realm configuration"
   ansible.builtin.include_tasks: keycloak.yaml
   vars:
     _kc_script: keycloak-realm-remove.sh
-    _kc_args: ["{{ agent_backend_api_client }}"]
+    _kc_args: ["{{ agent_backend_api_client }}", "{{ claw_console_oidc_client }}"]

@@ -28,7 +28,7 @@ scope_id() {
   done
 }
 has_line() { printf '%s\n' "$1" | while IFS= read -r l; do [ "$l" != "$2" ] || echo y; done; }
-for s in agent:read agent:write agent:converse agent:token agent:grant; do
+for s in agent:read agent:write agent:converse agent:grant; do
   [ -n "$(scope_id "$s")" ] || { k create client-scopes -s "name=$s" -s protocol=openid-connect \
     -s 'attributes."include.in.token.scope"=true' -s 'attributes."display.on.consent.screen"=false' >/dev/null &&
     echo "CREATED scope $s"; }
@@ -51,7 +51,7 @@ mappers=$(k get "clients/$cid/protocol-mappers/models" --fields name --format cs
   -s protocol=openid-connect -s protocolMapper=oidc-hardcoded-claim-mapper -s 'config."claim.name"=owner_username' \
   -s "config.\"claim.value\"=$OWNER" -s 'config."jsonType.label"=String' -s 'config."access.token.claim"=true' \
   -s 'config."id.token.claim"=false' -s 'config."userinfo.token.claim"=false' >/dev/null
-for s in agent:read agent:write agent:converse agent:token agent:grant; do
+for s in agent:read agent:write agent:converse agent:grant; do
   k update "clients/$cid/optional-client-scopes/$(scope_id "$s")" >/dev/null
 done
 uid=$(k get users -q "username=service-account-$CLIENT" -q exact=true --fields id --format csv --noquotes)

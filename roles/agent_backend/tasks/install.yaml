@@ -36,6 +36,34 @@
         client-secret: "{{ _ab_kc_out.stdout_lines | select('match', '^CLIENT_SECRET=') | first | regex_replace('^CLIENT_SECRET=', '') | b64encode }}"
   no_log: true
 
+- name: "agent_backend | Configure the console sign-in client"
+  when: claw_console_enabled | bool
+  block:
+    - name: "agent_backend | Create the console client"
+      ansible.builtin.include_tasks: keycloak.yaml
+      vars:
+        _kc_script: keycloak-console.sh
+        _kc_args:
+          - "{{ claw_console_oidc_client }}"
+          - "https://{{ claw_console_hostname }}"
+          - "{{ agent_backend_audience }}"
+
+    # Envoy Gateway reads the key client-secret.
+    - name: "agent_backend | Store the console client secret"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ claw_console_oidc_secret }}"
+            namespace: "{{ agent_operator_namespace }}"
+            labels: {app.kubernetes.io/name: agent-console}
+          data:
+            client-secret: "{{ _ab_kc_out.stdout_lines | select('match', '^CLIENT_SECRET=') | first | regex_replace('^CLIENT_SECRET=', '') | b64encode }}"
+      no_log: true
+
 - name: "agent_backend | Build the image"
   ansible.builtin.include_role:
     name: claw_image
@@ -59,8 +87,13 @@
         jwksUrl: "{{ claw_keycloak_jwks_url }}"
         issuer: "{{ claw_keycloak_issuer }}"
         audience: "{{ agent_backend_audience }}"
+        tokenUrl: "{{ claw_keycloak_url }}/realms/{{ claw_keycloak_realm }}/protocol/openid-connect/token"
+      console:
+        enabled: "{{ claw_console_enabled | bool }}"
+        oidcClientId: "{{ claw_console_oidc_client }}"
+        oidcSecret: "{{ claw_console_oidc_secret }}"
       route:
-        hostname: "{{ agent_backend_hostname }}"
+        hostname: "{{ claw_console_hostname }}"
       runtimeSecret: "{{ claw_runtime_secret }}"
       audit:
         retention:
@@ -69,5 +102,5 @@
 - name: "agent_backend | Install complete"
   ansible.builtin.debug:
     msg:
-      - "API: https://{{ agent_backend_hostname }}/api"
+      - "API: https://{{ claw_console_hostname }}/api"
       - "Scripted access: client '{{ agent_backend_api_client }}', secret in {{ agent_operator_namespace }}/{{ agent_backend_api_secret }}"
