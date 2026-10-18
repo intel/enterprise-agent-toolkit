@@ -80,12 +80,19 @@
       keycloak:
         url: "{{ claw_keycloak_url }}"
         realm: "{{ claw_keycloak_realm }}"
+        issuer: "{{ claw_keycloak_issuer }}"
+      gatewayRoute:
+        hostname: "{{ claw_console_hostname if claw_console_enabled | bool else '' }}"
+        oidcClientId: "{{ claw_console_oidc_client }}"
+        oidcSecret: "{{ claw_console_oidc_secret }}"
+        trustedProxies: "{{ claw_gateway_trusted_proxies }}"
         credentialsSecret: "{{ claw_keycloak_credentials_secret }}"
       agents:
         model:
           id: "{{ claw_model_id }}"
           baseUrl: "{{ claw_model_base_url }}"
           contextWindow: "{{ claw_model_context_window }}"
+        controlUiAllowedOrigins: "https://{{ claw_console_hostname }}"
         embedding:
           baseUrl: "{{ claw_model_base_url }}"
           model: "{{ claw_embedding_model }}"

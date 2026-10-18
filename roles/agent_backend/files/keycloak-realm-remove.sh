@@ -1,18 +1,22 @@
 #!/bin/sh
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-# Removes what keycloak-realm.sh created. Arguments: realm admin-user api-client; the admin password on stdin.
+# Removes what keycloak-realm.sh and keycloak-console.sh created.
+# Arguments: realm admin-user client...; the admin password on stdin.
 set -eu
-REALM=$1 ADMIN=$2 CLIENT=$3
+REALM=$1 ADMIN=$2
+shift 2
 IFS= read -r KC_CLI_PASSWORD || :; export KC_CLI_PASSWORD
 KC=/opt/keycloak/bin/kcadm.sh
 CFG=/tmp/kcadm-agent-backend.config
 trap 'rm -f "$CFG"' EXIT
 k() { sub=$1; shift; "$KC" "$sub" --config "$CFG" -r "$REALM" "$@"; }
 "$KC" config credentials --config "$CFG" --server http://localhost:8080 --realm master --user "$ADMIN" >/dev/null
-cid=$(k get clients -q "clientId=$CLIENT" --fields id --format csv --noquotes)
-[ -z "$cid" ] || { k delete "clients/$cid" && echo "DELETED client $CLIENT"; }
-for s in agent:read agent:write agent:converse agent:token agent:grant; do
+for client in "$@"; do
+  cid=$(k get clients -q "clientId=$client" --fields id --format csv --noquotes)
+  [ -z "$cid" ] || { k delete "clients/$cid" && echo "DELETED client $client"; }
+done
+for s in agent:read agent:write agent:converse agent:grant; do
   k get client-scopes --fields id,name --format csv --noquotes | while IFS=, read -r id name; do
     [ "$name" != "$s" ] || { k delete "client-scopes/$id" && echo "DELETED scope $s"; }
   done

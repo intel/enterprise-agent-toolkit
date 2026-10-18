@@ -66,3 +66,8 @@ components:
     layer: agent-toolkit
     enabled: "{{ claw_enabled | default(false) | bool }}"
     depends_on: [agent_operator]
+
+  - name: agent_console
+    layer: agent-toolkit
+    enabled: "{{ claw_enabled | default(false) | bool }}"
+    depends_on: [agent_backend]

@@ -24,6 +24,9 @@ claw_keycloak_namespace: "{{ keycloak_namespace | default('keycloak') }}"
 claw_keycloak_admin_secret: "{{ keycloak_admin_secret | default('keycloak-admin-secret') }}"
 claw_keycloak_realm: "{{ keycloak_agent_realm | default('agent-toolkit') }}"
 claw_keycloak_url: "http://keycloak-service.{{ claw_keycloak_namespace }}.svc.cluster.local:8080"
+# The realm's public issuer: what its tokens carry and where browsers sign in.
+claw_keycloak_issuer: >-
+  https://{{ keycloak_hostname | default('keycloak.' ~ (base_domain_name | default('example.com'))) }}/realms/{{ claw_keycloak_realm }}
 claw_keycloak_operator_client: "agent-operator"
 # checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
 claw_keycloak_credentials_secret: "agent-operator-keycloak"
@@ -38,6 +41,15 @@ claw_embedding_dim: 768
 
 # Per-agent web_fetch proxy enforcing spec.webFetchAllowlist; egress uses the platform proxy.
 claw_web_fetch_proxy_enabled: true
+
+# The console and each agent's dashboard: https://<claw_console_hostname>[/gw/<owner ns>/<agent>/].
+claw_console_hostname: "agents.{{ base_domain_name | default('example.com') }}"
+claw_console_enabled: true
+claw_console_oidc_client: "agent-console"
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+claw_console_oidc_secret: "agent-console-oidc"
+# Addresses the agent gateway trusts to name the user: the platform gateway's pods.
+claw_gateway_trusted_proxies: "{{ kubernetes_cluster_cidr | default('10.233.64.0/18') }}"
 
 claw_auto_suspend_idle_minutes: 240
 claw_max_agents_per_owner: 0
