@@ -33,7 +33,8 @@ litellm_public_paths:
 # --- Default model (inference layer, applied only where this layer is provisioned) ---
 # Deployed on install.
 # Set [] to install without a chat model; deploy others with ./model-manager deploy <name>.
-llm_services_autodeploy_models: ["qwen2-5-coder-14b"]
+# claw adds bge-base-en, which embeds agent memory.
+llm_services_autodeploy_models: "{{ ['qwen2-5-coder-14b'] + (['bge-base-en'] if claw_enabled | default(false) | bool else []) }}"
 
 # --- vLLM Semantic Router dashboard (inference layer; applies only with vllm_sr_enabled) ---
 # Served at https://vllm-sr.<base_domain_name>/

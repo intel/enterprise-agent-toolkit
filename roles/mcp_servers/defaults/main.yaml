@@ -1,0 +1,25 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# MCP servers for claw agents (claw_enabled). They run from the agent operator image in its
+# namespace; shared settings come from the agent_operator role defaults.
+
+mcp_servers_wait_timeout: "5m0s"
+mcp_servers_register_retries: 30
+
+# One release per entry: mcp-<name>-server running /code/mcp/<script>, registered as a Tool.
+mcp_servers:
+  - name: memory
+    script: memory.py
+    tool:
+      requiresIdentity: true
+      alwaysOn: true
+      description: Per-agent long-term memory (pgvector)
+    env:
+      - name: PGVECTOR_DSN
+        valueFrom: {secretKeyRef: {name: "{{ claw_runtime_secret }}", key: pgvector-dsn}}
+      - {name: EMBEDDING_URL, value: "{{ claw_model_base_url }}"}
+      - {name: EMBEDDING_MODEL, value: "{{ claw_embedding_model }}"}
+      - {name: KEYCLOAK_URL, value: "{{ claw_keycloak_url }}"}
+      - {name: KEYCLOAK_REALM, value: "{{ claw_keycloak_realm }}"}
+      - {name: MCP_AUDIENCE, value: mcp-memory}
