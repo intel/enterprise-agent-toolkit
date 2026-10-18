@@ -17,11 +17,12 @@ RUN cd agent-operator && PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -
     && touch /t/PASSED
 
 FROM ${PYTHON_IMAGE}
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/code
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/code \
+    FASTMCP_CHECK_FOR_UPDATES=off FASTMCP_SHOW_SERVER_BANNER=false
 COPY --from=deps /install /usr/local
 COPY agent-operator/controller.py agent-operator/claw_adapter.py agent-operator/openclaw-instance.yaml.j2 \
-     agent-operator/identity_proxy.py /code/
-COPY mcp/memory.py /code/mcp/
+     agent-operator/identity_proxy.py agent-operator/web_fetch_proxy.py /code/
+COPY mcp/auth.py mcp/memory.py mcp/sandbox.py mcp/github.py /code/mcp/
 # BuildKit skips stages nothing copies from; this keeps the test gate in the build.
 COPY --from=test /t/PASSED /code/.tests-passed
 # kopf resolves the user name at startup, so the UID needs a passwd entry; pip is not

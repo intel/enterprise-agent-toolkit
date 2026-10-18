@@ -7,20 +7,17 @@ schema comes from the token's `memory_schema` claim, so an agent can only reach 
 memory; there is no target-agent argument. Tools: memory_write, memory_read,
 memory_list_tiers.
 """
-import functools
-import hashlib
 import json
 import logging
 import os
 import re
-import time
 
-import jwt
 import psycopg
-from psycopg import sql
 import requests
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_http_headers
+from psycopg import sql
+
+import auth
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp-memory")
@@ -30,68 +27,18 @@ EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "").rstrip("/")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-base-en")
 # bge-base-en takes 512 tokens; ~3.5 characters per token keeps the input under it.
 EMBEDDING_MAX_CHARS = int(os.environ.get("EMBEDDING_MAX_CHARS", "1600"))
-KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "").rstrip("/")
-KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "agent-toolkit")
-MCP_AUDIENCE = os.environ.get("MCP_AUDIENCE", "mcp-memory")
 TIERS = ("claudemd", "project", "auto")
 SCOPE_READ, SCOPE_WRITE = "tools:memory.read", "tools:memory.write"
 _SCHEMA_RE = re.compile(r"^agent_[a-z0-9_]+$")
-_token_cache = {}  # sha256(token) -> (schema, expiry, scopes, azp); never the token itself
-
-
-class AuthError(Exception):
-    pass
-
-
-@functools.lru_cache(maxsize=1)
-def _jwks():
-    return jwt.PyJWKClient(f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs")
-
-
-@functools.lru_cache(maxsize=1)
-def _issuer():
-    """The realm's advertised issuer; tokens carry it, not the in-cluster URL."""
-    override = os.environ.get("KEYCLOAK_ISSUER", "")
-    if override:
-        return override
-    resp = requests.get(f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/.well-known/openid-configuration",
-                        timeout=10)
-    resp.raise_for_status()
-    return resp.json()["issuer"]
-
-
-def _verify(token):
-    """Claims of a valid agent token for this server; raises AuthError otherwise."""
-    try:
-        claims = jwt.decode(token, _jwks().get_signing_key_from_jwt(token).key, algorithms=["RS256"],
-                            audience=MCP_AUDIENCE, issuer=_issuer(),
-                            options={"require": ["exp", "iat", "azp"]})
-    except jwt.InvalidTokenError as e:
-        raise AuthError(f"identity token rejected: {e}")
-    scopes = set((claims.get("scope") or "").split())
-    # The audience scope proves the token was minted for this server's route.
-    if MCP_AUDIENCE not in scopes:
-        raise AuthError(f"token was not minted for {MCP_AUDIENCE}")
-    schema = claims.get("memory_schema") or ""
-    if not _SCHEMA_RE.match(schema):
-        raise AuthError("token has no valid memory_schema claim")
-    return schema, float(claims["exp"]), scopes, claims["azp"]
 
 
 def _caller(required_scope):
-    """(schema, client id) of the calling agent, if its token holds `required_scope`."""
-    raw = get_http_headers(include={"authorization"}).get("authorization", "")
-    if not raw.lower().startswith("bearer "):
-        raise AuthError("no bearer token — calls must come through the agent's identity proxy")
-    token = raw[7:].strip()
-    key = hashlib.sha256(token.encode()).hexdigest()
-    cached = _token_cache.get(key)
-    if not cached or cached[1] - time.time() <= 30:
-        cached = _token_cache[key] = _verify(token)
-    schema, _, scopes, azp = cached
-    if required_scope not in scopes:
-        raise AuthError(f"this agent is not entitled to '{required_scope}'")
-    return schema, azp
+    """(schema, client id) of the calling agent; the schema comes from its token."""
+    claims = auth.caller(required_scope)
+    schema = claims.get("memory_schema") or ""
+    if not _SCHEMA_RE.match(schema):
+        raise auth.AuthError("token has no valid memory_schema claim")
+    return schema, claims["azp"]
 
 
 def _embed(text):

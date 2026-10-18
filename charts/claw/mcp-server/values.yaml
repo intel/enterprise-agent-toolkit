@@ -18,6 +18,11 @@ resources:
   limits: {cpu: "1", memory: 512Mi}
 affinity: {}
 
+# Kubernetes API access as a Role in rbac.namespace; no rules means no API token at all.
+rbac:
+  namespace: ""
+  rules: []
+
 # The Tool that makes the server reachable from agents.
 tool:
   skill: ""

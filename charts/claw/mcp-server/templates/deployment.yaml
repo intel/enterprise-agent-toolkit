@@ -17,7 +17,11 @@ spec:
       labels:
         {{- include "mcp-server.labels" . | nindent 8 }}
     spec:
+      {{- if .Values.rbac.rules }}
+      serviceAccountName: {{ include "mcp-server.fullname" . }}
+      {{- else }}
       automountServiceAccountToken: false
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
