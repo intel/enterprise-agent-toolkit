@@ -50,6 +50,9 @@ OPERATOR_SA_NAME = os.environ.get("OPERATOR_SA_NAME", "agent-operator")
 # Holds pods/exec with no ClusterRoleBinding; bound per agent namespace only.
 AGENT_NS_EXEC_CLUSTER_ROLE = os.environ.get("AGENT_NS_EXEC_CLUSTER_ROLE", "agent-operator-agent-ns-exec")
 AGENT_NS_EXEC_BINDING = "agent-ns-exec"
+# The API backend's Secret access, bound per agent namespace instead of cluster-wide.
+AGENT_NS_BACKEND_CLUSTER_ROLE = os.environ.get("AGENT_NS_BACKEND_CLUSTER_ROLE", "agent-operator-agent-ns-backend")
+BACKEND_SA_NAME = os.environ.get("BACKEND_SA_NAME", "agent-backend")
 AUTO_SUSPEND_IDLE_MINUTES = int(os.environ.get("AUTO_SUSPEND_IDLE_MINUTES") or 240)
 
 PGVECTOR_DSN = os.environ.get("PGVECTOR_DSN", "")
@@ -71,6 +74,8 @@ NETWORK_POLICY_ENABLED = _env_bool("NETWORK_POLICY_ENABLED")
 NETWORK_POLICY_EGRESS_ALLOW = _env_json("NETWORK_POLICY_EGRESS_ALLOW", [])
 # Granted to the identity proxy only, so the agent pod cannot bypass it.
 NETWORK_POLICY_IDENTITY_EGRESS_ALLOW = _env_json("NETWORK_POLICY_IDENTITY_EGRESS_ALLOW", [])
+# Workloads outside the agent namespace that reach the agent (the API backend), same shape.
+NETWORK_POLICY_INGRESS_ALLOW = _env_json("NETWORK_POLICY_INGRESS_ALLOW", [])
 RESOURCE_QUOTA_ENABLED = _env_bool("RESOURCE_QUOTA_ENABLED")
 RESOURCE_QUOTA_HARD = _env_json("RESOURCE_QUOTA_HARD", {})
 LIMIT_RANGE_ENABLED = _env_bool("LIMIT_RANGE_ENABLED")
@@ -460,6 +465,33 @@ def auto_idle_suspend(spec, status, name, namespace, patch, logger, **_):
     patch.status.update(phase="IdleSuspended", suspendedAt=_now(), suspendReason="auto-idle")
 
 
+@kopf.timer(API_GROUP, API_VERSION, AGENT_PLURAL, interval=30.0, initial_delay=10.0)
+def pod_readiness(spec, status, name, namespace, patch, **_):
+    """Keep a PodReady condition, so clients can tell whether the agent answers now."""
+    if not _owner_ns_matches(spec, namespace):
+        return
+    ready = _pod_ready(_agent_ns(name, spec), name)
+    conditions = [c for c in (status or {}).get("conditions") or [] if c.get("type") != "PodReady"]
+    current = next((c for c in (status or {}).get("conditions") or [] if c.get("type") == "PodReady"), {})
+    if current.get("status") == ("True" if ready else "False"):
+        return
+    suspended = (spec or {}).get("desiredState") == "Suspended"
+    patch.status["conditions"] = conditions + [{
+        "type": "PodReady", "status": "True" if ready else "False", "lastTransitionTime": _now(),
+        "reason": "Ready" if ready else ("Suspended" if suspended else "NotReady"),
+        "message": "the agent pod is ready" if ready else "the agent pod is not ready"}]
+
+
+def _pod_ready(agent_ns, name):
+    try:
+        pods = kubernetes.client.CoreV1Api().list_namespaced_pod(
+            agent_ns, label_selector=f"app.kubernetes.io/instance={name}").items
+    except kubernetes.client.ApiException:
+        return False
+    return any(c.type == "Ready" and c.status == "True"
+               for p in pods for c in (p.status.conditions or []) if not p.metadata.deletion_timestamp)
+
+
 @kopf.on.delete(API_GROUP, API_VERSION, AGENT_PLURAL)
 def on_delete(spec, name, namespace, logger, **_):
     """Tear down everything the agent owns; a misplaced Agent owns nothing."""
@@ -632,34 +664,27 @@ def _ensure_namespace(ns, owner, agent_name, logger):
 
 
 def _grant_agent_ns_exec(agent_ns, logger):
-    """Bind exec in this agent namespace only, for workspace seeding.
-
-    A RoleBinding to a chart ClusterRole: the operator holds `bind` on it, not pods/exec."""
+    """Namespaced grants in this agent namespace only: exec for the operator (workspace seeding)
+    and the API backend's credential Secrets. RoleBindings to chart ClusterRoles it may `bind`."""
     rbac = kubernetes.client.RbacAuthorizationV1Api()
-    binding = kubernetes.client.V1RoleBinding(
-        metadata=kubernetes.client.V1ObjectMeta(
-            name=AGENT_NS_EXEC_BINDING, namespace=agent_ns, labels=MANAGED_BY),
-        role_ref=kubernetes.client.V1RoleRef(
-            api_group="rbac.authorization.k8s.io", kind="ClusterRole",
-            name=AGENT_NS_EXEC_CLUSTER_ROLE),
-        subjects=[kubernetes.client.RbacV1Subject(
-            kind="ServiceAccount", name=OPERATOR_SA_NAME, namespace=OPERATOR_NAMESPACE)],
-    )
-    try:
+    grants = [(AGENT_NS_EXEC_BINDING, AGENT_NS_EXEC_CLUSTER_ROLE, OPERATOR_SA_NAME, OPERATOR_NAMESPACE)]
+    if BACKEND_SA_NAME:
+        grants.append(("agent-backend", AGENT_NS_BACKEND_CLUSTER_ROLE, BACKEND_SA_NAME, OPERATOR_NAMESPACE))
+    for name, role, sa, sa_ns in grants:
+        binding = kubernetes.client.V1RoleBinding(
+            metadata=kubernetes.client.V1ObjectMeta(name=name, namespace=agent_ns, labels=MANAGED_BY),
+            role_ref=kubernetes.client.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="ClusterRole", name=role),
+            subjects=[kubernetes.client.RbacV1Subject(kind="ServiceAccount", name=sa, namespace=sa_ns)])
         try:
-            rbac.create_namespaced_role_binding(agent_ns, binding)
+            try:
+                rbac.create_namespaced_role_binding(agent_ns, binding)
+            except kubernetes.client.ApiException as e:
+                if e.status != 409:
+                    raise
+                rbac.replace_namespaced_role_binding(name, agent_ns, binding)
         except kubernetes.client.ApiException as e:
-            if e.status != 409:
-                raise
-            rbac.replace_namespaced_role_binding(AGENT_NS_EXEC_BINDING, agent_ns, binding)
-    except kubernetes.client.ApiException as e:
-        if e.status == 403:
-            logger.error(
-                f"REFUSED exec RoleBinding in '{agent_ns}': {e}. Workspace seeding will fail; "
-                f"check that ClusterRole '{AGENT_NS_EXEC_CLUSTER_ROLE}' exists and that the "
-                f"operator ClusterRole has `bind` on it.")
-        else:
-            logger.warning(f"Failed to grant exec in '{agent_ns}': {e}")
+            logger.error(f"REFUSED RoleBinding {name} in '{agent_ns}': {e}; check ClusterRole '{role}' "
+                         f"exists and the operator may bind it")
 
 
 def _apply(create, replace, name, ns, body, logger, what):
@@ -861,21 +886,29 @@ def _apply_web_fetch_proxy_egress(agent_ns, logger):
         policy_types=["Egress"], egress=[_dns_egress_rule(), rule]), logger, WEB_FETCH_PROXY_LABELS)
 
 
+def _ns_peers_and_ports(entry):
+    c = kubernetes.client
+    peer = c.V1NetworkPolicyPeer(
+        namespace_selector=c.V1LabelSelector(match_labels={"kubernetes.io/metadata.name": entry["namespace"]}),
+        pod_selector=c.V1LabelSelector(match_labels=entry["podSelector"]) if entry.get("podSelector") else None)
+    return [peer], [c.V1NetworkPolicyPort(protocol="TCP", port=int(p)) for p in entry.get("ports", [])] or None
+
+
 def _egress_ns_rules(entries):
     """Egress rules from [{namespace, ports, podSelector?}]."""
-    c = kubernetes.client
     rules = []
-    for entry in entries:
-        if not entry.get("namespace"):
-            continue
-        rules.append(c.V1NetworkPolicyEgressRule(
-            to=[c.V1NetworkPolicyPeer(
-                namespace_selector=c.V1LabelSelector(
-                    match_labels={"kubernetes.io/metadata.name": entry["namespace"]}),
-                pod_selector=(c.V1LabelSelector(match_labels=entry["podSelector"])
-                              if entry.get("podSelector") else None))],
-            ports=[c.V1NetworkPolicyPort(protocol="TCP", port=int(p))
-                   for p in entry.get("ports", [])] or None))
+    for entry in (e for e in entries if e.get("namespace")):
+        peers, ports = _ns_peers_and_ports(entry)
+        rules.append(kubernetes.client.V1NetworkPolicyEgressRule(to=peers, ports=ports))
+    return rules
+
+
+def _ingress_ns_rules(entries):
+    """Ingress rules from [{namespace, ports, podSelector?}]."""
+    rules = []
+    for entry in (e for e in entries if e.get("namespace")):
+        peers, ports = _ns_peers_and_ports(entry)
+        rules.append(kubernetes.client.V1NetworkPolicyIngressRule(_from=peers, ports=ports))
     return rules
 
 
@@ -903,6 +936,7 @@ def _apply_network_policy(agent_ns, logger):
     egress += _egress_ns_rules(NETWORK_POLICY_EGRESS_ALLOW)
     ingress = [c.V1NetworkPolicyIngressRule(_from=[c.V1NetworkPolicyPeer(
         namespace_selector=c.V1LabelSelector(match_labels={"kubernetes.io/metadata.name": agent_ns}))])]
+    ingress += _ingress_ns_rules(NETWORK_POLICY_INGRESS_ALLOW)
     if _put_network_policy(agent_ns, "agent-default-deny", c.V1NetworkPolicySpec(
             pod_selector=c.V1LabelSelector(), policy_types=["Ingress", "Egress"],
             ingress=ingress, egress=egress), logger):

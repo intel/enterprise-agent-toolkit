@@ -57,11 +57,11 @@ rules:
   - apiGroups: [""]
     resources: ["resourcequotas", "limitranges"]
     verbs: ["get", "create", "update"]
-  # `bind` on this one ClusterRole lets the operator grant exec it does not hold itself.
+  # `bind` on these ClusterRoles lets the operator grant, per agent namespace, what it does not hold.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["bind"]
-    resourceNames: ["agent-operator-agent-ns-exec"]
+    resourceNames: ["agent-operator-agent-ns-exec", "agent-operator-agent-ns-backend"]
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     verbs: ["get", "create", "update"]

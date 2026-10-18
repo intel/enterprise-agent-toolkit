@@ -1,6 +1,6 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-"""The operator holds pods/exec one agent namespace at a time, never cluster-wide."""
+"""Per-agent-namespace grants: exec for the operator and Secrets for the backend, never cluster-wide."""
 import os
 import types
 import unittest
@@ -50,10 +50,12 @@ class GrantAgentNsExecTest(unittest.TestCase):
         self.assertEqual(binding.role_ref.name, self.mod.AGENT_NS_EXEC_CLUSTER_ROLE)
         self.assertEqual(binding.metadata.namespace, "agent-alice-bot")
 
-    def test_the_operator_is_the_only_subject(self):
+    def test_exec_goes_to_the_operator_and_secrets_to_the_backend_only(self):
         rbac, _ = self._run()
-        subjects = [(s.name, s.namespace) for s in rbac.calls[0][2].subjects]
-        self.assertEqual(subjects, [(self.mod.OPERATOR_SA_NAME, self.mod.OPERATOR_NAMESPACE)])
+        grants = {c[2].role_ref.name: [(s.name, s.namespace) for s in c[2].subjects] for c in rbac.calls}
+        self.assertEqual(grants, {
+            self.mod.AGENT_NS_EXEC_CLUSTER_ROLE: [(self.mod.OPERATOR_SA_NAME, self.mod.OPERATOR_NAMESPACE)],
+            self.mod.AGENT_NS_BACKEND_CLUSTER_ROLE: [(self.mod.BACKEND_SA_NAME, self.mod.OPERATOR_NAMESPACE)]})
 
     def test_an_existing_binding_is_replaced_quietly(self):
         rbac, log = self._run(fail={"create_binding": 409})
@@ -63,7 +65,7 @@ class GrantAgentNsExecTest(unittest.TestCase):
     def test_a_refusal_is_an_error_and_does_not_raise(self):
         for fail in ({"create_binding": 403}, {"create_binding": 409, "replace_binding": 403}):
             _, log = self._run(fail=fail)
-            self.assertEqual(len(log.errors), 1)
+            self.assertEqual(len(log.errors), 2)
             self.assertIn(self.mod.AGENT_NS_EXEC_CLUSTER_ROLE, log.errors[0])
 
 
@@ -91,9 +93,11 @@ class ChartAgreementTest(unittest.TestCase):
         self.assertIn(f"name: {self.mod.AGENT_NS_EXEC_CLUSTER_ROLE}", exec_role)
         self.assertIn("pods/exec", exec_role)
 
-    def test_bind_is_narrowed_to_that_clusterrole(self):
-        role = self._read("rbac.yaml")
-        self.assertIn(f'resourceNames: ["{self.mod.AGENT_NS_EXEC_CLUSTER_ROLE}"]', role)
+    def test_bind_is_narrowed_to_the_per_namespace_clusterroles(self):
+        self.assertIn(f'resourceNames: ["{self.mod.AGENT_NS_EXEC_CLUSTER_ROLE}", '
+                      f'"{self.mod.AGENT_NS_BACKEND_CLUSTER_ROLE}"]', self._read("rbac.yaml"))
+        self.assertIn(f"name: {self.mod.AGENT_NS_BACKEND_CLUSTER_ROLE}",
+                      self._read("clusterrole-agent-ns-backend.yaml"))
 
     def test_rolebindings_can_be_updated_but_roles_not_written(self):
         self.assertIn("update", self._rule("rolebindings"))

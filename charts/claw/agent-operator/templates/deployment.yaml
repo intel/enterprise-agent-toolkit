@@ -48,6 +48,7 @@ spec:
             - {name: OPERATOR_NAMESPACE, valueFrom: {fieldRef: {fieldPath: metadata.namespace}}}
             - {name: OPERATOR_SA_NAME, valueFrom: {fieldRef: {fieldPath: spec.serviceAccountName}}}
             - {name: AUTO_SUSPEND_IDLE_MINUTES, value: {{ .Values.autoSuspendIdleMinutes | quote }}}
+            - {name: BACKEND_SA_NAME, value: {{ .Values.backendServiceAccount | quote }}}
             - {name: KEYCLOAK_URL, value: {{ .Values.keycloak.url | quote }}}
             - {name: KEYCLOAK_REALM, value: {{ .Values.keycloak.realm | quote }}}
             - {name: MCP_AUDIENCES, value: {{ .Values.keycloak.mcpAudiences | quote }}}
@@ -80,6 +81,7 @@ spec:
             - {name: NETWORK_POLICY_ENABLED, value: {{ $i.networkPolicy.enabled | quote }}}
             - {name: NETWORK_POLICY_EGRESS_ALLOW, value: {{ $i.networkPolicy.egressAllow | toJson | quote }}}
             - {name: NETWORK_POLICY_IDENTITY_EGRESS_ALLOW, value: {{ $i.networkPolicy.identityEgressAllow | toJson | quote }}}
+            - {name: NETWORK_POLICY_INGRESS_ALLOW, value: {{ $i.networkPolicy.ingressAllow | toJson | quote }}}
             - {name: RESOURCE_QUOTA_ENABLED, value: {{ $i.resourceQuota.enabled | quote }}}
             - {name: RESOURCE_QUOTA_HARD, value: {{ $i.resourceQuota.hard | toJson | quote }}}
             - {name: LIMIT_RANGE_ENABLED, value: {{ $i.limitRange.enabled | quote }}}

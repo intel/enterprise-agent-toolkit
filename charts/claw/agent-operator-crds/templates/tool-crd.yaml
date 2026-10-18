@@ -69,6 +69,14 @@ spec:
                   type: boolean
                   default: false
                   description: Wired into every agent, whatever its spec.skills.
+                allowedRoles:
+                  type: array
+                  description: >-
+                    Realm roles that may give an agent this tool through the API (a role also admits the
+                    roles above it). Empty means everyone; a name that is not a role admits nobody.
+                  items:
+                    type: string
+                    maxLength: 64
                 description:
                   type: string
                   maxLength: 256
