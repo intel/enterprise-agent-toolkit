@@ -1,0 +1,32 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agent operator (claw): Agent CRD and controller. Enabled by claw_enabled.
+
+agent_operator_namespace: "agent-operator-system"
+agent_operator_release_name: "agent-operator"
+agent_operator_crds_release_name: "agent-operator-crds"
+agent_operator_wait_timeout: "5m0s"
+
+# Model every agent uses unless its spec.model overrides it.
+claw_model_id: "{{ (llm_services_autodeploy_models | default([]) | first) | default('', true) }}"
+# The model's served max_model_len (qwen2-5-coder-14b serves 32768); 0 = OpenClaw's default.
+claw_model_context_window: 32768
+claw_model_base_url: "http://{{ ai_gateway_service_name | default('ai-gateway') }}.envoy-gateway-system.svc.cluster.local/v1"
+
+# Agent requests exceed Envoy's 32 KiB default; applied only if no policy targets the gateway.
+claw_ai_gateway_name: "{{ ai_gateway_name | default('ai-gateway') }}"
+claw_ai_gateway_namespace: "{{ ai_gateway_namespace | default(kserve_llmisvc_namespace | default('llm-inference')) }}"
+claw_ai_gateway_buffer_limit: "50Mi"
+
+# Operator service account in the agent realm (realm-management/manage-clients).
+claw_keycloak_namespace: "{{ keycloak_namespace | default('keycloak') }}"
+claw_keycloak_admin_secret: "{{ keycloak_admin_secret | default('keycloak-admin-secret') }}"
+claw_keycloak_realm: "{{ keycloak_agent_realm | default('agent-toolkit') }}"
+claw_keycloak_url: "http://keycloak-service.{{ claw_keycloak_namespace }}.svc.cluster.local:8080"
+claw_keycloak_operator_client: "agent-operator"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
+claw_keycloak_credentials_secret: "agent-operator-keycloak"
+
+claw_auto_suspend_idle_minutes: 240
+claw_max_agents_per_owner: 0
