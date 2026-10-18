@@ -1,0 +1,96 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/agent-operator
+  # "<tag>@sha256:<digest>"; set by the installer after the build.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: 500m, memory: 512Mi}
+affinity: {}
+
+keycloak:
+  url: http://keycloak-service.keycloak.svc.cluster.local:8080
+  realm: agent-toolkit
+  # Existing Secret with keys client-id and client-secret (service account with manage-clients).
+  credentialsSecret: agent-operator-keycloak
+  mcpAudiences: mcp-memory,mcp-github,mcp-sandbox
+
+# Optional Secret with keys pgvector-dsn and model-api-key; missing keys are ignored.
+runtimeSecret: agent-operator-runtime
+
+autoSuspendIdleMinutes: 240
+memory:
+  embeddingDim: 768
+  retainOnDelete: false
+sandboxNamespace: agent-sandbox-system
+
+# Defaults for every agent; an Agent's spec.model overrides the model fields.
+agents:
+  openclaw:
+    image: ghcr.io/openclaw/openclaw
+    tag: "2026.7.1-1"
+    digest: sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf
+  timeoutSeconds: 900
+  model:
+    provider: ai-gateway
+    id: ""
+    name: ""
+    baseUrl: http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1
+    # The model's served max_model_len; 0 lets OpenClaw assume 200000.
+    contextWindow: 0
+    allowPrivateNetwork: true
+  compactionReserveTokens: 6144
+  embedding:
+    baseUrl: ""
+    model: BAAI/bge-base-en-v1.5
+  controlUiAllowedOrigins: ""
+  mcp:
+    registryUrl: ""
+    memoryUrl: ""
+    sandboxUrl: ""
+    githubUrl: ""
+
+isolation:
+  meshAmbient: true
+  networkPolicy:
+    enabled: true
+    # [{namespace, ports, podSelector?}]; mesh pods are reached on HBONE port 15008.
+    egressAllow:
+      - namespace: envoy-gateway-system
+        podSelector: {gateway.envoyproxy.io/owning-gateway-name: ai-gateway}
+        ports: [15008]
+    identityEgressAllow: []
+  resourceQuota:
+    enabled: true
+    hard:
+      requests.cpu: "4"
+      requests.memory: 8Gi
+      limits.cpu: "8"
+      limits.memory: 16Gi
+      pods: "10"
+      persistentvolumeclaims: "5"
+  limitRange:
+    enabled: true
+    defaultRequest: {cpu: 250m, memory: 256Mi}
+    default: {cpu: "1", memory: 1Gi}
+  podSecurity:
+    enabled: true
+    level: restricted
+  maxAgentsPerOwner: 0
+
+webFetchProxy:
+  enabled: false
+  image: docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  port: 8888
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""
+
+identityProxy:
+  image: docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+  portBase: 8901
+  portSpan: 16
