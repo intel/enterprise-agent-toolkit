@@ -11,6 +11,79 @@ export KUBECONFIG=$PWD/env/<env>/kubeconfig.yaml
 
 ---
 
+## Create an agent
+
+**You need:** the Agent Toolkit installed with its default model, `claw_enabled: true` in
+`env/<env>/config.agent-toolkit.yaml`, and the agent operator installed:
+
+```bash
+./es_auto_installer.sh install agent_operator --env <env>
+./es_auto_installer.sh validate agent_operator --only --env <env>
+```
+
+### 1. Create the agent
+
+```bash
+kubectl apply -f ext/enterprise.agent-toolkit/docs/examples/agent.yaml
+kubectl -n user-alice wait agent/demo --for=jsonpath='{.status.phase}'=Running --timeout=10m
+kubectl -n user-alice get agent demo -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
+```
+
+```text
+IdentityReady=True
+MemoryReady=False
+BackendReady=True
+SeedingComplete=True
+```
+
+`MemoryReady=False` (reason `Disabled`) is expected: per-agent memory is not configured.
+
+### 2. Look at what was provisioned
+
+```bash
+kubectl get namespace agent-alice-demo --show-labels
+kubectl -n agent-alice-demo get openclawinstance,pod,networkpolicy,resourcequota,limitrange
+kubectl -n agent-alice-demo exec demo-0 -c openclaw -- cat /home/openclaw/.openclaw/workspace/AGENTS.md
+```
+
+### 3. Chat with the agent
+
+```bash
+kubectl -n agent-alice-demo port-forward svc/demo 18789:18789 &
+TOKEN=$(kubectl -n agent-alice-demo get secret demo-gateway-token -o jsonpath='{.data.token}' | base64 -d)
+curl -s localhost:18789/v1/chat/completions \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"model":"openclaw","messages":[{"role":"user","content":"What is the capital of France?"}]}'
+```
+
+The answer (`Paris`) arrives after about 30 seconds on CPU inference. Without the token the
+request returns `401`. Stop the port-forward with `kill %1`.
+
+### 4. Suspend and resume
+
+```bash
+kubectl -n agent-alice-demo exec demo-0 -c openclaw -- sh -c 'echo kept > /home/openclaw/.openclaw/workspace/marker.txt'
+kubectl -n user-alice patch agent demo --type merge -p '{"spec":{"desiredState":"Suspended"}}'
+kubectl -n agent-alice-demo get pods                    # no pods
+kubectl -n user-alice patch agent demo --type merge -p '{"spec":{"desiredState":"Running"}}'
+kubectl -n agent-alice-demo wait pod/demo-0 --for=condition=Ready --timeout=5m
+kubectl -n agent-alice-demo exec demo-0 -c openclaw -- cat /home/openclaw/.openclaw/workspace/marker.txt
+```
+
+The file written before the suspend is still there (`kept`).
+
+### 5. Delete the agent
+
+```bash
+kubectl -n user-alice delete agent demo
+kubectl get namespace agent-alice-demo user-alice    # both are removed
+```
+
+The agent's Keycloak client is deleted with it, and `user-alice` is removed once its last
+agent is gone.
+
+---
+
 ## Run an OpenClaw instance
 
 **You need:** the Agent Toolkit installed with its default model (`qwen2-5-coder-14b`),
