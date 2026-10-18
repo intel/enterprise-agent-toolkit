@@ -15,11 +15,12 @@ export KUBECONFIG=$PWD/env/<env>/kubeconfig.yaml
 ## Create an agent
 
 **You need:** the Agent Toolkit installed with its default model, `claw_enabled: true` in
-`env/<env>/config.agent-toolkit.yaml`, and the agent operator installed:
+`env/<env>/config.agent-toolkit.yaml`, and the claw components installed:
 
 ```bash
-./es_auto_installer.sh install agent_operator --env <env>
-./es_auto_installer.sh validate agent_operator --only --env <env>
+./es_auto_installer.sh install mcp_servers --env <env>
+./es_auto_installer.sh validate mcp_servers --only --env <env>
+kubectl get tools        # memory   memory   true   true   Registered
 ```
 
 ### 1. Create the agent
@@ -32,12 +33,10 @@ kubectl -n user-alice get agent demo -o jsonpath='{range .status.conditions[*]}{
 
 ```text
 IdentityReady=True
-MemoryReady=False
+MemoryReady=True
 BackendReady=True
 SeedingComplete=True
 ```
-
-`MemoryReady=False` (reason `Disabled`) is expected: per-agent memory is not configured.
 
 ### 2. Look at what was provisioned
 
@@ -58,9 +57,31 @@ curl -s localhost:18789/v1/chat/completions \
 ```
 
 The answer is `Paris`; how long it takes depends on the model and the hardware. Without the
-token the request returns `401`. Stop the port-forward with `kill %1`.
+token the request returns `401`.
 
-### 4. Suspend and resume
+### 4. Use memory
+
+With the port-forward from step 3 still running:
+
+```bash
+ask() { curl -s localhost:18789/v1/chat/completions -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg m "$1" '{model:"openclaw",messages:[{role:"user",content:$m}]}')" |
+  jq -r '.choices[0].message.content'; }
+ask 'Use your memory_write tool to store this fact in your long-term memory: the release codename is BLUEFIN. Then confirm.'
+kubectl -n agent-operator-system logs deploy/mcp-memory-server | grep AUDIT
+```
+
+```text
+AUDIT memory_write azp=agent-alice-demo schema=agent_alice_demo tier=auto
+```
+
+Each request is a new session, so `ask 'Use your memory_read tool to look up the release
+codename.'` answers from memory, not from the conversation. Small models do not always call
+the tool; if the answer does not mention `BLUEFIN`, ask again.
+Stop the port-forward with `kill %1`.
+
+### 5. Suspend and resume
 
 ```bash
 kubectl -n agent-alice-demo exec demo-0 -c openclaw -- sh -c 'echo kept > /home/openclaw/.openclaw/workspace/marker.txt'
@@ -73,15 +94,15 @@ kubectl -n agent-alice-demo exec demo-0 -c openclaw -- cat /home/openclaw/.openc
 
 The file written before the suspend is still there (`kept`).
 
-### 5. Delete the agent
+### 6. Delete the agent
 
 ```bash
 kubectl -n user-alice delete agent demo
 kubectl get namespace agent-alice-demo user-alice    # both are removed
 ```
 
-The agent's Keycloak client is deleted with it, and `user-alice` is removed once its last
-agent is gone.
+The agent's Keycloak client and memory schema are deleted with it, and `user-alice` is removed
+once its last agent is gone.
 
 ---
 

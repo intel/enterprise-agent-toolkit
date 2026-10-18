@@ -11,7 +11,7 @@ configure it, and its security model. To check an install step by step, with the
 output, follow [claw-e2e.md](claw-e2e.md).
 
 **Contents:** [Components](#components) · [Enable](#enable) · [Create an agent](#create-an-agent) ·
-[Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
+[Memory](#memory) · [Tools](#tools) · [Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
 [Configuration](#configuration) · [Security](#security) · [Validate and remove](#validate-and-remove) ·
 [Troubleshooting](#troubleshooting) · [Limitations](#limitations)
 
@@ -22,20 +22,23 @@ output, follow [claw-e2e.md](claw-e2e.md).
 | Component | What it installs | Namespace |
 |---|---|---|
 | `openclaw_operator` | The upstream [OpenClaw operator](https://github.com/paperclipinc/openclaw-operator) `0.38.3`: CRDs `OpenClawInstance`, `OpenClawClusterDefaults`, `OpenClawSelfConfig`, and its controller | `openclaw-operator-system` |
-| `agent_operator` | The `Agent` CRD (`intel-stack.io/v1alpha1`) and the agent operator, which turns each `Agent` into an isolated OpenClaw agent | `agent-operator-system` |
+| `agent_operator` | The `Agent` and `Tool` CRDs (`intel-stack.io/v1alpha1`) and the agent operator, which turns each `Agent` into an isolated OpenClaw agent | `agent-operator-system` |
+| `mcp_servers` | The MCP servers agents call, each registered as a `Tool`: `memory` (per-agent long-term memory on pgvector) | `agent-operator-system` |
 
 For every `Agent`, the agent operator creates:
 
 - a namespace `agent-<username>-<name>` that enforces the `restricted` Pod Security Standard
   and joins the ambient mesh;
 - a default-deny NetworkPolicy, a ResourceQuota and a LimitRange;
-- a Keycloak client `agent-<username>-<name>` in the agent realm;
+- a Keycloak client `agent-<username>-<name>` in the agent realm, and an identity proxy that
+  holds its secret and calls the agent's tools with a token;
+- a pgvector schema `agent_<username>_<name>` for the agent's memory;
 - a gateway token Secret and an `OpenClawInstance`, which the OpenClaw operator runs as a pod
   with a persistent volume;
 - the workspace files listed in `spec.workspace`.
 
-The operator image is built from this repository during install and pushed to the cluster's
-image registry.
+One image, built from this repository during install and pushed to the cluster's image
+registry, runs the operator, the identity proxies and the MCP servers.
 
 ---
 
@@ -43,8 +46,9 @@ image registry.
 
 Claw needs:
 
-- the inference layer and a default model (`llm_services_autodeploy_models`);
-- Keycloak (`auth_provider: keycloak`, the default);
+- the inference layer and a default model (`llm_services_autodeploy_models`); with claw on,
+  the embedding model `bge-base-en` is deployed with it;
+- Keycloak (`auth_provider: keycloak`, the default) and pgvector (the default);
 - the cluster image registry (`kubernetes_registry_enabled: true`, set before the cluster is
   installed; the toolkit's default).
 
@@ -57,11 +61,12 @@ claw_enabled: true
 ```
 
 ```bash
-./es_auto_installer.sh install agent_operator --env <env>
+./es_auto_installer.sh install mcp_servers --env <env>
 ```
 
-This also installs `openclaw_operator`, which `agent_operator` depends on. A full layer install
-(`install agent-toolkit`) includes both.
+This also installs `openclaw_operator` and `agent_operator`, which `mcp_servers` depends on. A
+full layer install (`install agent-toolkit`) includes all three. On a cluster installed before
+claw was turned on, deploy the embedding model with `./model-manager deploy bge-base-en`.
 
 ---
 
@@ -98,11 +103,46 @@ automatically. The chat walkthrough is in [claw-e2e.md](claw-e2e.md#create-an-ag
 |---|---|
 | `owner.principal`, `owner.username` | Required. The username (`[a-z0-9]{1,39}`) keys every derived name |
 | `desiredState` | `Running` (default) or `Suspended` |
-| `skills` | OpenClaw capabilities, for example `shell`, `read_file`, `list_files` |
+| `skills` | OpenClaw capabilities, for example `shell`, `read_file`, `list_files`, and the [tools](#tools) to wire |
 | `workspace` | Files seeded into the agent's workspace, keyed by relative path |
 | `model` | Per-agent model override (`provider`, `id`, `name`, `baseUrl`) |
 | `modelSecretRef` | Secret in the agent namespace with key `apiKey`, for an overridden model |
 | `toolsDeny` | Tool names or globs the agent may not call |
+
+---
+
+## Memory
+
+Every agent has long-term memory: the `memory` tool (`memory_write`, `memory_read`,
+`memory_list_tiers`) stores text with its embedding in the agent's own pgvector schema and
+searches it by meaning. It survives sessions, restarts and suspends, and is deleted with the
+agent.
+
+The agent never holds a credential. Its identity proxy mints a Keycloak token for the memory
+server, and the server takes the schema from the token's `memory_schema` claim, so an agent can
+reach only its own memory. Calls without a valid token are refused, and agent pods cannot reach
+the server except through their proxy. Each call is logged with the caller, for example
+`AUDIT memory_read azp=agent-alice-demo schema=agent_alice_demo tier=auto hits=1`.
+
+OpenClaw's built-in memory search uses the same embedding model through the inference gateway.
+
+---
+
+## Tools
+
+A `Tool` registers an MCP server for agents. It is cluster-scoped and created by the installer
+(`kubectl get tools`):
+
+| Field | Meaning |
+|---|---|
+| `skill` | The `spec.skills` entry that wires the tool; the oldest `Tool` for a skill wins and later ones are `Conflicting` |
+| `aliasSkills` | More skills that wire it; an alias never shadows another tool's skill |
+| `url` | In-cluster Service URL (`*.svc` or `*.svc.cluster.local`); anything else is rejected |
+| `requiresIdentity` | Calls go through the agent's identity proxy with a token for audience `mcp-<skill>` |
+| `alwaysOn` | Wired into every agent, whatever its skills |
+
+Creating, changing or deleting a `Tool` re-wires running agents within seconds. A `Tool` with
+`requiresIdentity` receives agents' tokens, so only cluster administrators should create one.
 
 ---
 
@@ -130,6 +170,7 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 | `claw_enabled` | `false` | Turns claw on |
 | `claw_model_id` | first of `llm_services_autodeploy_models` | Model every agent uses unless its `spec.model` overrides it |
 | `claw_model_context_window` | `32768` | The model's served `max_model_len`; `0` lets OpenClaw assume 200000 |
+| `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
 | `claw_auto_suspend_idle_minutes` | `240` | Idle time before an agent is suspended; `0` disables |
 | `claw_max_agents_per_owner` | `0` | Cap on agents per owner; `0` disables |
 | `openclaw_operator_version`, `openclaw_operator_digest`, `openclaw_operator_image_digest` | `0.38.3` and its digests | OpenClaw operator release; change all three together |
@@ -147,9 +188,14 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
   ResourceQuota and a LimitRange, and a default-deny NetworkPolicy: ingress from the same
   namespace only, egress to DNS and the inference gateway only. In the ambient mesh, egress to
   a mesh workload uses the HBONE port `15008`.
-- **Identity.** Each agent gets its own Keycloak client. The operator manages clients with a
-  service account that holds only `manage-clients` in the agent realm, and never hands out a
-  client recorded as another owner's.
+- **Identity.** Each agent gets its own Keycloak client. Its secret is mounted only into the
+  agent's identity proxy, which attaches a short-lived token scoped to one tool per call and
+  strips any credential header the agent sends. The operator manages clients with a service
+  account that holds only `manage-clients` in the agent realm, and never hands out a client
+  recorded as another owner's.
+- **Tools.** MCP servers verify each token's signature, issuer, audience and scopes. Only
+  identity proxies may reach them, and a `Tool` must name an in-cluster Service. The operator
+  can read `Tool`s and set their status, never create or change one.
 - **Credentials.** Model keys and GitHub tokens are referenced by Secret name; they are never
   written into the `Agent` or the `OpenClawInstance`. The cluster's default model key is never
   sent to an endpoint an agent chose itself.
@@ -165,13 +211,16 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 ## Validate and remove
 
 ```bash
+./es_auto_installer.sh validate mcp_servers --only --env <env>
 ./es_auto_installer.sh validate agent_operator --only --env <env>
+./es_auto_installer.sh teardown mcp_servers --only --env <env> --force
 ./es_auto_installer.sh teardown agent_operator --only --env <env> --force
 ./es_auto_installer.sh teardown openclaw_operator --only --env <env> --force
 ```
 
-`validate` is read-only. `teardown agent_operator` deletes every `Agent` first, while the
-operator can still clean each one up (namespace, Keycloak client, Secrets), then the operator,
+`validate` is read-only. `teardown mcp_servers` removes the servers and their `Tool`s, which
+unwires them from every agent. `teardown agent_operator` deletes every `Agent` first, while the
+operator can still clean each one up (namespace, Keycloak client, Secrets, memory schema), then the operator,
 the CRDs, its Keycloak service account and the image registry configuration on the nodes.
 `teardown openclaw_operator` removes the OpenClaw operator and any remaining instances. Both
 succeed when nothing is installed.
@@ -187,6 +236,9 @@ succeed when nothing is installed.
 | Agent `Running` with reason `degraded: IdentityReady` | The operator cannot reach Keycloak or its credentials are wrong | Check the operator log; re-run `install agent_operator` |
 | Agent pod `ImagePullBackOff` on `registry.kube-system…` | The node does not trust the cluster registry | Re-run `install agent_operator`, which configures every node |
 | Chat answers `Context overflow` | The inference gateway rejects large requests (`413`), or the context window does not match the model | `install agent_operator` raises the gateway limit; set `claw_model_context_window` |
+| Agent `Running` with reason `degraded: MemoryReady` | The operator cannot reach pgvector | Check `pgvector` is running; re-run `install agent_operator` |
+| `kubectl get tools` shows `Conflicting` | Another `Tool` already registers the skill | Delete one of them |
+| Agent answers but never calls `memory_read` / `memory_write` | Small models call tools unreliably | Name the tool in the request, or use a larger model |
 | `openclaw_operator_digest is chart version …` | The OpenClaw operator version changed without its digests | Change the version and both digests together |
 
 More symptoms are listed in [claw-e2e.md](claw-e2e.md#if-it-does-not-work).
