@@ -11,7 +11,8 @@ configure it, and its security model. To check an install step by step, with the
 output, follow [claw-e2e.md](claw-e2e.md).
 
 **Contents:** [Components](#components) · [Enable](#enable) · [Create an agent](#create-an-agent) ·
-[Memory](#memory) · [Tools](#tools) · [Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
+[Memory](#memory) · [Tools](#tools) · [Sandbox, GitHub and web access](#sandbox-github-and-web-access) ·
+[Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
 [Configuration](#configuration) · [Security](#security) · [Validate and remove](#validate-and-remove) ·
 [Troubleshooting](#troubleshooting) · [Limitations](#limitations)
 
@@ -23,7 +24,7 @@ output, follow [claw-e2e.md](claw-e2e.md).
 |---|---|---|
 | `openclaw_operator` | The upstream [OpenClaw operator](https://github.com/paperclipinc/openclaw-operator) `0.38.3`: CRDs `OpenClawInstance`, `OpenClawClusterDefaults`, `OpenClawSelfConfig`, and its controller | `openclaw-operator-system` |
 | `agent_operator` | The `Agent` and `Tool` CRDs (`intel-stack.io/v1alpha1`) and the agent operator, which turns each `Agent` into an isolated OpenClaw agent | `agent-operator-system` |
-| `mcp_servers` | The MCP servers agents call, each registered as a `Tool`: `memory` (per-agent long-term memory on pgvector) | `agent-operator-system` |
+| `mcp_servers` | The MCP servers agents call, each registered as a `Tool`: `memory` (long-term memory on pgvector), `sandbox` (code execution on agent-sandbox, when installed) and `github` | `agent-operator-system` |
 
 For every `Agent`, the agent operator creates:
 
@@ -32,6 +33,7 @@ For every `Agent`, the agent operator creates:
 - a default-deny NetworkPolicy, a ResourceQuota and a LimitRange;
 - a Keycloak client `agent-<username>-<name>` in the agent realm, and an identity proxy that
   holds its secret and calls the agent's tools with a token;
+- a web-fetch proxy that lets `web_fetch` reach only the domains in `spec.webFetchAllowlist`;
 - a pgvector schema `agent_<username>_<name>` for the agent's memory;
 - a gateway token Secret and an `OpenClawInstance`, which the OpenClaw operator runs as a pod
   with a persistent volume;
@@ -107,6 +109,8 @@ automatically. The chat walkthrough is in [claw-e2e.md](claw-e2e.md#create-an-ag
 | `workspace` | Files seeded into the agent's workspace, keyed by relative path |
 | `model` | Per-agent model override (`provider`, `id`, `name`, `baseUrl`) |
 | `modelSecretRef` | Secret in the agent namespace with key `apiKey`, for an overridden model |
+| `githubTokenSecretRef` | Secret in the agent namespace with key `token`: the agent's own GitHub PAT |
+| `webFetchAllowlist` | Domains `web_fetch` may reach, subdomains included; `*` allows any public site; empty (default) allows none |
 | `toolsDeny` | Tool names or globs the agent may not call |
 
 ---
@@ -146,6 +150,32 @@ Creating, changing or deleting a `Tool` re-wires running agents within seconds. 
 
 ---
 
+## Sandbox, GitHub and web access
+
+**Sandbox** (skill `sandbox`, or `shell`, which aliases it): `execute_python`, `execute_shell`,
+`install_package` and `reset_sandbox` run in the agent's own agent-sandbox pod, never shared
+with another agent. A sandbox is created on first use from the `claw-agent-pool` pool, renewed
+while in use, ended after 30 idle minutes, and deleted when the agent is suspended or deleted.
+Sandboxes reach DNS and public HTTP(S), or the platform's corporate proxy, so `pip install`
+works; they cannot reach cluster services. The `sandbox` server is installed only when the
+`agent_sandbox` component is.
+
+**GitHub** (skill `github`): issues, branches, commits and pull requests. Pull requests always
+open as drafts; only `mark_pr_ready` makes one ready for review. Calls use the agent's own PAT
+(`spec.githubTokenSecretRef`), which only its identity proxy can read, else a shared token:
+
+```bash
+kubectl -n agent-operator-system create secret generic mcp-github-token --from-literal=token=<redacted>
+kubectl -n agent-operator-system rollout restart deploy/mcp-github-server
+```
+
+**Web.** OpenClaw's `web_fetch` goes through the agent's web-fetch proxy, which allows only
+`spec.webFetchAllowlist` and refuses names that resolve to private or cluster addresses. The
+proxy reaches the internet through the platform proxy (`http_proxy`, `https_proxy`) when one
+is set. An allowlist edit takes effect within a minute, without a restart.
+
+---
+
 ## Run an OpenClaw instance directly
 
 Without the agent operator, an `OpenClawInstance` can be applied by hand:
@@ -171,6 +201,8 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 | `claw_model_id` | first of `llm_services_autodeploy_models` | Model every agent uses unless its `spec.model` overrides it |
 | `claw_model_context_window` | `32768` | The model's served `max_model_len`; `0` lets OpenClaw assume 200000 |
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
+| `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
+| `mcp_servers_github_token_secret` | `mcp-github-token` | Secret (key `token`) with the shared GitHub token |
 | `claw_auto_suspend_idle_minutes` | `240` | Idle time before an agent is suspended; `0` disables |
 | `claw_max_agents_per_owner` | `0` | Cap on agents per owner; `0` disables |
 | `openclaw_operator_version`, `openclaw_operator_digest`, `openclaw_operator_image_digest` | `0.38.3` and its digests | OpenClaw operator release; change all three together |
@@ -196,6 +228,9 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 - **Tools.** MCP servers verify each token's signature, issuer, audience and scopes. Only
   identity proxies may reach them, and a `Tool` must name an in-cluster Service. The operator
   can read `Tool`s and set their status, never create or change one.
+- **Egress.** An agent pod reaches the internet only through its web-fetch proxy, which
+  enforces the allowlist. Sandboxes are separate pods that cannot reach cluster services. The
+  GitHub server never returns or logs a token, and opens pull requests only as drafts.
 - **Credentials.** Model keys and GitHub tokens are referenced by Secret name; they are never
   written into the `Agent` or the `OpenClawInstance`. The cluster's default model key is never
   sent to an endpoint an agent chose itself.
@@ -219,7 +254,7 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 ```
 
 `validate` is read-only. `teardown mcp_servers` removes the servers and their `Tool`s, which
-unwires them from every agent. `teardown agent_operator` deletes every `Agent` first, while the
+unwires them from every agent, and the sandbox template and pool. `teardown agent_operator` deletes every `Agent` first, while the
 operator can still clean each one up (namespace, Keycloak client, Secrets, memory schema), then the operator,
 the CRDs, its Keycloak service account and the image registry configuration on the nodes.
 `teardown openclaw_operator` removes the OpenClaw operator and any remaining instances. Both
@@ -239,6 +274,9 @@ succeed when nothing is installed.
 | Agent `Running` with reason `degraded: MemoryReady` | The operator cannot reach pgvector | Check `pgvector` is running; re-run `install agent_operator` |
 | `kubectl get tools` shows `Conflicting` | Another `Tool` already registers the skill | Delete one of them |
 | Agent answers but never calls `memory_read` / `memory_write` | Small models call tools unreliably | Name the tool in the request, or use a larger model |
+| `web_fetch` gets `403 … not in this agent's web_fetch allowlist` | The domain is not allowlisted | Add it to `spec.webFetchAllowlist` |
+| GitHub tools answer `no GitHub token` | Neither the agent's PAT nor the shared token is set | Set `githubTokenSecretRef`, or create `mcp-github-token` |
+| `install_package` hangs | The sandbox cannot reach the package index | Set `http_proxy` / `https_proxy` for the platform and re-run `install mcp_servers` |
 | `openclaw_operator_digest is chart version …` | The OpenClaw operator version changed without its digests | Change the version and both digests together |
 
 More symptoms are listed in [claw-e2e.md](claw-e2e.md#if-it-does-not-work).
