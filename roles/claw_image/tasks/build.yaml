@@ -15,20 +15,23 @@
     _ci_registry.resources | default([]) | length == 0
     or not _ci_registry.resources[0].spec.clusterIP | default('')
 
+- name: "claw_image | Pack the build context"
+  ansible.builtin.command:
+    argv: "{{ ['tar', '--exclude-vcs', '--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner',
+               '--mode=u=rwX,go=rX']
+              + claw_image_exclude | map('regex_replace', '^', '--exclude=') | list
+              + ['-cf', claw_image_archive, '-C', claw_image_context, '.'] }}"
+  changed_when: false
+
 - name: "claw_image | Hash the build context"
-  ansible.builtin.shell:
-    cmd: >-
-      set -o pipefail;
-      find . -type f ! -path '*/__pycache__/*' ! -name '*.pyc' -print0
-      | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -c1-24
-    chdir: "{{ claw_image_context }}"
-    executable: /bin/bash
-  register: _ci_hash
+  ansible.builtin.command:
+    argv: [sha256sum, "{{ claw_image_archive }}"]
+  register: _ci_sum
   changed_when: false
 
 - name: "claw_image | Set image coordinates"
   ansible.builtin.set_fact:
-    _ci_tag: "src-{{ _ci_hash.stdout }}"
+    _ci_tag: "src-{{ _ci_sum.stdout[:24] }}"
     _ci_endpoint: "{{ _ci_registry.resources[0].spec.clusterIP }}:{{ claw_image_registry_port }}"
     _ci_env:
       HTTP_PROXY: "{{ http_proxy | default('') }}"
@@ -65,12 +68,16 @@
         remote_src: true
         creates: "{{ _ci_bin }}/buildkitd"
 
+    - name: "claw_image | Create the context directory"
+      ansible.builtin.file:
+        path: "{{ _ci_ctx }}"
+        state: directory
+        mode: "0755"
+
     - name: "claw_image | Stage the build context"
-      ansible.builtin.copy:
-        src: "{{ claw_image_context }}/"
-        dest: "{{ _ci_ctx }}/"
-        mode: "0644"
-        directory_mode: "0755"
+      ansible.builtin.unarchive:
+        src: "{{ claw_image_archive }}"
+        dest: "{{ _ci_ctx }}"
 
     - name: "claw_image | Stop a BuildKit left by an interrupted run"
       ansible.builtin.systemd_service:
@@ -156,3 +163,9 @@
   ansible.builtin.set_fact:
     claw_image_repository: "{{ claw_image_registry_host }}/{{ claw_image_name }}"
     claw_image_tag: "{{ _ci_tag }}@{{ _ci_digest }}"
+
+- name: "claw_image | Remove the packed context"
+  ansible.builtin.file:
+    path: "{{ claw_image_archive }}"
+    state: absent
+  changed_when: false
