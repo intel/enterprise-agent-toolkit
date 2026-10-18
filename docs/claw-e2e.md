@@ -78,9 +78,22 @@ AUDIT memory_write azp=agent-alice-demo schema=agent_alice_demo tier=auto
 Each request is a new session, so `ask 'Use your memory_read tool to look up the release
 codename.'` answers from memory, not from the conversation. Small models do not always call
 the tool; if the answer does not mention `BLUEFIN`, ask again.
-Stop the port-forward with `kill %1`.
+### 5. Run code and fetch a page
 
-### 5. Suspend and resume
+```bash
+ask 'Use your sandbox__execute_python tool to run print(2**100) and tell me the output.'
+kubectl -n user-alice patch agent demo --type merge -p '{"spec":{"webFetchAllowlist":["example.com"]}}'
+sleep 60   # the proxy re-reads its allowlist; the file syncs within a minute
+kubectl -n agent-alice-demo exec demo-0 -c openclaw -- curl -s -o /dev/null -w '%{http_code}\n' https://example.com/
+kubectl -n agent-alice-demo exec demo-0 -c openclaw -- curl -s -o /dev/null -w '%{http_code}\n' https://www.wikipedia.org/
+kubectl -n agent-alice-demo logs deploy/web-fetch-proxy --tail=4
+```
+
+The sandbox answers `1267650600228229401496703205376`. `example.com` returns `200`;
+`wikipedia.org` returns `000`, and the proxy log shows
+`403 … not in this agent's web_fetch allowlist`. Stop the port-forward with `kill %1`.
+
+### 6. Suspend and resume
 
 ```bash
 kubectl -n agent-alice-demo exec demo-0 -c openclaw -- sh -c 'echo kept > /home/openclaw/.openclaw/workspace/marker.txt'
@@ -93,14 +106,14 @@ kubectl -n agent-alice-demo exec demo-0 -c openclaw -- cat /home/openclaw/.openc
 
 The file written before the suspend is still there (`kept`).
 
-### 6. Delete the agent
+### 7. Delete the agent
 
 ```bash
 kubectl -n user-alice delete agent demo
 kubectl get namespace agent-alice-demo user-alice    # both are removed
 ```
 
-The agent's Keycloak client and memory schema are deleted with it, and `user-alice` is removed
+The agent's Keycloak client, memory schema and sandbox are deleted with it, and `user-alice` is removed
 once its last agent is gone.
 
 ---
