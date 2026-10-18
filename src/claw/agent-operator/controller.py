@@ -12,9 +12,11 @@ import datetime
 import fnmatch
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
+import threading
 import types
 
 import kopf
@@ -24,6 +26,7 @@ import kubernetes.config
 import claw_adapter
 
 API_GROUP, API_VERSION, AGENT_PLURAL = "intel-stack.io", "v1alpha1", "agents"
+TOOL_PLURAL = "tools"
 MANAGED_BY = {"app.kubernetes.io/managed-by": "agent-operator"}
 AGENT_LABEL = "intel-stack.io/agent"
 OWNER_LABEL = "intel-stack.io/owner"
@@ -39,15 +42,6 @@ def _env_json(key, default):
 
 def _env_bool(key, default="false"):
     return os.environ.get(key, default).lower() == "true"
-
-
-def _read_sibling(name):
-    """Source of a per-agent proxy shipped beside this file; "" when not shipped."""
-    try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), name)) as fh:
-            return fh.read()
-    except OSError:
-        return ""
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -88,10 +82,10 @@ POD_SECURITY_LEVEL = os.environ.get("POD_SECURITY_LEVEL", "restricted")
 MESH_AMBIENT = _env_bool("MESH_AMBIENT")
 MAX_AGENTS_PER_OWNER = int(os.environ.get("MAX_AGENTS_PER_OWNER") or 0)
 
-# Per-agent web_fetch allowlist proxy; runs only when its source ships in the image.
-_WEB_FETCH_PROXY_SRC = _read_sibling("web_fetch_proxy.py")
-WEB_FETCH_PROXY_ENABLED = _env_bool("WEB_FETCH_PROXY_ENABLED") and bool(_WEB_FETCH_PROXY_SRC)
-WEB_FETCH_PROXY_IMAGE = os.environ.get("WEB_FETCH_PROXY_IMAGE", "")
+# Per-agent proxies run from this operator's own image (/code), configured by ConfigMap.
+PROXY_IMAGE = os.environ.get("PROXY_IMAGE", "")
+WEB_FETCH_PROXY_ENABLED = _env_bool("WEB_FETCH_PROXY_ENABLED") and os.path.exists(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_fetch_proxy.py"))
 WEB_FETCH_PROXY_PORT = int(os.environ.get("WEB_FETCH_PROXY_PORT") or 8888)
 WEB_FETCH_PROXY_HTTP_PROXY = os.environ.get("WEB_FETCH_PROXY_HTTP_PROXY", "")
 WEB_FETCH_PROXY_HTTPS_PROXY = os.environ.get("WEB_FETCH_PROXY_HTTPS_PROXY", "")
@@ -99,11 +93,8 @@ WEB_FETCH_PROXY_NO_PROXY = os.environ.get("WEB_FETCH_PROXY_NO_PROXY", "")
 WEB_FETCH_PROXY_NAME = "web-fetch-proxy"
 WEB_FETCH_PROXY_LABELS = {**MANAGED_BY, "intel-stack.io/component": "web-fetch-proxy"}
 
-# Per-agent identity proxy, the only holder of the agent's client secret; runs only
-# when its source ships in the image. One port per identity tool, from PORT_BASE.
-_IDENTITY_PROXY_SRC = _read_sibling("identity_proxy.py")
-IDENTITY_PROXY_ENABLED = bool(_IDENTITY_PROXY_SRC)
-IDENTITY_PROXY_IMAGE = os.environ.get("IDENTITY_PROXY_IMAGE", "")
+# Per-agent identity proxy, the only holder of the agent's client secret.
+# One port per identity tool, from PORT_BASE; the NetworkPolicy opens the whole span.
 IDENTITY_PROXY_PORT_BASE = int(os.environ.get("IDENTITY_PROXY_PORT_BASE") or 8901)
 IDENTITY_PROXY_PORT_SPAN = int(os.environ.get("IDENTITY_PROXY_PORT_SPAN") or 16)
 IDENTITY_PROXY_NAME = "identity-proxy"
@@ -129,6 +120,12 @@ PERMISSION_SCOPES = {
     "tools:github.write": ["create_issue", "add_issue_comment", "create_branch",
                            "commit_file", "create_pull_request", "mark_pr_ready"],
 }
+
+# A Tool receives the agent's token, so it must be an in-cluster Service: `.svc` plus
+# nothing or `.cluster.local`, never a free suffix that could resolve off-cluster.
+_SERVICE_URL_RE = re.compile(
+    r"^https?://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?"
+    r"\.svc(\.cluster\.local)?(:[0-9]{1,5})?(/[^\s]*)?$")
 
 # Usernames feed Postgres DDL and every derived name; no '-' or '_' keeps
 # agent-<username>-<name> unambiguous across owners, 39 keeps it within 63 chars.
@@ -227,9 +224,9 @@ def configure(settings: kopf.OperatorSettings, logger, **_):
     global ADAPTER
     settings.persistence.finalizer = "intel-stack.io/agent-operator"
     settings.posting.level = 20
-    if not (KEYCLOAK_URL and KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET):
+    if not (KEYCLOAK_URL and KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET and PROXY_IMAGE):
         raise kopf.PermanentError(
-            "KEYCLOAK_URL, KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET are required")
+            "KEYCLOAK_URL, KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET and PROXY_IMAGE are required")
     try:
         kubernetes.config.load_incluster_config()
     except kubernetes.config.ConfigException:
@@ -237,7 +234,7 @@ def configure(settings: kopf.OperatorSettings, logger, **_):
     core = types.SimpleNamespace(
         k8s=kubernetes,
         apply_identity_proxy=_apply_identity_proxy,
-        identity_proxy_enabled=IDENTITY_PROXY_ENABLED,
+        tools=_tool_table,
         identity_proxy_port_base=IDENTITY_PROXY_PORT_BASE,
         identity_proxy_port_span=IDENTITY_PROXY_PORT_SPAN,
         web_fetch_proxy_enabled=WEB_FETCH_PROXY_ENABLED,
@@ -245,7 +242,6 @@ def configure(settings: kopf.OperatorSettings, logger, **_):
     )
     ADAPTER = claw_adapter.ClawAdapter(core, claw_adapter.config_from_env())
     logger.info(f"Per-agent identity: keycloak={KEYCLOAK_URL} realm={KEYCLOAK_REALM}; "
-                f"identity proxy={'on' if IDENTITY_PROXY_ENABLED else 'not shipped'}; "
                 f"web_fetch proxy={'on' if WEB_FETCH_PROXY_ENABLED else 'off'}")
 
 
@@ -263,7 +259,7 @@ def on_resume(spec, status, patch, name, namespace, logger, **_):
     if (spec or {}).get("desiredState") == "Suspended" or (status or {}).get("phase") == "IdleSuspended":
         if _owner_ns_matches(spec, namespace):
             _reconcile_kc_audiences(name, spec, logger)
-            _reconcile_identity_proxy_src(name, spec, logger)
+            _reconcile_proxy_images(name, spec, logger)
         return
     _reconcile(spec, patch, name, namespace, logger, resuming=True)
 
@@ -487,6 +483,84 @@ def on_delete(spec, name, namespace, logger, **_):
     logger.info(f"Agent '{name}' cleanup complete")
 
 
+# ── Tools (cluster-scoped Tool resources) ────────────────────────────────────
+_tools_lock = threading.Lock()
+_tools = None  # last resolved {skill: entry}
+
+
+def _resolve_tools(items):
+    """({skill: entry}, {tool name: phase}) from Tool objects.
+
+    The oldest Tool per skill wins; an off-cluster URL is Rejected; an alias never shadows a skill."""
+    items = sorted(items, key=lambda t: (t["metadata"].get("creationTimestamp") or "", t["metadata"]["name"]))
+    table, phases, owners = {}, {}, {}
+    for t in items:
+        name, spec = t["metadata"]["name"], t.get("spec") or {}
+        skill = spec.get("skill")
+        if not skill or not _SERVICE_URL_RE.match(spec.get("url") or ""):
+            phases[name] = "Rejected"
+        elif skill in table:
+            phases[name] = "Conflicting"
+        else:
+            phases[name], owners[skill] = "Registered", spec
+            table[skill] = {"url": spec["url"], "transport": spec.get("transport") or "sse",
+                            "requiresIdentity": bool(spec.get("requiresIdentity")),
+                            "alwaysOn": bool(spec.get("alwaysOn")), "aliases": []}
+    claimed = set(table)
+    for skill, entry in table.items():
+        for alias in owners[skill].get("aliasSkills") or []:
+            if alias not in claimed:
+                claimed.add(alias)
+                entry["aliases"].append(alias)
+    return table, phases
+
+
+def _refresh_tools(logger):
+    """Re-read every Tool, record its phase, and return the resolved table."""
+    global _tools
+    api = kubernetes.client.CustomObjectsApi()
+    with _tools_lock:
+        items = api.list_cluster_custom_object(API_GROUP, API_VERSION, TOOL_PLURAL).get("items", [])
+        table, phases = _resolve_tools(items)
+        for t in items:
+            name, phase = t["metadata"]["name"], phases[t["metadata"]["name"]]
+            if (t.get("status") or {}).get("phase") == phase:
+                continue
+            if phase != "Registered":
+                logger.warning(f"Tool '{name}' is {phase}")
+            try:
+                api.patch_cluster_custom_object_status(API_GROUP, API_VERSION, TOOL_PLURAL, name, {
+                    "status": {"phase": phase, "observedGeneration": t["metadata"].get("generation")}})
+            except kubernetes.client.ApiException as e:
+                logger.warning(f"Tool '{name}' status update failed: {e}")
+        _tools = table
+        return table
+
+
+def _tool_table():
+    """The adapter's view of the Tools; the watch below keeps it current."""
+    return _tools if _tools is not None else _refresh_tools(logging.getLogger(__name__))
+
+
+@kopf.on.event(API_GROUP, API_VERSION, TOOL_PLURAL)
+def on_tool_event(logger, **_):
+    """Re-converge running agents when the resolved table changes (not on status-only events)."""
+    before = _tools
+    if _refresh_tools(logger) == before or before is None:
+        return
+    agents = kubernetes.client.CustomObjectsApi().list_cluster_custom_object(
+        API_GROUP, API_VERSION, AGENT_PLURAL).get("items", [])
+    for agent in agents:
+        name, spec = agent["metadata"]["name"], agent.get("spec") or {}
+        if (spec.get("desiredState") == "Suspended" or (agent.get("status") or {}).get("phase") != "Running"
+                or not _owner_ns_matches(spec, agent["metadata"]["namespace"])):
+            continue
+        try:
+            _get_adapter().update(AgentContext(name, spec, logger), reseed=False)
+        except Exception as e:
+            logger.warning(f"Agent '{name}': tool re-wiring failed: {e}")
+
+
 # ── Per-agent memory (pgvector schema + tier tables) ─────────────────────────
 def _provision_agent_memory(name, spec, logger):
     """Per-agent schema with one table per memory tier; None if not configured or failed."""
@@ -601,29 +675,30 @@ def _apply(create, replace, name, ns, body, logger, what):
     return True
 
 
-def _proxy_pod_spec(image, script, env, ports, volumes, extra_mounts=()):
-    """Restricted-PSS pod spec for a per-agent proxy; proxies never call the API server."""
+def _proxy_pod_spec(script, config_map, mount, env, ports, extra_volumes=(), extra_mounts=()):
+    """Restricted-PSS pod spec running /code/<script> from the operator image; no API token."""
     c = kubernetes.client
     return c.V1PodSpec(
         automount_service_account_token=False,
         security_context=c.V1PodSecurityContext(
-            run_as_non_root=True, run_as_user=1000, fs_group=1000,
+            run_as_non_root=True, run_as_user=65532, run_as_group=65532,
             seccomp_profile=c.V1SeccompProfile(type="RuntimeDefault")),
         containers=[c.V1Container(
-            name="proxy", image=image, command=["python", f"/code/{script}"], env=env,
+            name="proxy", image=PROXY_IMAGE, command=["python", f"/code/{script}"], env=env,
             ports=[c.V1ContainerPort(container_port=p) for p in ports],
-            volume_mounts=[c.V1VolumeMount(name="code", mount_path="/code"), *extra_mounts],
+            volume_mounts=[c.V1VolumeMount(name="config", mount_path=mount, read_only=True),
+                           *extra_mounts],
             security_context=c.V1SecurityContext(
                 allow_privilege_escalation=False, read_only_root_filesystem=True,
-                run_as_non_root=True, run_as_user=1000,
                 capabilities=c.V1Capabilities(drop=["ALL"])),
         )],
-        volumes=volumes,
+        volumes=[c.V1Volume(name="config", config_map=c.V1ConfigMapVolumeSource(name=config_map)),
+                 *extra_volumes],
     )
 
 
-def _apply_proxy_workload(ns, name, labels, pod_hash, pod_spec, service_ports, logger):
-    """Deployment + Service for a per-agent proxy; the hash annotation rolls the pod."""
+def _apply_proxy_workload(ns, name, labels, config_hash, pod_spec, service_ports, logger):
+    """Deployment + Service for a per-agent proxy; config_hash rolls the pod on a change."""
     c = kubernetes.client
     apps, core = c.AppsV1Api(), c.CoreV1Api()
     deployment = c.V1Deployment(
@@ -631,7 +706,8 @@ def _apply_proxy_workload(ns, name, labels, pod_hash, pod_spec, service_ports, l
         spec=c.V1DeploymentSpec(
             replicas=1, selector=c.V1LabelSelector(match_labels=labels),
             template=c.V1PodTemplateSpec(
-                metadata=c.V1ObjectMeta(labels=labels, annotations={"intel-stack.io/src-hash": pod_hash}),
+                metadata=c.V1ObjectMeta(labels=labels,
+                                        annotations={"intel-stack.io/config-hash": config_hash}),
                 spec=pod_spec)))
     if not _apply(apps.create_namespaced_deployment, apps.replace_namespaced_deployment,
                   name, ns, deployment, logger, f"{name} Deployment"):
@@ -645,25 +721,19 @@ def _apply_proxy_workload(ns, name, labels, pod_hash, pod_spec, service_ports, l
            name, ns, service, logger, f"{name} Service")
 
 
-def _identity_proxy_hash(routes_json):
-    return hashlib.sha256((routes_json + _IDENTITY_PROXY_SRC).encode()).hexdigest()[:16]
-
-
 def _apply_identity_proxy(agent_name, agent_ns, routes, logger, tool_credentials=None):
     """Per-agent identity proxy: holds the client secret and attaches the bearer token.
 
     `routes` is {port: {"url", "scope", "credHeaders"?}} from the adapter; `tool_credentials`
     {file: value} go in their own Secret, replaced every time so a revoked PAT disappears."""
-    if not IDENTITY_PROXY_ENABLED:
-        return
     c = kubernetes.client
     core = c.CoreV1Api()
     routes = {int(p): r for p, r in (routes or {}).items()}
     routes_json = json.dumps({str(p): routes[p] for p in sorted(routes)})
-    cm_name = f"{IDENTITY_PROXY_NAME}-code"
+    cm_name = f"{IDENTITY_PROXY_NAME}-routes"
     cm = c.V1ConfigMap(
         metadata=c.V1ObjectMeta(name=cm_name, namespace=agent_ns, labels=IDENTITY_PROXY_LABELS),
-        data={"routes.json": routes_json, "identity_proxy.py": _IDENTITY_PROXY_SRC})
+        data={"routes.json": routes_json})
     if not _apply(core.create_namespaced_config_map, core.replace_namespaced_config_map,
                   cm_name, agent_ns, cm, logger, "identity-proxy ConfigMap"):
         return
@@ -674,25 +744,23 @@ def _apply_identity_proxy(agent_name, agent_ns, routes, logger, tool_credentials
                       string_data={k: v for k, v in (tool_credentials or {}).items() if v}),
            logger, "identity-proxy tool credentials")
     # Optional secrets: a pod that starts and 503s recovers once kubelet syncs them.
-    volumes = [
-        c.V1Volume(name="code", config_map=c.V1ConfigMapVolumeSource(name=cm_name)),
-        c.V1Volume(name="identity", secret=c.V1SecretVolumeSource(
-            secret_name=f"{agent_name}-keycloak-credentials", optional=True)),
-        c.V1Volume(name="tool-credentials", secret=c.V1SecretVolumeSource(
-            secret_name=cred_secret, optional=True)),
-    ]
     pod_spec = _proxy_pod_spec(
-        IDENTITY_PROXY_IMAGE, "identity_proxy.py",
-        env=[c.V1EnvVar(name="ROUTES_PATH", value="/code/routes.json"),
+        "identity_proxy.py", cm_name, "/etc/identity-proxy",
+        env=[c.V1EnvVar(name="ROUTES_PATH", value="/etc/identity-proxy/routes.json"),
              c.V1EnvVar(name="CREDS_DIR", value="/etc/agent-identity"),
              c.V1EnvVar(name="CRED_HEADER_DIR", value=IDENTITY_PROXY_CRED_DIR)],
-        ports=sorted(routes), volumes=volumes,
+        ports=sorted(routes),
+        extra_volumes=[
+            c.V1Volume(name="identity", secret=c.V1SecretVolumeSource(
+                secret_name=f"{agent_name}-keycloak-credentials", optional=True)),
+            c.V1Volume(name="tool-credentials", secret=c.V1SecretVolumeSource(
+                secret_name=cred_secret, optional=True))],
         extra_mounts=[c.V1VolumeMount(name="identity", mount_path="/etc/agent-identity", read_only=True),
                       c.V1VolumeMount(name="tool-credentials", mount_path=IDENTITY_PROXY_CRED_DIR,
                                       read_only=True)])
-    # Routes are bound at startup, so a route or source change must roll the pod.
+    # Routes are bound at startup, so a route change must roll the pod.
     _apply_proxy_workload(agent_ns, IDENTITY_PROXY_NAME, IDENTITY_PROXY_LABELS,
-                          _identity_proxy_hash(routes_json), pod_spec,
+                          hashlib.sha256(routes_json.encode()).hexdigest()[:16], pod_spec,
                           sorted(routes) or [IDENTITY_PROXY_PORT_BASE], logger)
     logger.info(f"Applied identity proxy ({len(routes)} route(s)) in '{agent_ns}'")
 
@@ -703,27 +771,24 @@ def _apply_web_fetch_proxy(agent_ns, allowlist, logger):
         return
     c = kubernetes.client
     core = c.CoreV1Api()
-    cm_name = f"{WEB_FETCH_PROXY_NAME}-code"
+    cm_name = f"{WEB_FETCH_PROXY_NAME}-allowlist"
     cm = c.V1ConfigMap(
         metadata=c.V1ObjectMeta(name=cm_name, namespace=agent_ns, labels=WEB_FETCH_PROXY_LABELS),
-        data={"allowlist.json": json.dumps(sorted(set(allowlist or []))),
-              "web_fetch_proxy.py": _WEB_FETCH_PROXY_SRC})
+        data={"allowlist.json": json.dumps(sorted(set(allowlist or [])))})
     if not _apply(core.create_namespaced_config_map, core.replace_namespaced_config_map,
                   cm_name, agent_ns, cm, logger, "web-fetch-proxy ConfigMap"):
         return
     env = [c.V1EnvVar(name="PORT", value=str(WEB_FETCH_PROXY_PORT)),
-           c.V1EnvVar(name="ALLOWLIST_PATH", value="/code/allowlist.json")]
+           c.V1EnvVar(name="ALLOWLIST_PATH", value="/etc/web-fetch-proxy/allowlist.json")]
     for key, value in (("HTTP_PROXY", WEB_FETCH_PROXY_HTTP_PROXY),
                        ("HTTPS_PROXY", WEB_FETCH_PROXY_HTTPS_PROXY),
                        ("NO_PROXY", WEB_FETCH_PROXY_NO_PROXY)):
         if value:
             env += [c.V1EnvVar(name=key, value=value), c.V1EnvVar(name=key.lower(), value=value)]
-    pod_spec = _proxy_pod_spec(
-        WEB_FETCH_PROXY_IMAGE, "web_fetch_proxy.py", env, [WEB_FETCH_PROXY_PORT],
-        [c.V1Volume(name="code", config_map=c.V1ConfigMapVolumeSource(name=cm_name))])
-    # Hash the source only: the allowlist is re-read per request.
-    _apply_proxy_workload(agent_ns, WEB_FETCH_PROXY_NAME, WEB_FETCH_PROXY_LABELS,
-                          hashlib.sha256(_WEB_FETCH_PROXY_SRC.encode()).hexdigest()[:16],
+    pod_spec = _proxy_pod_spec("web_fetch_proxy.py", cm_name, "/etc/web-fetch-proxy", env,
+                               [WEB_FETCH_PROXY_PORT])
+    # The allowlist is re-read per request, so its edits never roll the pod.
+    _apply_proxy_workload(agent_ns, WEB_FETCH_PROXY_NAME, WEB_FETCH_PROXY_LABELS, "static",
                           pod_spec, [WEB_FETCH_PROXY_PORT], logger)
     _apply_web_fetch_proxy_egress(agent_ns, logger)
 
@@ -813,6 +878,14 @@ def _egress_ns_rules(entries):
     return rules
 
 
+def _local_ports(port, end_port=None):
+    """Ports for in-namespace egress; the ambient mesh carries it as HBONE on 15008."""
+    c = kubernetes.client
+    if MESH_AMBIENT:
+        return [c.V1NetworkPolicyPort(protocol="TCP", port=15008)]
+    return [c.V1NetworkPolicyPort(protocol="TCP", port=port, end_port=end_port)]
+
+
 def _apply_network_policy(agent_ns, logger):
     """Default-deny for the agent namespace: same-namespace ingress, allowlisted egress."""
     if not NETWORK_POLICY_ENABLED:
@@ -822,15 +895,11 @@ def _apply_network_policy(agent_ns, logger):
     if WEB_FETCH_PROXY_ENABLED:
         egress.append(c.V1NetworkPolicyEgressRule(
             to=[c.V1NetworkPolicyPeer(pod_selector=c.V1LabelSelector(match_labels=WEB_FETCH_PROXY_LABELS))],
-            ports=[c.V1NetworkPolicyPort(protocol="TCP", port=WEB_FETCH_PROXY_PORT)]))
-    if IDENTITY_PROXY_ENABLED:
-        egress.append(c.V1NetworkPolicyEgressRule(
-            to=[c.V1NetworkPolicyPeer(pod_selector=c.V1LabelSelector(match_labels=IDENTITY_PROXY_LABELS))],
-            ports=[c.V1NetworkPolicyPort(protocol="TCP", port=IDENTITY_PROXY_PORT_BASE,
-                                         end_port=IDENTITY_PROXY_PORT_BASE + IDENTITY_PROXY_PORT_SPAN - 1)]))
+            ports=_local_ports(WEB_FETCH_PROXY_PORT)))
+    egress.append(c.V1NetworkPolicyEgressRule(
+        to=[c.V1NetworkPolicyPeer(pod_selector=c.V1LabelSelector(match_labels=IDENTITY_PROXY_LABELS))],
+        ports=_local_ports(IDENTITY_PROXY_PORT_BASE, IDENTITY_PROXY_PORT_BASE + IDENTITY_PROXY_PORT_SPAN - 1)))
     egress += _egress_ns_rules(NETWORK_POLICY_EGRESS_ALLOW)
-    if not IDENTITY_PROXY_ENABLED:
-        egress += _egress_ns_rules(NETWORK_POLICY_IDENTITY_EGRESS_ALLOW)
     ingress = [c.V1NetworkPolicyIngressRule(_from=[c.V1NetworkPolicyPeer(
         namespace_selector=c.V1LabelSelector(match_labels={"kubernetes.io/metadata.name": agent_ns}))])]
     if _put_network_policy(agent_ns, "agent-default-deny", c.V1NetworkPolicySpec(
@@ -839,11 +908,10 @@ def _apply_network_policy(agent_ns, logger):
         logger.info(f"Applied NetworkPolicy (default-deny + allowlist) in '{agent_ns}'")
     # Separate object: NetworkPolicy is additive, so MCP egress cannot be withheld
     # from the agent pod inside the namespace-wide policy above.
-    if IDENTITY_PROXY_ENABLED:
-        _put_network_policy(agent_ns, "identity-proxy-egress", c.V1NetworkPolicySpec(
-            pod_selector=c.V1LabelSelector(match_labels=IDENTITY_PROXY_LABELS),
-            policy_types=["Egress"], egress=_egress_ns_rules(NETWORK_POLICY_IDENTITY_EGRESS_ALLOW)),
-            logger)
+    _put_network_policy(agent_ns, "identity-proxy-egress", c.V1NetworkPolicySpec(
+        pod_selector=c.V1LabelSelector(match_labels=IDENTITY_PROXY_LABELS),
+        policy_types=["Egress"], egress=_egress_ns_rules(NETWORK_POLICY_IDENTITY_EGRESS_ALLOW)),
+        logger)
 
 
 def _apply_resource_quota(agent_ns, logger):
@@ -1101,31 +1169,24 @@ def _reconcile_kc_audiences(agent_name, spec, logger):
         _ensure_kc_client_scopes(client["id"], headers, client["clientId"], spec, logger)
 
 
-def _reconcile_identity_proxy_src(agent_name, spec, logger):
-    """Ship new identity-proxy code to a suspended agent's proxy; routes stay as they are."""
-    if not IDENTITY_PROXY_ENABLED:
-        return
+def _reconcile_proxy_images(agent_name, spec, logger):
+    """Move a suspended agent's proxies to the current image; nothing else changes."""
     agent_ns = _agent_ns(agent_name, spec)
-    core, apps = kubernetes.client.CoreV1Api(), kubernetes.client.AppsV1Api()
-    cm_name = f"{IDENTITY_PROXY_NAME}-code"
-    try:
-        cm = core.read_namespaced_config_map(cm_name, agent_ns)
-        dep = apps.read_namespaced_deployment(IDENTITY_PROXY_NAME, agent_ns)
-    except kubernetes.client.ApiException:
-        return
-    want = _identity_proxy_hash((cm.data or {}).get("routes.json", "{}"))
-    ann = dep.spec.template.metadata.annotations or {}
-    if ann.get("intel-stack.io/src-hash") == want:
-        return
-    try:
-        cm.data["identity_proxy.py"] = _IDENTITY_PROXY_SRC
-        core.replace_namespaced_config_map(cm_name, agent_ns, cm)
-        ann["intel-stack.io/src-hash"] = want
-        dep.spec.template.metadata.annotations = ann
-        apps.replace_namespaced_deployment(IDENTITY_PROXY_NAME, agent_ns, dep)
-        logger.info(f"identity-proxy source updated for suspended agent '{agent_name}'")
-    except kubernetes.client.ApiException as e:
-        logger.warning(f"identity-proxy source update failed for '{agent_ns}': {e}")
+    apps = kubernetes.client.AppsV1Api()
+    for name in (IDENTITY_PROXY_NAME, WEB_FETCH_PROXY_NAME):
+        try:
+            dep = apps.read_namespaced_deployment(name, agent_ns)
+        except kubernetes.client.ApiException:
+            continue
+        container = dep.spec.template.spec.containers[0]
+        if container.image == PROXY_IMAGE:
+            continue
+        container.image = PROXY_IMAGE
+        try:
+            apps.replace_namespaced_deployment(name, agent_ns, dep)
+            logger.info(f"{name} image updated for suspended agent '{agent_name}'")
+        except kubernetes.client.ApiException as e:
+            logger.warning(f"{name} image update failed in '{agent_ns}': {e}")
 
 
 def _hardcoded_claim(name, value):

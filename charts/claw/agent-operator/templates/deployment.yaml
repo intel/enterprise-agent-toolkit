@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 {{- $a := .Values.agents }}
 {{- $i := .Values.isolation }}
+{{- $image := required "image.tag is required" .Values.image.tag | printf "%s:%s" .Values.image.repository }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,7 +37,7 @@ spec:
       {{- end }}
       containers:
         - name: operator
-          image: "{{ required "image.tag is required" .Values.image.tag | printf "%s:%s" .Values.image.repository }}"
+          image: {{ $image | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -75,10 +76,6 @@ spec:
             - {name: EMBEDDING_BASE_URL, value: {{ $a.embedding.baseUrl | quote }}}
             - {name: EMBEDDING_MODEL, value: {{ $a.embedding.model | quote }}}
             - {name: CONTROL_UI_ALLOWED_ORIGINS, value: {{ $a.controlUiAllowedOrigins | quote }}}
-            - {name: REGISTRY_URL, value: {{ $a.mcp.registryUrl | quote }}}
-            - {name: MEMORY_MCP_URL, value: {{ $a.mcp.memoryUrl | quote }}}
-            - {name: SANDBOX_MCP_URL, value: {{ $a.mcp.sandboxUrl | quote }}}
-            - {name: GITHUB_MCP_URL, value: {{ $a.mcp.githubUrl | quote }}}
             - {name: MESH_AMBIENT, value: {{ $i.meshAmbient | quote }}}
             - {name: NETWORK_POLICY_ENABLED, value: {{ $i.networkPolicy.enabled | quote }}}
             - {name: NETWORK_POLICY_EGRESS_ALLOW, value: {{ $i.networkPolicy.egressAllow | toJson | quote }}}
@@ -92,12 +89,12 @@ spec:
             - {name: POD_SECURITY_LEVEL, value: {{ $i.podSecurity.level | quote }}}
             - {name: MAX_AGENTS_PER_OWNER, value: {{ $i.maxAgentsPerOwner | quote }}}
             - {name: WEB_FETCH_PROXY_ENABLED, value: {{ .Values.webFetchProxy.enabled | quote }}}
-            - {name: WEB_FETCH_PROXY_IMAGE, value: {{ .Values.webFetchProxy.image | quote }}}
             - {name: WEB_FETCH_PROXY_PORT, value: {{ .Values.webFetchProxy.port | quote }}}
             - {name: WEB_FETCH_PROXY_HTTP_PROXY, value: {{ .Values.webFetchProxy.httpProxy | quote }}}
             - {name: WEB_FETCH_PROXY_HTTPS_PROXY, value: {{ .Values.webFetchProxy.httpsProxy | quote }}}
             - {name: WEB_FETCH_PROXY_NO_PROXY, value: {{ .Values.webFetchProxy.noProxy | quote }}}
-            - {name: IDENTITY_PROXY_IMAGE, value: {{ .Values.identityProxy.image | quote }}}
+            # The per-agent proxies run from this same image.
+            - {name: PROXY_IMAGE, value: {{ $image | quote }}}
             - {name: IDENTITY_PROXY_PORT_BASE, value: {{ .Values.identityProxy.portBase | quote }}}
             - {name: IDENTITY_PROXY_PORT_SPAN, value: {{ .Values.identityProxy.portSpan | quote }}}
           ports:

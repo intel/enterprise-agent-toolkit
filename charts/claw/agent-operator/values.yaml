@@ -44,15 +44,11 @@ agents:
     contextWindow: 0
     allowPrivateNetwork: true
   compactionReserveTokens: 6144
+  # OpenClaw's built-in memory search; an empty baseUrl leaves it off.
   embedding:
-    baseUrl: ""
-    model: BAAI/bge-base-en-v1.5
+    baseUrl: http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1
+    model: bge-base-en
   controlUiAllowedOrigins: ""
-  mcp:
-    registryUrl: ""
-    memoryUrl: ""
-    sandboxUrl: ""
-    githubUrl: ""
 
 isolation:
   meshAmbient: true
@@ -63,7 +59,14 @@ isolation:
       - namespace: envoy-gateway-system
         podSelector: {gateway.envoyproxy.io/owning-gateway-name: ai-gateway}
         ports: [15008]
-    identityEgressAllow: []
+    # Egress of the per-agent identity proxy: MCP servers and the Keycloak token endpoint.
+    identityEgressAllow:
+      - namespace: agent-operator-system
+        podSelector: {app.kubernetes.io/component: mcp-server}
+        ports: [15008]
+      - namespace: keycloak
+        podSelector: {app: keycloak}
+        ports: [15008]
   resourceQuota:
     enabled: true
     hard:
@@ -82,15 +85,14 @@ isolation:
     level: restricted
   maxAgentsPerOwner: 0
 
+# Per-agent proxies; both run from the operator image.
 webFetchProxy:
   enabled: false
-  image: docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
   port: 8888
   httpProxy: ""
   httpsProxy: ""
   noProxy: ""
 
 identityProxy:
-  image: docker.io/library/python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
   portBase: 8901
   portSpan: 16
