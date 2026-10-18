@@ -7,13 +7,10 @@ instance, patches the two fields it authors (spec.config, spec.env) and toggles
 spec.suspended; it never rewrites anything else.
 """
 import base64
-import json
 import os
 import re
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
 TEMPLATE_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE = "/home/openclaw/.openclaw/workspace"
@@ -24,11 +21,6 @@ GITHUB_TOKEN_CRED_FILE = "github_token"
 # Sent when no key is configured; the in-cluster inference gateway needs none.
 NO_KEY = "sk-no-key-needed"
 
-# An identity-bearing tool must be an in-cluster Service: `.svc` plus nothing or
-# `.cluster.local`, never a free suffix that could resolve off-cluster.
-_SERVICE_URL_RE = re.compile(
-    r"^https?://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?"
-    r"\.svc(\.cluster\.local)?(:[0-9]{1,5})?(/[^\s]*)?$")
 # Workspace keys are relative paths of plain segments.
 _WORKSPACE_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 
@@ -38,8 +30,6 @@ SKILL_MAP = {
     "diagram-maker": {"plugins": ["diagram-maker"]},
     "canvas": {"plugins": ["canvas"]},
 }
-# Fallback alias when the tool registry has no entry for the target tool.
-SKILL_TOOL_ALIASES = {"shell": "sandbox"}
 
 
 def _bool(value, default):
@@ -77,10 +67,6 @@ def config_from_env(env=None):
         # OpenClaw's built-in memory search; empty leaves it off.
         "embeddingBaseUrl": env.get("EMBEDDING_BASE_URL", ""),
         "embeddingModel": env.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5"),
-        "registryUrl": env.get("REGISTRY_URL", "").rstrip("/"),
-        "memoryMcpUrl": env.get("MEMORY_MCP_URL", ""),
-        "sandboxMcpUrl": env.get("SANDBOX_MCP_URL", ""),
-        "githubMcpUrl": env.get("GITHUB_MCP_URL", ""),
         "controlUiAllowedOrigins": [
             o.strip() for o in env.get("CONTROL_UI_ALLOWED_ORIGINS", "").split(",") if o.strip()],
     }
@@ -105,8 +91,6 @@ def _render_cr(template_name, **values):
 
 
 class ClawAdapter:
-    REGISTRY_CACHE_TTL = 10.0
-
     def __init__(self, core, config):
         self.core = core
         self.k8s = core.k8s
@@ -117,33 +101,25 @@ class ClawAdapter:
         self.model_name = model["name"] or model["id"]
         self.model_base_url = model["baseUrl"]
         self.model_api_key = model["apiKey"] or NO_KEY
-        self.identity_proxy_enabled = bool(core.identity_proxy_enabled)
         self.identity_proxy_port_base = int(core.identity_proxy_port_base)
         self.identity_proxy_port_span = int(core.identity_proxy_port_span)
         self.web_fetch_proxy_enabled = bool(core.web_fetch_proxy_enabled)
         self.web_fetch_proxy_port = int(core.web_fetch_proxy_port)
-        self.registry_url = config["registryUrl"]
-        # Used only when the registry is unreachable or has no entry for a skill.
-        self._fallback_tools = {
-            "memory": {"url": config["memoryMcpUrl"], "requiresIdentity": True, "alwaysOn": True},
-            "sandbox": {"url": config["sandboxMcpUrl"], "requiresIdentity": True},
-            "github": {"url": config["githubMcpUrl"], "requiresIdentity": True},
-        }
-        self._registry_cache, self._registry_cache_at = None, 0.0
 
     # ── Adapter interface ────────────────────────────────────────────────────
     def create(self, ctx):
         api = self.k8s.client.CustomObjectsApi()
+        body = self._render_instance(ctx)
         try:
             api.create_namespaced_custom_object(
                 group="openclaw.rocks", version="v1alpha1", namespace=ctx.namespace,
-                plural="openclawinstances", body=self._render_instance(ctx))
+                plural="openclawinstances", body=body)
             ctx.logger.info(f"Created OpenClawInstance '{ctx.name}'")
         except self.k8s.client.ApiException as e:
             if e.status != 409:
                 raise
             # Exists: converge the fields we author (no-op when unchanged).
-            self.update(ctx, reseed=False)
+            self._patch_instance(ctx, body)
         return {"apiVersion": "openclaw.rocks/v1alpha1", "kind": "OpenClawInstance", "name": ctx.name}
 
     def update(self, ctx, reseed=True):
@@ -217,35 +193,6 @@ class ClawAdapter:
         return name
 
     # ── Tools ────────────────────────────────────────────────────────────────
-    def _registry_tools(self, logger):
-        """{skill: entry} from the tool registry, cached briefly; {} when unavailable."""
-        if not self.registry_url:
-            return {}
-        now = time.time()
-        if self._registry_cache is not None and now - self._registry_cache_at < self.REGISTRY_CACHE_TTL:
-            return self._registry_cache
-        try:
-            req = urllib.request.Request(f"{self.registry_url}/tools", headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310 - in-cluster URL from config
-                body = json.loads(resp.read())
-            self._registry_cache = {t["skill"]: t for t in body.get("tools", []) if t.get("skill")}
-            self._registry_cache_at = now
-        except (urllib.error.URLError, ValueError, KeyError) as e:
-            logger.warning(f"tool registry unreachable ({e}) — using fallback tools only")
-        return self._registry_cache or {}
-
-    def _skill_aliases(self, registry_tools):
-        """{alias: tool}: registry aliasSkills, plus the fallback table for tools it lacks."""
-        aliases = {}
-        for skill, entry in registry_tools.items():
-            for alias in map(str, entry.get("aliasSkills") or []):
-                if alias and alias != skill and alias not in registry_tools:
-                    aliases.setdefault(alias, skill)
-        for alias, target in SKILL_TOOL_ALIASES.items():
-            if target not in registry_tools and alias not in registry_tools:
-                aliases.setdefault(alias, target)
-        return aliases
-
     @staticmethod
     def _tool_credentials(ctx):
         """{file: value} for the identity proxy's Secret; empty clears a revoked PAT."""
@@ -255,37 +202,26 @@ class ClawAdapter:
         """(servers for openclaw.json, routes for the identity proxy), from one pass so they agree."""
         servers = {t["name"]: {"url": t["url"], "transport": "sse"}
                    for t in ctx.custom_tools if t.get("name") and t.get("url")}
-        registry = self._registry_tools(ctx.logger)
+        # {skill: entry} of Registered Tools; each entry's aliases are already conflict-free.
+        registry = self.core.tools()
         requested = set(ctx.skills or [])
-        requested |= {tool for alias, tool in self._skill_aliases(registry).items() if alias in requested}
-        requested |= {s for src in (registry, self._fallback_tools) for s, e in src.items() if e.get("alwaysOn")}
+        requested |= {s for s, e in registry.items()
+                      if e.get("alwaysOn") or requested & set(e.get("aliases") or [])}
 
         identity_scopes = {}
-        for skill in requested:
-            entry = registry.get(skill) or self._fallback_tools.get(skill)
-            if not entry or not entry.get("url"):
-                continue
+        for skill in sorted(requested & set(registry)):
+            entry = registry[skill]
             if entry.get("requiresIdentity"):
-                if not _SERVICE_URL_RE.match(entry["url"]):
-                    # Losing a tool is recoverable; sending the agent's token off-cluster is not.
-                    ctx.logger.warning(f"agent '{ctx.name}': skill '{skill}' requires identity but "
-                                       f"url '{entry['url']}' is not a .svc Service address — tool omitted")
-                    continue
-                identity_scopes[skill] = entry.get("audience") or f"mcp-{skill}"
+                identity_scopes[skill] = f"mcp-{skill}"
             servers[skill] = {"url": entry["url"], "transport": entry.get("transport", "sse")}
-
-        if not self.identity_proxy_enabled:
-            if identity_scopes:
-                ctx.logger.warning(f"agent '{ctx.name}': identity proxy not available — "
-                                   f"{sorted(identity_scopes)} are called without proven identity")
-            return servers, {}
 
         # Ports follow sorted skill names, so an unchanged skill set never rolls the proxy.
         routes = {}
         for i, skill in enumerate(sorted(identity_scopes)):
             if i >= self.identity_proxy_port_span:
                 ctx.logger.warning(f"agent '{ctx.name}': {len(identity_scopes)} identity tools exceeds "
-                                   f"the proxy port span {self.identity_proxy_port_span}; '{skill}' is not proxied")
+                                   f"the proxy port span {self.identity_proxy_port_span}; '{skill}' omitted")
+                servers.pop(skill)
                 continue
             port = self.identity_proxy_port_base + i
             upstream = urllib.parse.urlsplit(servers[skill]["url"])
@@ -305,9 +241,8 @@ class ClawAdapter:
             plugins.extend(SKILL_MAP.get(skill, {}).get("plugins", []))
         mcp_servers, routes = self._mcp_wiring(ctx)
         # The proxy must serve the ports before the agent is told to call them.
-        if self.identity_proxy_enabled:
-            self.core.apply_identity_proxy(ctx.name, ctx.namespace, routes, ctx.logger,
-                                           tool_credentials=self._tool_credentials(ctx))
+        self.core.apply_identity_proxy(ctx.name, ctx.namespace, routes, ctx.logger,
+                                       tool_credentials=self._tool_credentials(ctx))
         proxy = (f"http://web-fetch-proxy.{ctx.namespace}.svc.cluster.local:{self.web_fetch_proxy_port}"
                  if self.web_fetch_proxy_enabled else "")
         return _render_cr(
@@ -317,10 +252,10 @@ class ClawAdapter:
             tools_deny=ctx.tools_deny, mcp_servers=mcp_servers, web_fetch_proxy=proxy,
             **self._model_vars(ctx))
 
-    def _patch_instance(self, ctx):
+    def _patch_instance(self, ctx, rendered=None):
         """JSON-patch spec.config and spec.env; returns True if the pod was rolled."""
         api = self.k8s.client.CustomObjectsApi()
-        body = self._render_instance(ctx)["spec"]
+        body = (rendered or self._render_instance(ctx))["spec"]
         try:
             live = api.get_namespaced_custom_object(
                 group="openclaw.rocks", version="v1alpha1", namespace=ctx.namespace,

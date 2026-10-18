@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """claw adapter: tool and identity wiring, model credentials, workspace seeding, rendering."""
 import json
-import time
 import types
 import unittest
 import urllib.parse
@@ -10,11 +9,17 @@ import urllib.parse
 import claw_adapter
 
 MCP = {
-    "memory": "http://mcp-memory-server.pgvector.svc.cluster.local:8000/sse",
+    "memory": "http://mcp-memory-server.agent-operator-system.svc.cluster.local:8000/sse",
     "sandbox": "http://mcp-sandbox-server.agent-sandbox-system.svc.cluster.local:8000/sse",
     "github": "http://mcp-github-server.agent-operator-system.svc.cluster.local:8000/sse",
 }
 PAT = "ghp-alice-own-pat"
+# The controller's resolved Tool table, as core.tools() returns it.
+TOOLS = {
+    "memory": {"url": MCP["memory"], "requiresIdentity": True, "alwaysOn": True, "aliases": []},
+    "sandbox": {"url": MCP["sandbox"], "requiresIdentity": True, "alwaysOn": False, "aliases": ["shell"]},
+    "github": {"url": MCP["github"], "requiresIdentity": True, "alwaysOn": False, "aliases": []},
+}
 
 
 class _Logger:
@@ -44,13 +49,12 @@ class _Ctx:
         self.logger = _Logger()
 
 
-def _adapter(identity_proxy=True, port_span=16, env=None):
-    env = {"MEMORY_MCP_URL": MCP["memory"], "SANDBOX_MCP_URL": MCP["sandbox"],
-           "GITHUB_MCP_URL": MCP["github"], "MODEL_ID": "qwen", "MODEL_PROVIDER": "ai-gateway",
+def _adapter(port_span=16, env=None, tools=None):
+    env = {"MODEL_ID": "qwen", "MODEL_PROVIDER": "ai-gateway",
            "MODEL_BASE_URL": "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1",
            "MODEL_CONTEXT_WINDOW": "32768", **(env or {})}
     core = types.SimpleNamespace(
-        k8s=types.SimpleNamespace(client=None), identity_proxy_enabled=identity_proxy,
+        k8s=types.SimpleNamespace(client=None), tools=lambda: TOOLS if tools is None else tools,
         identity_proxy_port_base=8901, identity_proxy_port_span=port_span,
         web_fetch_proxy_enabled=False, web_fetch_proxy_port=8888)
     return claw_adapter.ClawAdapter(core, claw_adapter.config_from_env(env))
@@ -73,20 +77,13 @@ class IdentityWiringTest(unittest.TestCase):
         second = _adapter()._mcp_wiring(_Ctx(["shell", "github"]))[1]
         self.assertEqual(first, second)
 
-    def test_span_overflow_is_reported(self):
+    def test_span_overflow_omits_the_tool_instead_of_calling_it_unproxied(self):
         ctx = _Ctx(["github", "shell"])
         servers, routes = _adapter(port_span=2)._mcp_wiring(ctx)
         self.assertEqual(len(routes), 2)
         self.assertTrue(any("exceeds" in w for w in ctx.logger.warnings))
-        self.assertEqual(sum("identity-proxy" not in s["url"] for s in servers.values()), 1)
-
-    def test_without_the_proxy_tools_are_direct_and_it_says_so(self):
-        ctx = _Ctx(["github"], github_token=PAT)
-        servers, routes = _adapter(identity_proxy=False)._mcp_wiring(ctx)
-        self.assertEqual(routes, {})
-        self.assertEqual(servers["memory"]["url"], MCP["memory"])
-        self.assertNotIn(PAT, json.dumps(servers))
-        self.assertTrue(any("without proven identity" in w for w in ctx.logger.warnings))
+        self.assertEqual(len(servers), 2)
+        self.assertTrue(all("identity-proxy" in s["url"] for s in servers.values()))
 
 
 class GithubTokenTest(unittest.TestCase):
@@ -118,53 +115,25 @@ class GithubTokenTest(unittest.TestCase):
         self.assertEqual([r["scope"] for r in routes.values() if "credHeaders" in r], ["mcp-github"])
 
 
-class AliasTest(unittest.TestCase):
-    def _with_registry(self, table):
-        adapter = _adapter(env={"REGISTRY_URL": "http://registry:8080"})
-        adapter._registry_cache, adapter._registry_cache_at = table, time.time()
-        return adapter
+class ToolSelectionTest(unittest.TestCase):
+    def _servers(self, skills, tools=None):
+        return set(_adapter(tools=tools)._mcp_wiring(_Ctx(skills))[0])
 
-    @staticmethod
-    def _entry(skill, **extra):
-        return {"skill": skill, "url": MCP[skill], "requiresIdentity": True,
-                "alwaysOn": skill == "memory", **extra}
+    def test_an_alias_wires_its_tool(self):
+        self.assertEqual(self._servers(["shell"]), {"memory", "sandbox"})
 
-    def test_the_registry_alias_wires_the_tool(self):
-        adapter = self._with_registry({"sandbox": self._entry("sandbox", aliasSkills=["shell"])})
-        self.assertIn("sandbox", adapter._mcp_wiring(_Ctx(["shell"]))[0])
+    def test_a_tool_without_the_alias_is_not_wired(self):
+        tools = {**TOOLS, "sandbox": {**TOOLS["sandbox"], "aliases": []}}
+        self.assertEqual(self._servers(["shell"], tools), {"memory"})
 
-    def test_a_registry_tool_without_the_alias_is_not_aliased(self):
-        adapter = self._with_registry({"sandbox": self._entry("sandbox")})
-        self.assertNotIn("sandbox", adapter._mcp_wiring(_Ctx(["shell"]))[0])
+    def test_an_unregistered_skill_wires_nothing(self):
+        self.assertEqual(self._servers(["github"], {"memory": TOOLS["memory"]}), {"memory"})
 
-    def test_the_fallback_alias_covers_a_registry_without_sandbox(self):
-        adapter = self._with_registry({"memory": self._entry("memory")})
-        self.assertIn("sandbox", adapter._mcp_wiring(_Ctx(["shell"]))[0])
-
-    def test_an_alias_never_shadows_a_registered_skill(self):
-        adapter = self._with_registry({"memory": self._entry("memory"),
-                                       "github": self._entry("github", aliasSkills=["memory"])})
-        self.assertNotIn("memory", adapter._skill_aliases(adapter._registry_tools(_Logger())))
-
-
-class ServiceAddressTest(unittest.TestCase):
-    def _servers(self, url, identity_proxy=True):
-        adapter = _adapter(identity_proxy=identity_proxy)
-        adapter._fallback_tools["memory"]["url"] = url
-        ctx = _Ctx([])
-        return adapter._mcp_wiring(ctx), ctx
-
-    def test_non_service_addresses_never_get_identity(self):
-        for url in ("http://10.42.3.17:8000/sse", "http://evil.example.com/sse",
-                    "http://mcp-memory-server.pgvector.svc.cluster.local.evil.com/sse"):
-            for proxied in (True, False):
-                (servers, routes), ctx = self._servers(url, proxied)
-                self.assertNotIn("memory", servers, url)
-                self.assertEqual(routes, {})
-
-    def test_the_short_service_form_is_accepted(self):
-        (servers, _), _ = self._servers("http://mcp-memory-server.pgvector.svc:8000/sse")
-        self.assertIn("memory", servers)
+    def test_a_tool_without_identity_is_called_directly(self):
+        tools = {"docs": {"url": "http://docs.tools.svc:8000/sse", "requiresIdentity": False,
+                          "alwaysOn": True, "aliases": []}}
+        servers, routes = _adapter(tools=tools)._mcp_wiring(_Ctx([]))
+        self.assertEqual((servers["docs"]["url"], routes), ("http://docs.tools.svc:8000/sse", {}))
 
 
 class ModelTest(unittest.TestCase):

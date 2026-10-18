@@ -1,0 +1,21 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+{{- $t := .Values.tool }}
+apiVersion: intel-stack.io/v1alpha1
+kind: Tool
+metadata:
+  name: {{ $t.skill | default .Values.name }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+spec:
+  skill: {{ $t.skill | default .Values.name | quote }}
+  {{- with $t.aliasSkills }}
+  aliasSkills: {{ toJson . }}
+  {{- end }}
+  url: "http://{{ include "mcp-server.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.port }}/sse"
+  transport: sse
+  requiresIdentity: {{ $t.requiresIdentity }}
+  alwaysOn: {{ $t.alwaysOn }}
+  {{- with $t.description }}
+  description: {{ . | quote }}
+  {{- end }}

@@ -18,6 +18,13 @@ rules:
   - apiGroups: ["intel-stack.io"]
     resources: ["agents", "agents/status"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  # Tools are read and given a phase, never created or edited: a Tool names a token recipient.
+  - apiGroups: ["intel-stack.io"]
+    resources: ["tools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["intel-stack.io"]
+    resources: ["tools/status"]
+    verbs: ["patch"]
   - apiGroups: ["openclaw.rocks"]
     resources: ["openclawinstances"]
     verbs: ["get", "create", "patch", "delete"]
