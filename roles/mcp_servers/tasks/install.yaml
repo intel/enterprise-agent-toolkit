@@ -10,6 +10,13 @@
   register: _mcp_crd
   failed_when: _mcp_crd.resources | default([]) | length == 0
 
+- name: "mcp_servers | Select servers"
+  ansible.builtin.include_tasks: select.yaml
+
+- name: "mcp_servers | Sandbox prerequisites"
+  ansible.builtin.include_tasks: sandbox.yaml
+  when: "'sandbox' in _mcp_selected | map(attribute='name')"
+
 # Same source hash as the operator build, so this only resolves the pinned digest.
 - name: "mcp_servers | Resolve the image"
   ansible.builtin.include_role:
@@ -32,9 +39,15 @@
         repository: "{{ claw_image_repository }}"
         tag: "{{ claw_image_tag }}"
       affinity: "{{ _platform_affinity | default({}) }}"
-      env: "{{ item.env | default([]) }}"
-      tool: "{{ item.tool | default({}) }}"
-  loop: "{{ mcp_servers }}"
+      env: "{{ _identity_env + (item.env | default([])) }}"
+      rbac: "{{ item.rbac | default({'namespace': '', 'rules': []}) }}"
+      tool: "{{ {'requiresIdentity': true} | combine(item.tool | default({})) }}"
+  vars:
+    _identity_env:
+      - {name: KEYCLOAK_URL, value: "{{ claw_keycloak_url }}"}
+      - {name: KEYCLOAK_REALM, value: "{{ claw_keycloak_realm }}"}
+      - {name: MCP_AUDIENCE, value: "mcp-{{ item.name }}"}
+  loop: "{{ _mcp_selected }}"
   loop_control:
     label: "{{ item.name }}"
 
@@ -42,15 +55,17 @@
   kubernetes.core.k8s_info:
     api_version: intel-stack.io/v1alpha1
     kind: Tool
-    name: "{{ item.tool.skill | default(item.name) }}"
+    name: "{{ item.name }}"
   register: _mcp_tool
   until: (_mcp_tool.resources[0].status.phase | default('')) == 'Registered'
   retries: "{{ mcp_servers_register_retries }}"
   delay: 2
-  loop: "{{ mcp_servers }}"
+  loop: "{{ _mcp_selected }}"
   loop_control:
     label: "{{ item.name }}"
 
 - name: "mcp_servers | Install complete"
   ansible.builtin.debug:
-    msg: "MCP servers in '{{ agent_operator_namespace }}': {{ mcp_servers | map(attribute='name') | join(', ') }}"
+    msg:
+      - "MCP servers in '{{ agent_operator_namespace }}': {{ _mcp_selected | map(attribute='name') | join(', ') }}"
+      - "GitHub: agents use their own githubTokenSecretRef, else Secret '{{ mcp_servers_github_token_secret }}' (key token)"
