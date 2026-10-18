@@ -15,7 +15,6 @@ export type DecidingLayer = "owner" | "grant" | "break-glass";
 export interface ResolvedAccess {
   isOwner: boolean;
   caps: Set<Capability>;
-  toolSubset: string[] | null; // null = all of the agent's tools (owner)
   agent: any;
   grant?: AgentGrantRow;
   decidedBy: DecidingLayer;
@@ -27,7 +26,7 @@ export interface ResolveOpts {
   breakGlassReason?: string; // from X-Break-Glass-Reason; without it admin roles confer nothing
 }
 
-// Admin access to agents the caller does not own: never credential or delegate.
+// Admin access to agents the caller does not own.
 export const BREAK_GLASS_CAPS: Record<string, Capability[]> = {
   [ROLE_AGENT_ADMIN]: ["view"],
   [ROLE_PLATFORM_ADMIN]: ["view", "suspend-resume", "delete", "converse"],
@@ -59,13 +58,13 @@ export async function decideAccess(
 ): Promise<ResolvedAccess | null> {
   const owner = (agent?.spec?.owner?.principal ?? "").toLowerCase();
   if (owner && owner === caller.email) {
-    return { isOwner: true, caps: new Set(ALL_CAPABILITIES), toolSubset: null, agent, decidedBy: "owner" };
+    return { isOwner: true, caps: new Set(ALL_CAPABILITIES), agent, decidedBy: "owner" };
   }
   // After owner and grant, so an admin who is also a grantee is recorded as the grantee.
   const breakGlass = (): ResolvedAccess | null => {
     const role = opts.breakGlassReason ? ADMIN_ROLES.find((r) => hasRole(caller, r)) : undefined;
     return role ? {
-      isOwner: false, caps: new Set(BREAK_GLASS_CAPS[role]), toolSubset: [], agent,
+      isOwner: false, caps: new Set(BREAK_GLASS_CAPS[role]), agent,
       decidedBy: "break-glass", breakGlassRole: role, breakGlassReason: opts.breakGlassReason,
     } : null;
   };
@@ -77,7 +76,6 @@ export async function decideAccess(
   return {
     isOwner: false,
     caps: new Set(live.flatMap((g) => [...expandCaps(g.capabilities)])),
-    toolSubset: [...new Set(live.flatMap((g) => g.tools))],
     agent,
     grant: live[0],
     decidedBy: "grant",

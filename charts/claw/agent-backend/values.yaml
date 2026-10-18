@@ -18,6 +18,14 @@ auth:
   audience: agent-backend
   # Comma-separated client IDs also accepted by azp.
   authorizedParties: ""
+  # In-cluster token endpoint, for the console's sign-in.
+  tokenUrl: ""
+
+# The console at / on the same host, signed in with this client (Secret key client-secret).
+console:
+  enabled: false
+  oidcClientId: agent-console
+  oidcSecret: agent-console-oidc
 
 # https://<hostname>/api on the platform gateway; empty hostname = no route.
 route:

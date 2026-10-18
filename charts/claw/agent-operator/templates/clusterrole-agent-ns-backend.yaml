@@ -9,10 +9,7 @@ metadata:
   labels:
     app.kubernetes.io/name: agent-operator
 rules:
+  # Prunes the credential Secrets it replaced.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "patch", "delete"]
-  # Rolls the agent pod after a gateway token rotation.
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["delete"]
+    verbs: ["list", "delete"]

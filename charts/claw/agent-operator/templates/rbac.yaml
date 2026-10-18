@@ -25,6 +25,17 @@ rules:
   - apiGroups: ["intel-stack.io"]
     resources: ["tools/status"]
     verbs: ["patch"]
+  # Grants decide who may use an agent's gateway route.
+  - apiGroups: ["intel-stack.io"]
+    resources: ["agentgrants"]
+    verbs: ["get", "list", "watch"]
+  # Each agent's route on the platform gateway, and its sign-in and authorization policy.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes", "referencegrants"]
+    verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: ["gateway.envoyproxy.io"]
+    resources: ["securitypolicies"]
+    verbs: ["get", "create", "patch", "delete"]
   - apiGroups: ["openclaw.rocks"]
     resources: ["openclawinstances"]
     verbs: ["get", "create", "patch", "delete"]

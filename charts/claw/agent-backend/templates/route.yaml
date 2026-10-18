@@ -1,7 +1,8 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 {{- with .Values.route.hostname }}
-# https://<hostname>/api; this route's own JWT policy replaces the gateway-wide one.
+# https://<hostname>/api, and the console at / when enabled. One policy for both, so a browser's
+# sign-in covers its API calls; this route's policy replaces the gateway-wide one.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -19,6 +20,12 @@ spec:
         - path: {type: PathPrefix, value: /api}
       backendRefs:
         - {name: agent-backend, port: 3000}
+    {{- if $.Values.console.enabled }}
+    - matches:
+        - path: {type: PathPrefix, value: /}
+      backendRefs:
+        - {name: agent-console, port: 3000}
+    {{- end }}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
@@ -29,6 +36,25 @@ metadata:
 spec:
   targetRefs:
     - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: agent-backend-api}
+  {{- if $.Values.console.enabled }}
+  # Browsers sign in; a request that already carries a bearer token (a script) skips it.
+  oidc:
+    provider:
+      issuer: {{ $.Values.auth.issuer | quote }}
+      authorizationEndpoint: {{ printf "%s/protocol/openid-connect/auth" $.Values.auth.issuer | quote }}
+      tokenEndpoint: {{ required "auth.tokenUrl is required with the console" $.Values.auth.tokenUrl | quote }}
+    clientID: {{ $.Values.console.oidcClientId | quote }}
+    clientSecret: {name: {{ $.Values.console.oidcSecret }}}
+    redirectURL: {{ printf "https://%s/oauth2/callback" . | quote }}
+    logoutPath: /oauth2/logout
+    forwardAccessToken: true
+    refreshToken: true
+    passThroughAuthHeader: true
+    # The console's API calls get a 401 to act on, not a sign-in page.
+    denyRedirect:
+      headers:
+        - {name: x-requested-with, value: XMLHttpRequest}
+  {{- end }}
   jwt:
     providers:
       - name: keycloak

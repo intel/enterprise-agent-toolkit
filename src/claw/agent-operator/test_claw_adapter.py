@@ -136,6 +136,27 @@ class ToolSelectionTest(unittest.TestCase):
         self.assertEqual((servers["docs"]["url"], routes), ("http://docs.tools.svc:8000/sse", {}))
 
 
+class GatewayAuthTest(unittest.TestCase):
+    def _gateway(self, env=None):
+        adapter = _adapter(env=env)
+        adapter.core.apply_identity_proxy = lambda *a, **k: None
+        adapter._ensure_model_key_secret = lambda ctx: "lab-model-api-key"
+        return adapter._render_instance(_Ctx(["shell"]))["spec"]["config"]
+
+    def test_with_trusted_proxies_the_gateway_takes_the_user_from_the_platform_gateway(self):
+        cfg = self._gateway({"GATEWAY_TRUSTED_PROXIES": "10.233.64.0/18"})
+        gw = cfg["raw"]["gateway"]
+        self.assertEqual((gw["trustedProxies"], gw["auth"]["mode"], gw["auth"]["trustedProxy"]["userHeader"]),
+                         (["10.233.64.0/18"], "trusted-proxy", "x-gw-user"))
+        self.assertEqual(gw["controlUi"]["basePath"], "/gw/user-alice/lab")
+        self.assertIn("gateway.auth.token", cfg["forcePaths"])
+
+    def test_without_them_the_gateway_keeps_token_auth(self):
+        cfg = self._gateway()
+        self.assertNotIn("auth", cfg["raw"]["gateway"])
+        self.assertNotIn("gateway.auth.token", cfg["forcePaths"])
+
+
 class ModelTest(unittest.TestCase):
     def test_the_cluster_default_is_used_without_an_override(self):
         v = _adapter()._model_vars(_Ctx([]))

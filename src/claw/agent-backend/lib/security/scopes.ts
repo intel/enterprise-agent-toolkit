@@ -8,9 +8,8 @@ import type { SecurityContext } from "./authn.js";
 export const SCOPE_READ = "agent:read";
 export const SCOPE_WRITE = "agent:write";
 export const SCOPE_CONVERSE = "agent:converse";
-export const SCOPE_TOKEN = "agent:token";
 export const SCOPE_GRANT = "agent:grant";
-export const STACK_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_WRITE, SCOPE_CONVERSE, SCOPE_TOKEN, SCOPE_GRANT];
+export const STACK_SCOPES: readonly string[] = [SCOPE_READ, SCOPE_WRITE, SCOPE_CONVERSE, SCOPE_GRANT];
 
 // RFC 6749 space-delimited string; the array form exists in the wild.
 export function parseScopeClaim(raw: unknown): string[] {
@@ -47,5 +46,5 @@ export function requireScope(need: string) {
 }
 
 export function scopeConfig() {
-  return { enforcement: true, read: SCOPE_READ, write: SCOPE_WRITE, converse: SCOPE_CONVERSE, token: SCOPE_TOKEN, grant: SCOPE_GRANT };
+  return { enforcement: true, read: SCOPE_READ, write: SCOPE_WRITE, converse: SCOPE_CONVERSE, grant: SCOPE_GRANT };
 }

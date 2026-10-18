@@ -19,13 +19,9 @@ const MATRIX: Record<string, [string, string, RegExp, boolean]> = {
   "POST /api/agents/:ns/:name/suspend": ["ROLE_EDITOR", "SCOPE_WRITE", /changeState/, true],
   "POST /api/agents/:ns/:name/resume": ["ROLE_EDITOR", "SCOPE_WRITE", /changeState/, true],
   "GET /api/agents/:ns/:name/provisioning": ["ROLE_VIEWER", "SCOPE_READ", /capOn\(req, "view"\)/, false],
-  "POST /api/agents/:ns/:name/token": ["ROLE_EDITOR", "SCOPE_TOKEN", /capOn\(req, "credential"\)[\s\S]*isOwner/, true],
   "GET /api/agents/:ns/:name/grants": ["ROLE_VIEWER", "SCOPE_READ", /ownerOn\(req/, false],
   "POST /api/agents/:ns/:name/grants": ["ROLE_EDITOR", "SCOPE_GRANT", /ownerOn\(req/, true],
   "DELETE /api/agents/:ns/:name/grants/:grant": ["ROLE_EDITOR", "SCOPE_GRANT", /ownerOn\(req/, true],
-  "GET /api/gateway-authz/:ns/:name": ["ROLE_VIEWER", "SCOPE_CONVERSE", /capOn\(req, "converse"\)/, false],
-  "ALL /api/gateway/:ns/:name/*path": ["ROLE_VIEWER", "SCOPE_CONVERSE", /gatewayTarget\(req\)/, false],
-  "POST /api/chat/:ns/:name": ["ROLE_VIEWER", "SCOPE_CONVERSE", /gatewayTarget\(req\)/, false],
 };
 
 const ROUTE_RE = /^app\.(get|post|patch|delete|all)\("([^"]+)",(.*)$/gm;
@@ -56,9 +52,6 @@ for (const [key, [role, scope, gate, auditedWrite]] of Object.entries(MATRIX)) {
   });
 }
 
-test("the gateway token is read in one place, and only sent upstream", () => {
-  assert.equal(SRC.match(/getGatewayToken\(/g)?.length, 1);
-  const fn = SRC.slice(SRC.indexOf("async function gatewayTarget"), SRC.indexOf("\n}\n", SRC.indexOf("async function gatewayTarget")));
-  assert.match(fn, /getGatewayToken\(/);
-  assert.doesNotMatch(SRC, /x-gw-authorization/);
+test("the API holds no agent gateway credential", () => {
+  assert.doesNotMatch(SRC + source("lib/k8s.ts"), /gateway-token|getGatewayToken|x-gw-/);
 });

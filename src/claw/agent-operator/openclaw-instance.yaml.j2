@@ -32,7 +32,8 @@ spec:
     format: json
     # merge keeps runtime-written state; forcePaths keeps the operator-managed trees exact.
     mergeMode: merge
-    forcePaths: ["tools", "plugins", "mcp"]
+    # gateway.auth.token: a token left by an earlier boot would conflict with trusted-proxy mode.
+    forcePaths: ["tools", "plugins", "mcp"[% if cfg.trustedProxies %], "gateway.auth.token"[% endif %]]
     raw:
       agents:
         defaults:
@@ -89,9 +90,20 @@ spec:
       mcp:
         servers: [[ mcp_servers | tojson ]]
       gateway:
+        [% if cfg.trustedProxies %]
+        # The platform gateway signs the user in, authorizes them for this agent and names them
+        # in x-gw-user; only it can reach this port (NetworkPolicy). Loopback is kubectl port-forward.
+        trustedProxies: [[ cfg.trustedProxies | tojson ]]
+        auth:
+          mode: trusted-proxy
+          trustedProxy:
+            userHeader: x-gw-user
+            allowLoopback: true
+        [% endif %]
         controlUi:
+          basePath: [[ ("/gw/" ~ cr_namespace ~ "/" ~ name) | tojson ]]
           dangerouslyAllowHostHeaderOriginFallback: false
-          # Device pairing has no approval surface here; the gateway token gates access.
+          # Device pairing has no approval surface here; the caller is already authorized per request.
           dangerouslyDisableDeviceAuth: true
           [% if cfg.controlUiAllowedOrigins %]
           allowedOrigins: [[ cfg.controlUiAllowedOrigins | tojson ]]

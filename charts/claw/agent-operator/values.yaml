@@ -18,11 +18,25 @@ keycloak:
   # Existing Secret with keys client-id and client-secret (service account with manage-clients).
   credentialsSecret: agent-operator-keycloak
   mcpAudiences: mcp-memory,mcp-github,mcp-sandbox
+  # The realm's public issuer (https://keycloak.<domain>/realms/<realm>), for the gateway routes.
+  issuer: ""
 
 # Optional Secret with keys pgvector-dsn and model-api-key; missing keys are ignored.
 runtimeSecret: agent-operator-runtime
 
 autoSuspendIdleMinutes: 240
+# Each agent's dashboard at https://<hostname>/gw/<owner ns>/<name>/, behind the console's
+# sign-in client; empty hostname = no routes. trustedProxies: the gateway pods' addresses.
+gatewayRoute:
+  hostname: ""
+  gateway:
+    name: eg-gateway
+    namespace: envoy-gateway-system
+    sectionName: https
+  oidcClientId: agent-console
+  oidcSecret: agent-console-oidc
+  trustedProxies: ""
+
 # The API backend's ServiceAccount (same namespace), granted Secret access per agent namespace.
 backendServiceAccount: agent-backend
 memory:
@@ -61,10 +75,10 @@ isolation:
       - namespace: envoy-gateway-system
         podSelector: {gateway.envoyproxy.io/owning-gateway-name: ai-gateway}
         ports: [15008]
-    # Ingress to agent pods from outside their namespace: the API backend, to the gateway port.
+    # Ingress to agent pods from outside their namespace: the platform gateway, to the agent gateway.
     ingressAllow:
-      - namespace: agent-operator-system
-        podSelector: {app.kubernetes.io/name: agent-backend}
+      - namespace: envoy-gateway-system
+        podSelector: {gateway.envoyproxy.io/owning-gateway-name: eg-gateway}
         ports: [18789, 15008]
     # Egress of the per-agent identity proxy: MCP servers and the Keycloak token endpoint.
     identityEgressAllow:
