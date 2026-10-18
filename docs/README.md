@@ -43,4 +43,4 @@ Complete all [prerequisites](./prerequisites.md).
 | Hybrid Router | Complexity-aware, cost/latency-optimizing inference routing for the GenAI Gateway | [Hybrid Router Guide](hybrid-router.md) |
 | Intel® Arc™ (XPU) GPU | Deploy vLLM models on Intel discrete GPUs (Arc/Flex/Max, incl. Battlemage) via `compute_platform=xpu`. **Note:** not available in this release. | [Intel Arc XPU Guide](intel-arc-xpu-deployment.md) |
 | Stack Validation | Post-deploy health checks, preflight node readiness, burn tests, and traffic-light reporting | [Validate Stack Guide](validate-stack.md) |
-| Claw (persistent OpenClaw agents) | Long-lived OpenClaw agents on the cluster, with an end-to-end walkthrough. Disabled by default (`claw_enabled`) | [Claw Guide](claw.md) · [Walkthrough](claw-e2e.md) |
+| Claw (persistent OpenClaw agents) | Isolated, long-lived OpenClaw agents with memory, tools, a browser console and a REST API, with an end-to-end walkthrough. Disabled by default (`claw_enabled`) | [Claw Guide](claw.md) · [Walkthrough](claw-e2e.md) |
