@@ -84,8 +84,7 @@ MAX_AGENTS_PER_OWNER = int(os.environ.get("MAX_AGENTS_PER_OWNER") or 0)
 
 # Per-agent proxies run from this operator's own image (/code), configured by ConfigMap.
 PROXY_IMAGE = os.environ.get("PROXY_IMAGE", "")
-WEB_FETCH_PROXY_ENABLED = _env_bool("WEB_FETCH_PROXY_ENABLED") and os.path.exists(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_fetch_proxy.py"))
+WEB_FETCH_PROXY_ENABLED = _env_bool("WEB_FETCH_PROXY_ENABLED")
 WEB_FETCH_PROXY_PORT = int(os.environ.get("WEB_FETCH_PROXY_PORT") or 8888)
 WEB_FETCH_PROXY_HTTP_PROXY = os.environ.get("WEB_FETCH_PROXY_HTTP_PROXY", "")
 WEB_FETCH_PROXY_HTTPS_PROXY = os.environ.get("WEB_FETCH_PROXY_HTTPS_PROXY", "")
@@ -822,19 +821,15 @@ def _dns_egress_rule():
         to=peers, ports=[c.V1NetworkPolicyPort(protocol=p, port=53) for p in ("UDP", "TCP")])
 
 
-def _corporate_proxy_ip_blocks():
-    """The corporate proxy's addresses; NetworkPolicy matches IPs, not hostnames."""
-    import socket
+_NON_PUBLIC_V4 = ["10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+                  "192.168.0.0/16"]
+
+
+def _corporate_proxy_ports():
+    """Ports of the configured corporate proxies; their names may resolve to rotating addresses."""
     from urllib.parse import urlsplit
-    ips = set()
-    for raw in (WEB_FETCH_PROXY_HTTP_PROXY, WEB_FETCH_PROXY_HTTPS_PROXY):
-        host = urlsplit(raw if "://" in raw else f"http://{raw}").hostname if raw else None
-        if host:
-            try:
-                ips.add(socket.gethostbyname(host))
-            except OSError:
-                pass
-    return sorted(ips)
+    return sorted({urlsplit(raw if "://" in raw else f"http://{raw}").port or 80
+                   for raw in (WEB_FETCH_PROXY_HTTP_PROXY, WEB_FETCH_PROXY_HTTPS_PROXY) if raw})
 
 
 def _put_network_policy(ns, name, spec, logger, labels=None):
@@ -847,17 +842,23 @@ def _put_network_policy(ns, name, spec, logger, labels=None):
 
 
 def _apply_web_fetch_proxy_egress(agent_ns, logger):
-    """Corporate-proxy egress for the web_fetch proxy pod alone, never the agent pod."""
-    ip_blocks = _corporate_proxy_ip_blocks()
-    if not (NETWORK_POLICY_ENABLED and ip_blocks):
+    """Internet egress for the web_fetch proxy pod alone: the corporate proxy, else public HTTP(S)."""
+    if not NETWORK_POLICY_ENABLED:
         return
     c = kubernetes.client
+    proxy_ports = _corporate_proxy_ports()
+    if proxy_ports:
+        # This pod dials only its configured proxy, so the port is the boundary.
+        rule = c.V1NetworkPolicyEgressRule(
+            to=[c.V1NetworkPolicyPeer(ip_block=c.V1IPBlock(cidr="0.0.0.0/0"))],
+            ports=[c.V1NetworkPolicyPort(protocol="TCP", port=p) for p in proxy_ports])
+    else:
+        rule = c.V1NetworkPolicyEgressRule(
+            to=[c.V1NetworkPolicyPeer(ip_block=c.V1IPBlock(cidr="0.0.0.0/0", _except=_NON_PUBLIC_V4))],
+            ports=[c.V1NetworkPolicyPort(protocol="TCP", port=p) for p in (80, 443)])
     _put_network_policy(agent_ns, f"{WEB_FETCH_PROXY_NAME}-egress", c.V1NetworkPolicySpec(
         pod_selector=c.V1LabelSelector(match_labels=WEB_FETCH_PROXY_LABELS),
-        policy_types=["Egress"],
-        egress=[_dns_egress_rule(), c.V1NetworkPolicyEgressRule(
-            to=[c.V1NetworkPolicyPeer(ip_block=c.V1IPBlock(cidr=f"{ip}/32")) for ip in ip_blocks])]),
-        logger, WEB_FETCH_PROXY_LABELS)
+        policy_types=["Egress"], egress=[_dns_egress_rule(), rule]), logger, WEB_FETCH_PROXY_LABELS)
 
 
 def _egress_ns_rules(entries):

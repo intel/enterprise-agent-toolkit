@@ -115,8 +115,11 @@ spec:
                     Domains web_fetch may reach (subdomains included); "*" allows any. Empty
                     means no external access.
                   default: []
+                  maxItems: 100
                   items:
                     type: string
+                    maxLength: 253
+                    pattern: '^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$'
                 workspace:
                   type: object
                   description: >-
