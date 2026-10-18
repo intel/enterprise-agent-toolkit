@@ -37,6 +37,9 @@
              | combine({'istio.io/dataplane-mode': 'ambient'}
                        if (istio_enabled | default(false) | bool) else {}) }}
 
+- name: "agent_operator | Memory database credentials"
+  ansible.builtin.include_tasks: runtime.yaml
+
 - name: "agent_operator | Keycloak service account"
   ansible.builtin.include_tasks: keycloak.yaml
 
@@ -48,7 +51,7 @@
     name: claw_image
   vars:
     claw_image_name: agent-operator
-    claw_image_context: "{{ role_path }}/../../src/claw/agent-operator"
+    claw_image_context: "{{ role_path }}/../../src/claw"
 
 - name: "agent_operator | Install or upgrade the CRDs"
   kubernetes.core.helm:
@@ -71,6 +74,9 @@
         tag: "{{ claw_image_tag }}"
       affinity: "{{ _platform_affinity | default({}) }}"
       autoSuspendIdleMinutes: "{{ claw_auto_suspend_idle_minutes }}"
+      runtimeSecret: "{{ claw_runtime_secret }}"
+      memory:
+        embeddingDim: "{{ claw_embedding_dim }}"
       keycloak:
         url: "{{ claw_keycloak_url }}"
         realm: "{{ claw_keycloak_realm }}"
@@ -80,6 +86,9 @@
           id: "{{ claw_model_id }}"
           baseUrl: "{{ claw_model_base_url }}"
           contextWindow: "{{ claw_model_context_window }}"
+        embedding:
+          baseUrl: "{{ claw_model_base_url }}"
+          model: "{{ claw_embedding_model }}"
       isolation:
         meshAmbient: "{{ istio_enabled | default(false) | bool }}"
         podSecurity:

@@ -55,4 +55,9 @@ components:
   - name: agent_operator
     layer: agent-toolkit
     enabled: "{{ claw_enabled | default(false) | bool }}"
-    depends_on: [openclaw_operator, keycloak_agent_config]
+    depends_on: [openclaw_operator, keycloak_agent_config, pgvector]
+
+  - name: mcp_servers
+    layer: agent-toolkit
+    enabled: "{{ claw_enabled | default(false) | bool }}"
+    depends_on: [agent_operator]

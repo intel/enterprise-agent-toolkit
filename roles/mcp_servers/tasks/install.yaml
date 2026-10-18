@@ -1,0 +1,56 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "mcp_servers | Check the agent operator is installed"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: tools.intel-stack.io
+  register: _mcp_crd
+  failed_when: _mcp_crd.resources | default([]) | length == 0
+
+# Same source hash as the operator build, so this only resolves the pinned digest.
+- name: "mcp_servers | Resolve the image"
+  ansible.builtin.include_role:
+    name: claw_image
+  vars:
+    claw_image_name: agent-operator
+    claw_image_context: "{{ role_path }}/../../src/claw"
+
+- name: "mcp_servers | Install or upgrade the servers"
+  kubernetes.core.helm:
+    name: "mcp-{{ item.name }}-server"
+    chart_ref: "{{ role_path }}/../../charts/claw/mcp-server"
+    release_namespace: "{{ agent_operator_namespace }}"
+    wait: true
+    timeout: "{{ mcp_servers_wait_timeout }}"
+    values:
+      name: "{{ item.name }}"
+      script: "{{ item.script }}"
+      image:
+        repository: "{{ claw_image_repository }}"
+        tag: "{{ claw_image_tag }}"
+      affinity: "{{ _platform_affinity | default({}) }}"
+      env: "{{ item.env | default([]) }}"
+      tool: "{{ item.tool | default({}) }}"
+  loop: "{{ mcp_servers }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "mcp_servers | Wait for each Tool to be registered"
+  kubernetes.core.k8s_info:
+    api_version: intel-stack.io/v1alpha1
+    kind: Tool
+    name: "{{ item.tool.skill | default(item.name) }}"
+  register: _mcp_tool
+  until: (_mcp_tool.resources[0].status.phase | default('')) == 'Registered'
+  retries: "{{ mcp_servers_register_retries }}"
+  delay: 2
+  loop: "{{ mcp_servers }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "mcp_servers | Install complete"
+  ansible.builtin.debug:
+    msg: "MCP servers in '{{ agent_operator_namespace }}': {{ mcp_servers | map(attribute='name') | join(', ') }}"
