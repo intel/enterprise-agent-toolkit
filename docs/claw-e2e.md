@@ -119,6 +119,39 @@ once its last agent is gone.
 
 ---
 
+## Use the REST API
+
+**You need:** the claw components above and `agent_backend`
+(`./es_auto_installer.sh install agent_backend --only --env <env>`), and `agents.<domain>` and
+`keycloak.<domain>` resolving to the platform gateway.
+
+```bash
+DOMAIN=<base_domain_name>
+SECRET=$(kubectl -n agent-operator-system get secret agent-api-client -o jsonpath='{.data.client-secret}' | base64 -d)
+TOKEN=$(curl -s https://keycloak.$DOMAIN/realms/agent-toolkit/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=agent-api --data-urlencode "client_secret=$SECRET" \
+  --data-urlencode 'scope=agent:read agent:write agent:converse' | jq -r .access_token)
+api() { curl -s "https://agents.$DOMAIN$2" -X "$1" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' ${3:+-d "$3"}; }
+
+api GET /api/authz-config | jq '{roles: .roles.enforcement, scopes: .scopes.enforcement}'
+api POST /api/agents '{"name":"auto1"}' | jq -r .href            # /api/agents/user-automation/auto1
+kubectl -n user-automation wait agent/auto1 --for=jsonpath='{.status.phase}'=Running --timeout=10m
+api GET /api/agents/user-automation/auto1/provisioning | jq -c '[.steps[] | {(.key): .state}]'
+api POST /api/chat/user-automation/auto1 '{"prompt":"What is the capital of France?"}'
+```
+
+Enforcement reports `true` for both, provisioning shows every step `ok`, and the chat streams
+the answer. Without a token every call is `401`; a token requested with only `agent:read`
+gets `403 insufficient_scope` on `POST /api/agents`.
+
+To share the agent, `POST /api/agents/user-automation/auto1/grants` with
+`{"grantee":"<email>","capabilities":["converse"]}` (the token needs `agent:grant`). Before the
+grant, that user gets `404` for the agent; with it, they can chat; after
+`DELETE …/grants/<name>`, `404` again. Each step is a row in `audit_events`.
+
+---
+
 ## Run an OpenClaw instance
 
 **You need:** the Agent Toolkit installed with its default model (`qwen2-5-coder-14b`),
