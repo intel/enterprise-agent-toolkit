@@ -8,7 +8,7 @@ off by default (`claw_enabled: false`).
 
 **Contents:** [Components](#components) · [Enable](#enable) · [Create an agent](#create-an-agent) ·
 [Memory](#memory) · [Tools](#tools) · [Sandbox, GitHub and web access](#sandbox-github-and-web-access) ·
-[REST API](#rest-api) ·
+[Console and dashboards](#console-and-dashboards) · [REST API](#rest-api) ·
 [Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
 [Configuration](#configuration) · [Security](#security) · [Validate and remove](#validate-and-remove) ·
 [Troubleshooting](#troubleshooting) · [Limitations](#limitations)
@@ -22,7 +22,8 @@ off by default (`claw_enabled: false`).
 | `openclaw_operator` | The upstream [OpenClaw operator](https://github.com/paperclipinc/openclaw-operator) `0.38.3`: CRDs `OpenClawInstance`, `OpenClawClusterDefaults`, `OpenClawSelfConfig`, and its controller | `openclaw-operator-system` |
 | `agent_operator` | The `Agent` and `Tool` CRDs (`intel-stack.io/v1alpha1`) and the agent operator, which turns each `Agent` into an isolated OpenClaw agent | `agent-operator-system` |
 | `mcp_servers` | The MCP servers agents call, each registered as a `Tool`: `memory` (long-term memory on pgvector), `sandbox` (code execution on agent-sandbox, when installed) and `github` | `agent-operator-system` |
-| `agent_backend` | The REST API at `https://agents.<base_domain_name>/api`, the `AgentGrant` resource for sharing, realm roles and scopes, and an API client for scripts | `agent-operator-system` |
+| `agent_backend` | The REST API at `https://agents.<base_domain_name>/api`, the `AgentGrant` resource for sharing, realm roles and scopes, the sign-in for browsers, and an API client for scripts | `agent-operator-system` |
+| `agent_console` | The browser console at `https://agents.<base_domain_name>/` | `agent-operator-system` |
 
 For every `Agent`, the agent operator creates:
 
@@ -33,8 +34,8 @@ For every `Agent`, the agent operator creates:
   holds its secret and calls the agent's tools with a token;
 - a web-fetch proxy that lets `web_fetch` reach only the domains in `spec.webFetchAllowlist`;
 - a pgvector schema `agent_<username>_<name>` for the agent's memory;
-- a gateway token Secret and an `OpenClawInstance`, which the OpenClaw operator runs as a pod
-  with a persistent volume;
+- an `OpenClawInstance`, which the OpenClaw operator runs as a pod with a persistent volume;
+- a route to the agent's dashboard and chat at `https://agents.<base_domain_name>/gw/<owner ns>/<name>/`;
 - the workspace files listed in `spec.workspace`.
 
 One image, built from this repository during install and pushed to the cluster's image
@@ -62,11 +63,13 @@ claw_enabled: true
 
 ```bash
 ./es_auto_installer.sh install mcp_servers --env <env>
-./es_auto_installer.sh install agent_backend --only --env <env>
+./es_auto_installer.sh install agent_console --env <env>
 ```
 
-The first also installs `openclaw_operator` and `agent_operator`, which `mcp_servers` depends
-on. A full layer install (`install agent-toolkit`) includes all four. On a cluster installed before
+The first also installs `openclaw_operator` and `agent_operator`; the second also installs
+`agent_backend`. A full layer install (`install agent-toolkit`) includes all six. Users sign in
+with accounts of the `agent-toolkit` realm, which get the `agent-viewer` and `agent-editor`
+roles by default. On a cluster installed before
 claw was turned on, deploy the embedding model with `./model-manager deploy bge-base-en`.
 
 ---
@@ -175,6 +178,22 @@ is set. An allowlist edit takes effect within a minute, without a restart.
 
 ---
 
+## Console and dashboards
+
+Open `https://agents.<base_domain_name>/` and sign in with Keycloak. The console lists your
+agents and the ones shared with you; creates, edits, suspends, resumes and deletes them; shares
+them for a limited time; and opens each agent's chat and OpenClaw dashboard.
+
+The dashboard and chat are the agent's own gateway, at `/gw/<owner ns>/<name>/` on the same
+host. The platform gateway signs the user in, verifies the token, and admits only the owner and
+users with a live `converse` grant; everyone else gets `403`. It passes the verified email to the
+agent as `x-gw-user`, and never forwards the user's token or cookies. A grant or revocation takes
+effect within seconds; an expired grant within half a minute. Scripts can call
+`/gw/<owner ns>/<name>/v1/chat/completions` with a bearer token from the `agent-api` client (for
+agents it owns).
+
+---
+
 ## REST API
 
 `https://agents.<base_domain_name>/api` takes a Keycloak access token from realm
@@ -198,8 +217,6 @@ curl -s https://agents.<base_domain_name>/api/agents -H "Authorization: Bearer $
 | `POST /api/agents/<ns>/<name>/suspend`, `/resume` | `suspend-resume` | Change the desired state |
 | `GET /api/agents/<ns>/<name>/provisioning` | `view` | The operator's provisioning steps |
 | `GET`, `POST`, `DELETE /api/agents/<ns>/<name>/grants[/<grant>]` | owner, `agent:grant` to change | Share the agent with another user, for a limited time |
-| `POST /api/chat/<ns>/<name>` | `converse`, `agent:converse` | One chat turn, streamed as server-sent events |
-| `POST /api/agents/<ns>/<name>/token` | owner, `agent:token` | Rotate the agent's gateway token |
 | `GET /api/tools`, `/api/me`, `/api/authz-config` | viewer / any | The tools you may use, who you are, which checks are on |
 
 Each request passes four checks:
@@ -208,10 +225,11 @@ Each request passes four checks:
   users get the first two.
 - **Scope:** the token's `agent:*` scopes cap what it may do, whatever the roles.
 - **Resource:** the owner may do everything; a grantee only what a live `AgentGrant` from the
-  owner confers (`view`, `suspend-resume`, `converse`, `credential`, `delete`, `delegate`).
+  owner confers (`view`, `suspend-resume`, `converse`, `delete`).
   Without access, an agent is `404`, the same as one that does not exist.
 - **Break-glass:** an admin who sends `X-Break-Glass-Reason` may view (`agent-admin`), or also
-  suspend, converse with and delete (`platform-admin`), agents they do not own.
+  suspend and delete (`platform-admin`), agents they do not own. It applies to the API, not to
+  other users' dashboards.
 
 Every write, every denial and every break-glass use is audited, to the API log and to the
 `audit_events` table in pgvector (monthly partitions, kept `agent_backend_audit_retention_months`).
@@ -244,7 +262,9 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
 | `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
 | `mcp_servers_github_token_secret` | `mcp-github-token` | Secret (key `token`) with the shared GitHub token |
-| `agent_backend_hostname` | `agents.<base_domain_name>` | Host of the REST API on the platform gateway |
+| `claw_console_hostname` | `agents.<base_domain_name>` | Host of the console, the REST API and the agent dashboards |
+| `claw_console_enabled` | `true` | Browser sign-in and per-agent dashboard routes; `false` leaves only the API |
+| `agent_console_grafana_url` | empty | Grafana link shown to admins in the console |
 | `agent_backend_api_client`, `agent_backend_api_owner` | `agent-api`, `automation` | The scripts' client and the user that owns their agents |
 | `agent_backend_audit_retention_months` | `12` | Months of audit events kept; set it to your policy |
 | `claw_auto_suspend_idle_minutes` | `240` | Idle time before an agent is suspended; `0` disables |
@@ -262,7 +282,8 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
   namespace the operator created for that agent.
 - **Isolation.** Each agent namespace enforces the `restricted` Pod Security Standard, a
   ResourceQuota and a LimitRange, and a default-deny NetworkPolicy: ingress from the same
-  namespace only, egress to DNS and the inference gateway only. In the ambient mesh, egress to
+  namespace and, to the agent gateway, from the platform gateway; egress to DNS and the
+  inference gateway only. In the ambient mesh, egress to
   a mesh workload uses the HBONE port `15008`.
 - **Identity.** Each agent gets its own Keycloak client. Its secret is mounted only into the
   agent's identity proxy, which attaches a short-lived token scoped to one tool per call and
@@ -275,8 +296,14 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 - **API.** Tokens are verified at the gateway and again in the API (signature, issuer,
   audience, expiry). The API reads an agent's Secrets only through a Role the operator binds in
   that agent's namespace. An admission policy limits its cluster-wide Secret creation to its
-  own Opaque Secrets in agent namespaces. Only the gateway can reach it, and no route returns an
-  agent's gateway token.
+  own Opaque Secrets in agent namespaces. Only the platform gateway can reach the API and the
+  console, and the API holds no agent credential.
+- **Browsers and dashboards.** Sign-in is the platform gateway's OpenID Connect flow (PKCE, one
+  client, encrypted session cookies). Each agent's route admits only its owner and `converse`
+  grantees whose token carries `agent:converse`. The agent gateway runs in trusted-proxy mode:
+  it takes the user from `x-gw-user`, which the platform gateway sets from the verified token.
+  Its relay only accepts traffic the NetworkPolicy admits: the platform gateway and the agent's
+  own namespace.
 - **Egress.** An agent pod reaches the internet only through its web-fetch proxy, which
   enforces the allowlist. Sandboxes are separate pods that cannot reach cluster services. The
   GitHub server never returns or logs a token, and opens pull requests only as drafts.
@@ -295,17 +322,20 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 ## Validate and remove
 
 ```bash
+./es_auto_installer.sh validate agent_console --only --env <env>
 ./es_auto_installer.sh validate agent_backend --only --env <env>
 ./es_auto_installer.sh validate mcp_servers --only --env <env>
 ./es_auto_installer.sh validate agent_operator --only --env <env>
+./es_auto_installer.sh teardown agent_console --only --env <env> --force
 ./es_auto_installer.sh teardown agent_backend --only --env <env> --force
 ./es_auto_installer.sh teardown mcp_servers --only --env <env> --force
 ./es_auto_installer.sh teardown agent_operator --only --env <env> --force
 ./es_auto_installer.sh teardown openclaw_operator --only --env <env> --force
 ```
 
-`validate` is read-only. `teardown agent_backend` removes the API, its route, the API client and
-the realm roles and scopes; agents and grants stay. `teardown mcp_servers` removes the servers and their `Tool`s, which
+`validate` is read-only. `teardown agent_console` removes the console. `teardown agent_backend`
+removes the API, its route and sign-in, both clients and the realm roles and scopes; agents and
+grants stay. `teardown mcp_servers` removes the servers and their `Tool`s, which
 unwires them from every agent, and the sandbox template and pool. `teardown agent_operator` deletes every `Agent` first, while the
 operator can still clean each one up (namespace, Keycloak client, Secrets, memory schema), then the operator,
 the CRDs, its Keycloak service account and the image registry configuration on the nodes.
@@ -328,6 +358,8 @@ succeed when nothing is installed.
 | Agent answers but never calls `memory_read` / `memory_write` | Small models call tools unreliably | Name the tool in the request, or use a larger model |
 | `web_fetch` gets `403 … not in this agent's web_fetch allowlist` | The domain is not allowlisted | Add it to `spec.webFetchAllowlist` |
 | GitHub tools answer `no GitHub token` | Neither the agent's PAT nor the shared token is set | Set `githubTokenSecretRef`, or create `mcp-github-token` |
+| Console or dashboard loops back to the sign-in page | The browser blocks the gateway's cookies, or the clock is off | Allow cookies for the agents host; check the nodes' time |
+| Dashboard answers `403 RBAC: access denied` | The user neither owns the agent nor holds a live `converse` grant | Ask the owner for a grant |
 | API answers `401 … not issued for this API` | The token lacks audience `agent-backend` | Use `agent-api`, or add an audience mapper to your client |
 | API answers `403 insufficient_scope` | The token was requested without that `agent:*` scope | Request it in `scope=` |
 | API answers `404` for an agent that exists | You neither own it nor hold a live grant | Ask the owner for a grant |
@@ -340,6 +372,8 @@ More symptoms are listed in [claw-e2e.md](claw-e2e.md#if-it-does-not-work).
 
 ## Limitations
 
-- Agents are reachable through the REST API and `kubectl`; there is no browser console yet.
+- The dashboards of all agents share one browser origin, so OpenClaw Control UI settings kept in
+  the browser apply to every agent's dashboard.
+- Break-glass covers the API only; an admin cannot open another user's dashboard.
 - On CPU inference the first token of each turn takes tens of seconds, because every turn sends
   the agent's ~19,500-token system prompt.

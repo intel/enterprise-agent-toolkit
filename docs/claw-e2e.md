@@ -47,15 +47,17 @@ kubectl -n agent-alice-demo exec demo-0 -c openclaw -- cat /home/openclaw/.openc
 
 ### 3. Chat with the agent
 
+Through the console (see [Use the console](#use-the-console)), or as a cluster administrator
+through `kubectl`. The gateway trusts the user named in `X-Gw-User` from its own pod only:
+
 ```bash
 kubectl -n agent-alice-demo port-forward svc/demo 18789:18789 &
-TOKEN=$(kubectl -n agent-alice-demo get secret demo-gateway-token -o jsonpath='{.data.token}' | base64 -d)
-curl -s localhost:18789/v1/chat/completions \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+curl -s localhost:18789/v1/chat/completions -H 'X-Gw-User: alice@example.com' \
+  -H 'Content-Type: application/json' \
   -d '{"model":"openclaw","messages":[{"role":"user","content":"What is the capital of France?"}]}'
 ```
 
-The answer (`Paris`) arrives after about 30 seconds on CPU inference. Without the token the
+The answer (`Paris`) arrives after about 30 seconds on CPU inference. Without `X-Gw-User` the
 request returns `401`.
 
 ### 4. Use memory
@@ -137,17 +139,34 @@ api GET /api/authz-config | jq '{roles: .roles.enforcement, scopes: .scopes.enfo
 api POST /api/agents '{"name":"auto1"}' | jq -r .href            # /api/agents/user-automation/auto1
 kubectl -n user-automation wait agent/auto1 --for=jsonpath='{.status.phase}'=Running --timeout=10m
 api GET /api/agents/user-automation/auto1/provisioning | jq -c '[.steps[] | {(.key): .state}]'
-api POST /api/chat/user-automation/auto1 '{"prompt":"What is the capital of France?"}'
+curl -s https://agents.$DOMAIN/gw/user-automation/auto1/v1/chat/completions -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"model":"openclaw","messages":[{"role":"user","content":"What is the capital of France?"}]}'
 ```
 
-Enforcement reports `true` for both, provisioning shows every step `ok`, and the chat streams
-the answer. Without a token every call is `401`; a token requested with only `agent:read`
+Enforcement reports `true` for both, provisioning shows every step `ok`, and the chat answers
+through the agent's own route. Without a token every call is `401`; a token requested with only `agent:read`
 gets `403 insufficient_scope` on `POST /api/agents`.
 
 To share the agent, `POST /api/agents/user-automation/auto1/grants` with
 `{"grantee":"<email>","capabilities":["converse"]}` (the token needs `agent:grant`). Before the
-grant, that user gets `404` for the agent; with it, they can chat; after
-`DELETE …/grants/<name>`, `404` again. Each step is a row in `audit_events`.
+grant, that user gets `404` for the agent and `403` on its route; with it, they can chat; after
+`DELETE …/grants/<name>`, both again. Each step is a row in `audit_events`.
+
+---
+
+## Use the console
+
+**You need:** `agent_console` installed
+(`./es_auto_installer.sh install agent_console --env <env>`), a user in the `agent-toolkit`
+realm with an email address, and `agents.<domain>` and `keycloak.<domain>` resolving to the
+platform gateway in your browser.
+
+1. Open `https://agents.<domain>/` and sign in. **Agents** lists yours.
+2. **Create**, name the agent, and select tools; it reaches `Running` in about a minute.
+3. **Open dashboard** shows the agent's OpenClaw Control UI; **Chat** talks to it. Both go to
+   `https://agents.<domain>/gw/user-<you>/<name>/`.
+4. Under **Share access**, grant another user `converse` for an hour. They can now open the
+   dashboard; anyone else gets `403 RBAC: access denied`. **Revoke** ends it within seconds.
 
 ---
 
