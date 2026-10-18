@@ -106,7 +106,20 @@ IDENTITY_PROXY_LABELS = {**MANAGED_BY, "intel-stack.io/component": "identity-pro
 IDENTITY_PROXY_CRED_DIR = "/etc/agent-tool-credentials"
 TOOL_CREDENTIALS_SECRET_SUFFIX = "-tool-credentials"
 
+# Each agent's dashboard and chat at https://<GW_HOSTNAME>/gw/<owner ns>/<name>/: the platform
+# gateway signs the user in (OIDC), verifies the token and admits the owner and converse grantees.
+GW_HOSTNAME = os.environ.get("GW_HOSTNAME", "")
+GW_GATEWAY = {"name": os.environ.get("GW_GATEWAY_NAME", "eg-gateway"),
+              "namespace": os.environ.get("GW_GATEWAY_NAMESPACE", "envoy-gateway-system"),
+              "sectionName": os.environ.get("GW_GATEWAY_SECTION", "https")}
+GW_OIDC_CLIENT_ID = os.environ.get("GW_OIDC_CLIENT_ID", "agent-console")
+GW_OIDC_SECRET = os.environ.get("GW_OIDC_SECRET", "agent-console-oidc")
+GW_AUDIENCE = os.environ.get("GW_AUDIENCE", "agent-backend")
+GW_PORT = 18789
+
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "").rstrip("/")
+# The realm's public issuer, which its tokens carry and browsers sign in at.
+KEYCLOAK_ISSUER = os.environ.get("KEYCLOAK_ISSUER", "").rstrip("/")
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "agent-toolkit")
 # Service account holding realm-management/manage-clients in KEYCLOAK_REALM.
 KEYCLOAK_CLIENT_ID = os.environ.get("KEYCLOAK_CLIENT_ID", "")
@@ -323,6 +336,7 @@ def _reconcile(spec, patch, name, namespace, logger, resuming):
     _apply_network_policy(agent_ns, logger)
     _apply_resource_quota(agent_ns, logger)
     _grant_agent_ns_exec(agent_ns, logger)
+    _apply_gateway_route(name, spec, logger)
 
     conditions, failures = [], []
 
@@ -469,10 +483,11 @@ def auto_idle_suspend(spec, status, name, namespace, patch, logger, **_):
 
 
 @kopf.timer(API_GROUP, API_VERSION, AGENT_PLURAL, interval=30.0, initial_delay=10.0)
-def pod_readiness(spec, status, name, namespace, patch, **_):
+def pod_readiness(spec, status, name, namespace, patch, logger, **_):
     """Keep a PodReady condition, so clients can tell whether the agent answers now."""
     if not _owner_ns_matches(spec, namespace):
         return
+    _apply_gateway_route(name, spec, logger)  # catches grants that expired since the last pass
     ready = _pod_ready(_agent_ns(name, spec), name)
     conditions = [c for c in (status or {}).get("conditions") or [] if c.get("type") != "PodReady"]
     current = next((c for c in (status or {}).get("conditions") or [] if c.get("type") == "PodReady"), {})
@@ -509,6 +524,7 @@ def on_delete(spec, name, namespace, logger, **_):
     # Sandboxes first: their label derives from the Keycloak client id.
     _reap_agent_sandboxes(name, spec, logger, "agent-deleted")
     _delete_keycloak_client(name, logger, spec)
+    _delete_gateway_route(name, spec, logger)
     for suffix in ("-gateway-token", "-keycloak-credentials", TOOL_CREDENTIALS_SECRET_SUFFIX):
         _delete_secret(f"{name}{suffix}", agent_ns)
     _teardown_agent_memory(name, spec, logger)
@@ -593,6 +609,146 @@ def on_tool_event(logger, **_):
             _get_adapter().update(AgentContext(name, spec, logger), reseed=False)
         except Exception as e:
             logger.warning(f"Agent '{name}': tool re-wiring failed: {e}")
+
+
+# ── Per-agent gateway route ──────────────────────────────────────────────────
+def _gw_path(name, spec):
+    return f"/gw/{_owner_ns(spec)}/{name}"
+
+
+def _gw_allowed(name, spec):
+    """Emails that may use the agent's gateway: the owner and live converse grantees."""
+    owner = (spec.get("owner") or {}).get("principal", "").lower()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        grants = kubernetes.client.CustomObjectsApi().list_namespaced_custom_object(
+            API_GROUP, API_VERSION, _owner_ns(spec), "agentgrants").get("items", [])
+    except kubernetes.client.ApiException:
+        grants = []
+    allowed = {owner}
+    for g in (g.get("spec") or {} for g in grants):
+        try:
+            live = datetime.datetime.fromisoformat(str(g.get("expiresAt", "")).replace("Z", "+00:00")) > now
+        except ValueError:
+            live = False
+        if (live and g.get("agentRef") == name and str(g.get("grantor", "")).lower() == owner
+                and "converse" in (g.get("capabilities") or [])):
+            allowed.add(str(g.get("grantee", "")).lower())
+    return sorted(a for a in allowed if a)
+
+
+def _gw_objects(name, spec):
+    """HTTPRoute + SecurityPolicy (operator namespace) and ReferenceGrant (agent namespace)."""
+    agent_ns, path = _agent_ns(name, spec), _gw_path(name, spec)
+    labels = {**MANAGED_BY, AGENT_LABEL: name}
+    meta = {"name": agent_ns, "namespace": OPERATOR_NAMESPACE, "labels": labels}
+    no_credentials = {"type": "RequestHeaderModifier", "requestHeaderModifier": {"remove": ["Authorization", "Cookie"]}}
+    backend = [{"name": name, "namespace": agent_ns, "port": GW_PORT}]
+    route = {
+        "apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute", "metadata": meta,
+        "spec": {
+            "parentRefs": [GW_GATEWAY], "hostnames": [GW_HOSTNAME],
+            "rules": [
+                # The chat API is served at the root, the dashboard under its base path.
+                {"matches": [{"path": {"type": "PathPrefix", "value": f"{path}/v1/"}}],
+                 "filters": [no_credentials, {"type": "URLRewrite", "urlRewrite": {
+                     "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/v1/"}}}],
+                 "backendRefs": backend},
+                {"matches": [{"path": {"type": "PathPrefix", "value": path}}],
+                 "filters": [no_credentials], "backendRefs": backend,
+                 "timeouts": {"request": "0s"}},
+            ]}}
+    policy = {
+        "apiVersion": "gateway.envoyproxy.io/v1alpha1", "kind": "SecurityPolicy", "metadata": meta,
+        "spec": {
+            "targetRefs": [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": agent_ns}],
+            "oidc": {
+                "provider": {"issuer": KEYCLOAK_ISSUER,
+                             "authorizationEndpoint": f"{KEYCLOAK_ISSUER}/protocol/openid-connect/auth",
+                             "tokenEndpoint": f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"},
+                "clientID": GW_OIDC_CLIENT_ID, "clientSecret": {"name": GW_OIDC_SECRET},
+                "redirectURL": f"https://{GW_HOSTNAME}{path}/oauth2/callback",
+                "forwardAccessToken": True, "refreshToken": True,
+                # A script's bearer token skips the browser sign-in; the checks below still apply.
+                "passThroughAuthHeader": True,
+                # The console's chat calls get a 401 to act on, not a sign-in page.
+                "denyRedirect": {"headers": [{"name": "x-requested-with", "value": "XMLHttpRequest"}]}},
+            "jwt": {"providers": [{
+                "name": "keycloak", "issuer": KEYCLOAK_ISSUER, "audiences": [GW_AUDIENCE],
+                "remoteJWKS": {"uri": f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"},
+                # The verified email is the user the agent gateway trusts (trusted-proxy mode).
+                "claimToHeaders": [{"claim": "email", "header": "x-gw-user"}]}]},
+            "authorization": {"defaultAction": "Deny", "rules": [{
+                "name": "owner-and-grantees", "action": "Allow",
+                "principal": {"jwt": {"provider": "keycloak", "scopes": ["agent:converse"],
+                                      "claims": [{"name": "email", "values": _gw_allowed(name, spec)}]}}}]}}}
+    grant = {
+        "apiVersion": "gateway.networking.k8s.io/v1beta1", "kind": "ReferenceGrant",
+        "metadata": {"name": "agent-gateway-route", "namespace": agent_ns, "labels": MANAGED_BY},
+        "spec": {"from": [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "namespace": OPERATOR_NAMESPACE}],
+                 "to": [{"group": "", "kind": "Service", "name": name}]}}
+    return route, policy, grant
+
+
+_GW_KINDS = {"HTTPRoute": ("gateway.networking.k8s.io", "v1", "httproutes"),
+             "SecurityPolicy": ("gateway.envoyproxy.io", "v1alpha1", "securitypolicies"),
+             "ReferenceGrant": ("gateway.networking.k8s.io", "v1beta1", "referencegrants")}
+
+
+def _put_custom(obj, logger):
+    """Create, or merge-patch the spec of, a namespaced custom object; False on failure."""
+    group, version, plural = _GW_KINDS[obj["kind"]]
+    api, meta = kubernetes.client.CustomObjectsApi(), obj["metadata"]
+    try:
+        current = api.get_namespaced_custom_object(group, version, meta["namespace"], plural, meta["name"])
+    except kubernetes.client.ApiException as e:
+        if e.status != 404:
+            logger.warning(f"{obj['kind']} {meta['name']}: read failed: {e}")
+            return False
+        current = None
+    try:
+        if current is None:
+            api.create_namespaced_custom_object(group, version, meta["namespace"], plural, obj)
+        elif current.get("spec") != obj["spec"]:
+            api.patch_namespaced_custom_object(group, version, meta["namespace"], plural, meta["name"],
+                                               {"spec": obj["spec"]})
+    except kubernetes.client.ApiException as e:
+        logger.warning(f"{obj['kind']} {meta['name']}: apply failed: {e}")
+        return False
+    return True
+
+
+def _apply_gateway_route(name, spec, logger):
+    if GW_HOSTNAME and KEYCLOAK_ISSUER:
+        for obj in _gw_objects(name, spec):
+            _put_custom(obj, logger)
+
+
+def _delete_gateway_route(name, spec, logger):
+    agent_ns = _agent_ns(name, spec)
+    for kind in ("SecurityPolicy", "HTTPRoute"):
+        group, version, plural = _GW_KINDS[kind]
+        try:
+            kubernetes.client.CustomObjectsApi().delete_namespaced_custom_object(
+                group, version, OPERATOR_NAMESPACE, plural, agent_ns)
+        except kubernetes.client.ApiException as e:
+            if e.status != 404:
+                logger.warning(f"{kind} {agent_ns}: delete failed: {e}")
+
+
+@kopf.on.event(API_GROUP, API_VERSION, "agentgrants")
+def on_grant_event(body, logger, **_):
+    """A grant changes who may use the agent's gateway; expiry is caught by pod_readiness."""
+    ns, agent = body["metadata"]["namespace"], (body.get("spec") or {}).get("agentRef")
+    if not (GW_HOSTNAME and agent):
+        return
+    try:
+        spec = kubernetes.client.CustomObjectsApi().get_namespaced_custom_object(
+            API_GROUP, API_VERSION, ns, AGENT_PLURAL, agent).get("spec") or {}
+    except kubernetes.client.ApiException:
+        return
+    if _owner_ns_matches(spec, ns):
+        _apply_gateway_route(agent, spec, logger)
 
 
 # ── Per-agent memory (pgvector schema + tier tables) ─────────────────────────

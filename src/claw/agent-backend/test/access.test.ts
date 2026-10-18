@@ -13,7 +13,7 @@ const AGENT = { spec: { owner: { principal: "alice@example.com", username: "alic
 const BOB = ctx([], [], "bob@example.com");
 const grant = (over: Partial<AgentGrantRow> = {}): AgentGrantRow => ({
   name: "g", namespace: "user-alice", agentRef: "lab", grantor: "alice@example.com", grantee: "bob@example.com",
-  capabilities: ["view", "converse"], tools: [], expiresAt: new Date(Date.now() + 60_000).toISOString(), ...over,
+  capabilities: ["view", "converse"], expiresAt: new Date(Date.now() + 60_000).toISOString(), ...over,
 });
 const decide = (caller = BOB, grants: AgentGrantRow[] = [], reason?: string) =>
   decideAccess(caller, AGENT, async () => grants, { breakGlassReason: reason });
@@ -21,7 +21,7 @@ const decide = (caller = BOB, grants: AgentGrantRow[] = [], reason?: string) =>
 test("the owner may do everything", async () => {
   const a = await decide(ctx());
   assert.equal(a?.decidedBy, "owner");
-  assert.ok(a?.caps.has("delete") && a.caps.has("credential"));
+  assert.ok(a?.caps.has("delete") && a.caps.has("converse"));
 });
 
 test("a live grant from the owner confers exactly its capabilities", async () => {
@@ -37,11 +37,10 @@ test("expired, foreign-grantor or other-grantee grants confer nothing", async ()
   }
 });
 
-test("break-glass needs an admin role and a reason, and never confers credential or delegate", async () => {
+test("break-glass needs an admin role and a reason", async () => {
   assert.equal(await decide(ctx(["platform-admin"], [], "op@example.com")), null);
   const a = await decide(ctx(["platform-admin"], [], "op@example.com"), [], "incident 4711 review");
   assert.equal(a?.decidedBy, "break-glass");
-  assert.ok(!a!.caps.has("credential") && !a!.caps.has("delegate"));
   const v = await decide(ctx(["agent-admin"], [], "op@example.com"), [], "incident 4711 review");
   assert.deepEqual([...v!.caps], ["view"]);
   assert.equal(await decide(ctx(["agent-editor"], [], "op@example.com"), [], "incident 4711 review"), null);
@@ -62,5 +61,5 @@ test("a refused break-glass attempt is recorded as such", () => {
 });
 
 test("unknown capabilities in a grant are dropped", () => {
-  assert.deepEqual([...expandCaps(["view", "root", "token"])], ["view"]);
+  assert.deepEqual([...expandCaps(["view", "root", "credential"])], ["view"]);
 });

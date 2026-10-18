@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Kubernetes access: create, patch, delete and read Agent, AgentGrant and Tool resources. The agent
 // operator does all reconciliation; authorization is decided by the routes (authz.ts), not here.
-import { randomBytes } from "node:crypto";
 import * as k8s from "@kubernetes/client-node";
 import { ownerNamespace } from "./identity.js";
 import { expandCaps } from "./capabilities.js";
@@ -335,7 +334,6 @@ export interface AgentGrantRow {
   grantor: string;
   grantee: string;
   capabilities: string[];
-  tools: string[];
   expiresAt: string;
 }
 
@@ -348,7 +346,6 @@ function toGrant(obj: any): AgentGrantRow {
     grantor: (spec.grantor ?? "").toLowerCase(),
     grantee: (spec.grantee ?? "").toLowerCase(),
     capabilities: spec.capabilities ?? [],
-    tools: spec.tools ?? [],
     expiresAt: spec.expiresAt ?? "",
   };
 }
@@ -375,7 +372,6 @@ export interface CreateGrantInput {
   grantor: string;
   grantee: string;
   capabilities: string[];
-  tools?: string[];
   expiresAt: string;
 }
 
@@ -391,7 +387,6 @@ export async function createGrant(input: CreateGrantInput): Promise<any> {
       grantor: input.grantor,
       grantee: input.grantee.toLowerCase(),
       capabilities: input.capabilities,
-      ...(input.tools?.length ? { tools: input.tools } : {}),
       expiresAt: input.expiresAt,
     },
   };
@@ -464,25 +459,4 @@ export function provisioningSteps(agent: any): { phase: string; runtime: string;
     return { key, label, state, detail: c?.message ?? "" };
   });
   return { phase, runtime: agent?.spec?.runtime ?? "claw", steps: [{ key: "agent", label: "Agent", state: "ok", detail: `${crNs}/${name}` }, ...steps] };
-}
-
-// ── Gateway token ────────────────────────────────────────────────────────────
-export async function getGatewayToken(crNs: string, name: string): Promise<string> {
-  const ns = await backendNamespaceOf(crNs, name);
-  const token = (await coreApi().readNamespacedSecret({ name: `${name}-gateway-token`, namespace: ns })).data?.token;
-  if (!token) throw new Error("token not found in secret");
-  return Buffer.from(token, "base64").toString("utf-8");
-}
-
-// A new token, then the pod is deleted so the gateway (env-sourced) reads it.
-export async function rotateGatewayToken(crNs: string, name: string): Promise<{ rolled: string }> {
-  const ns = await backendNamespaceOf(crNs, name);
-  const secret = `${name}-gateway-token`;
-  await coreApi().readNamespacedSecret({ name: secret, namespace: ns });
-  await coreApi().patchNamespacedSecret(
-    { name: secret, namespace: ns, body: { stringData: { token: randomBytes(24).toString("hex") } } }, MERGE_PATCH);
-  await coreApi().deleteNamespacedPod({ name: `${name}-0`, namespace: ns }).catch((e) => {
-    if (apiError(e).code !== 404) throw e;
-  });
-  return { rolled: `${name}-0` };
 }

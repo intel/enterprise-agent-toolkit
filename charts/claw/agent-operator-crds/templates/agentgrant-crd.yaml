@@ -52,12 +52,7 @@ spec:
                   minItems: 1
                   items:
                     type: string
-                    enum: [view, suspend-resume, converse, credential, delete, delegate]
-                tools:
-                  type: array
-                  description: Subset of the agent's skills the grantee may use; empty means all.
-                  items:
-                    type: string
+                    enum: [view, suspend-resume, converse, delete]
                 expiresAt:
                   type: string
                   format: date-time

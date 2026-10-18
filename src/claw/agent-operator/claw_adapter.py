@@ -69,6 +69,8 @@ def config_from_env(env=None):
         "embeddingModel": env.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5"),
         "controlUiAllowedOrigins": [
             o.strip() for o in env.get("CONTROL_UI_ALLOWED_ORIGINS", "").split(",") if o.strip()],
+        # The platform gateway's pod addresses; set, the agent gateway takes the user from it.
+        "trustedProxies": [c.strip() for c in env.get("GATEWAY_TRUSTED_PROXIES", "").split(",") if c.strip()],
     }
 
 
@@ -247,7 +249,8 @@ class ClawAdapter:
                  if self.web_fetch_proxy_enabled else "")
         return _render_cr(
             "openclaw-instance.yaml.j2", cfg=self.cfg,
-            name=ctx.name, namespace=ctx.namespace, owner_label=ctx.owner.replace("@", "_at_"),
+            name=ctx.name, namespace=ctx.namespace, cr_namespace=ctx.cr_namespace,
+            owner_label=ctx.owner.replace("@", "_at_"),
             model_key_secret=self._ensure_model_key_secret(ctx), tools=tools, plugins=plugins,
             tools_deny=ctx.tools_deny, mcp_servers=mcp_servers, web_fetch_proxy=proxy,
             **self._model_vars(ctx))

@@ -1,7 +1,7 @@
 // Copyright (C) 2025-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 // agent-backend: the REST API over Agent and AgentGrant resources. It writes desired state only;
-// the agent operator reconciles. Each request passes, in order: request id, token verification,
+// the agent operator reconciles. Conversations go to each agent's gateway route, not through here. Each request passes, in order: request id, token verification,
 // role (may this principal do the verb), scope (may this token), resource capability (owner,
 // grant or break-glass; no access is 404), and an audit row for every write and denial.
 import express, { Request, Response, NextFunction } from "express";
@@ -17,19 +17,17 @@ import {
 import { requireRole, roleConfig, ROLE_VIEWER, ROLE_EDITOR } from "./lib/security/roles.js";
 import { filterToolsForCaller, assertSkillsEntitled, unknownRolesIn } from "./lib/security/tools.js";
 import {
-  requireScope, scopeConfig, stackScopesOf, SCOPE_READ, SCOPE_WRITE, SCOPE_CONVERSE, SCOPE_TOKEN, SCOPE_GRANT,
+  requireScope, scopeConfig, stackScopesOf, SCOPE_READ, SCOPE_WRITE, SCOPE_GRANT,
 } from "./lib/security/scopes.js";
 import {
   listAgentsForUser, listAllAgents, createAgent, deleteAgent, setDesiredState, patchAgentCapabilities,
   updateAgentModel, updateAgentGithubToken, getAgentProvisioning, listGrantsForAgent, createGrant, revokeGrant,
-  getGatewayToken, rotateGatewayToken, agentNamespace, listRegisteredTools, resourceVersionOf, type ModelFields,
+  listRegisteredTools, resourceVersionOf, type ModelFields,
 } from "./lib/k8s.js";
 import { sanitizeWorkspace, normalizeWebFetchAllowlist } from "./lib/workspace.js";
 
 const PORT = Number(process.env.PORT || "3000");
 const MAX_TTL_HOURS = Number(process.env.GRANT_MAX_TTL_HOURS || "720");
-const GATEWAY_PORT = 18789;
-const TURN_TIMEOUT_MS = 300_000;
 // The externally visible API path, for the Location a 202 returns.
 const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE || "/api").replace(/\/+$/, "");
 const REQUIRE_IF_MATCH = (process.env.REQUIRE_IF_MATCH || "").trim().toLowerCase() === "true";
@@ -276,13 +274,6 @@ app.get("/api/agents/:ns/:name/provisioning", requireRole(ROLE_VIEWER), requireS
   res.json(await getAgentProvisioning(String(req.params.ns), String(req.params.name)));
 }));
 
-// Rotates the gateway token; no route ever returns it.
-app.post("/api/agents/:ns/:name/token", requireRole(ROLE_EDITOR), requireScope(SCOPE_TOKEN), audited("token.rotate", "gateway-token", agentId, async (req, res) => {
-  const access = await capOn(req, "credential");
-  if (!access.isOwner) throw new HttpError(403, "forbidden: only the owner may rotate the gateway token");
-  res.json({ ok: true, ...(await rotateGatewayToken(String(req.params.ns), String(req.params.name))) });
-}));
-
 // ── Grants (owner only) ──────────────────────────────────────────────────────
 app.get("/api/agents/:ns/:name/grants", requireRole(ROLE_VIEWER), requireScope(SCOPE_READ), handled(async (req, res) => {
   await ownerOn(req, "view grants");
@@ -291,7 +282,7 @@ app.get("/api/agents/:ns/:name/grants", requireRole(ROLE_VIEWER), requireScope(S
 
 app.post("/api/agents/:ns/:name/grants", requireRole(ROLE_EDITOR), requireScope(SCOPE_GRANT), audited("grant.create", "grant", agentId, async (req, res) => {
   const ctx = requireCtx(req);
-  const access = await ownerOn(req, "create grants");
+  await ownerOn(req, "create grants");
   const body = req.body ?? {};
   const grantee = String(body.grantee ?? "").trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+$/.test(grantee)) throw new HttpError(400, "grantee must be a valid email");
@@ -300,10 +291,6 @@ app.post("/api/agents/:ns/:name/grants", requireRole(ROLE_EDITOR), requireScope(
   if (!caps.length || caps.some((c) => !(GRANTABLE_CAPABILITIES as string[]).includes(c))) {
     throw new HttpError(400, `capabilities must be a non-empty subset of ${JSON.stringify(GRANTABLE_CAPABILITIES)}`);
   }
-  const skills: string[] = access.agent?.spec?.skills ?? [];
-  const tools: string[] = Array.isArray(body.tools) ? body.tools.map(String) : [];
-  const over = tools.filter((t) => !skills.includes(t));
-  if (over.length) throw new HttpError(400, `tools ${JSON.stringify(over)} exceed the agent's skills ${JSON.stringify(skills)}`);
   const now = Date.now();
   const expiresAt = String(body.expiresAt ?? "").trim() || new Date(now + 3600_000).toISOString();
   const exp = new Date(expiresAt).getTime();
@@ -311,7 +298,7 @@ app.post("/api/agents/:ns/:name/grants", requireRole(ROLE_EDITOR), requireScope(
   if (exp > now + MAX_TTL_HOURS * 3600_000) throw new HttpError(400, `expiresAt exceeds the maximum grant of ${MAX_TTL_HOURS}h`);
   const grant = await createGrant({
     agentNs: String(req.params.ns), agentName: String(req.params.name), grantor: ctx.email, grantee,
-    capabilities: caps, tools, expiresAt,
+    capabilities: caps, expiresAt,
   });
   res.status(201).json({ grant });
 }));
@@ -325,70 +312,6 @@ app.delete("/api/agents/:ns/:name/grants/:grant", requireRole(ROLE_EDITOR), requ
   }
   await revokeGrant(String(req.params.ns), grant);
   res.json({ ok: true });
-}));
-
-// ── Conversation ─────────────────────────────────────────────────────────────
-// Authorizes one request to the agent's gateway: the upstream and the verified caller.
-app.get("/api/gateway-authz/:ns/:name", requireRole(ROLE_VIEWER), requireScope(SCOPE_CONVERSE), handledRead("agent.converse.authz", "agent", agentId, async (req, res) => {
-  const access = await capOn(req, "converse");
-  const name = String(req.params.name);
-  res.setHeader("x-gw-upstream", `${name}.${agentNamespace(access.agent.spec.owner.username, name)}.svc.cluster.local:${GATEWAY_PORT}`);
-  res.setHeader("x-gw-user", requireCtx(req).email);
-  res.status(200).end();
-}));
-
-async function gatewayTarget(req: Request): Promise<{ url: string; token: string }> {
-  const access = await capOn(req, "converse");
-  const ns = String(req.params.ns), name = String(req.params.name);
-  return {
-    url: `http://${name}.${agentNamespace(access.agent.spec.owner.username, name)}.svc.cluster.local:${GATEWAY_PORT}`,
-    token: await getGatewayToken(ns, name),
-  };
-}
-
-// Plain HTTP to the agent's gateway; its token is added here and never reaches the caller.
-app.all("/api/gateway/:ns/:name/*path", requireRole(ROLE_VIEWER), requireScope(SCOPE_CONVERSE), handledRead("agent.gateway.proxy", "agent", agentId, async (req, res) => {
-  const { url, token } = await gatewayTarget(req);
-  const path = ([] as string[]).concat((req.params as any).path ?? []).map(encodeURIComponent).join("/");
-  const qs = req.originalUrl.includes("?") ? req.originalUrl.slice(req.originalUrl.indexOf("?")) : "";
-  const headers: Record<string, string> = { authorization: `Bearer ${token}`, ...(req.requestId ? { "x-request-id": req.requestId } : {}) };
-  for (const h of ["accept", "content-type", "accept-language"]) if (typeof req.headers[h] === "string") headers[h] = req.headers[h] as string;
-  const upstream = await fetch(`${url}/${path}${qs}`, {
-    method: req.method, headers, redirect: "manual",
-    body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(req.body),
-  });
-  upstream.headers.forEach((v, k) => {
-    if (!["transfer-encoding", "connection", "keep-alive", "content-encoding", "set-cookie"].includes(k.toLowerCase())) res.setHeader(k, v);
-  });
-  res.status(upstream.status).end(Buffer.from(await upstream.arrayBuffer()));
-}));
-
-// One chat turn, streamed back as server-sent events.
-app.post("/api/chat/:ns/:name", requireRole(ROLE_VIEWER), requireScope(SCOPE_CONVERSE), handledRead("agent.chat", "agent", agentId, async (req, res) => {
-  const prompt = req.body?.prompt;
-  if (!prompt || typeof prompt !== "string") throw new HttpError(400, "missing 'prompt'");
-  const { url, token } = await gatewayTarget(req);
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TURN_TIMEOUT_MS);
-  req.on("close", () => ctrl.abort());
-  try {
-    const upstream = await fetch(`${url}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...(req.requestId ? { "x-request-id": req.requestId } : {}) },
-      body: JSON.stringify({ model: "openclaw/default", messages: [{ role: "user", content: prompt }], stream: true }),
-      signal: ctrl.signal,
-    }).catch((e) => {
-      throw new HttpError(502, `gateway unreachable: ${e?.message ?? e}`);
-    });
-    if (!upstream.ok || !upstream.body) throw new HttpError(502, `gateway HTTP ${upstream.status}`);
-    res.status(200).set({ "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform" });
-    for await (const chunk of upstream.body) res.write(chunk);
-  } catch (e) {
-    if (!res.headersSent) throw e;
-  } finally {
-    clearTimeout(timer);
-    if (res.headersSent) res.end();
-  }
 }));
 
 // Guard denials (role, scope) never reach audited(), so they are recorded here; 401s have no layer.

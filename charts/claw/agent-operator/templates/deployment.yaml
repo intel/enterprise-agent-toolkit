@@ -51,6 +51,14 @@ spec:
             - {name: BACKEND_SA_NAME, value: {{ .Values.backendServiceAccount | quote }}}
             - {name: KEYCLOAK_URL, value: {{ .Values.keycloak.url | quote }}}
             - {name: KEYCLOAK_REALM, value: {{ .Values.keycloak.realm | quote }}}
+            - {name: KEYCLOAK_ISSUER, value: {{ .Values.keycloak.issuer | quote }}}
+            - {name: GW_HOSTNAME, value: {{ .Values.gatewayRoute.hostname | quote }}}
+            - {name: GW_GATEWAY_NAME, value: {{ .Values.gatewayRoute.gateway.name | quote }}}
+            - {name: GW_GATEWAY_NAMESPACE, value: {{ .Values.gatewayRoute.gateway.namespace | quote }}}
+            - {name: GW_GATEWAY_SECTION, value: {{ .Values.gatewayRoute.gateway.sectionName | quote }}}
+            - {name: GW_OIDC_CLIENT_ID, value: {{ .Values.gatewayRoute.oidcClientId | quote }}}
+            - {name: GW_OIDC_SECRET, value: {{ .Values.gatewayRoute.oidcSecret | quote }}}
+            - {name: GATEWAY_TRUSTED_PROXIES, value: {{ .Values.gatewayRoute.trustedProxies | quote }}}
             - {name: MCP_AUDIENCES, value: {{ .Values.keycloak.mcpAudiences | quote }}}
             - name: KEYCLOAK_CLIENT_ID
               valueFrom: {secretKeyRef: {name: {{ .Values.keycloak.credentialsSecret }}, key: client-id}}
