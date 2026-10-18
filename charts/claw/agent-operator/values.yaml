@@ -23,6 +23,8 @@ keycloak:
 runtimeSecret: agent-operator-runtime
 
 autoSuspendIdleMinutes: 240
+# The API backend's ServiceAccount (same namespace), granted Secret access per agent namespace.
+backendServiceAccount: agent-backend
 memory:
   embeddingDim: 768
   retainOnDelete: false
@@ -59,6 +61,11 @@ isolation:
       - namespace: envoy-gateway-system
         podSelector: {gateway.envoyproxy.io/owning-gateway-name: ai-gateway}
         ports: [15008]
+    # Ingress to agent pods from outside their namespace: the API backend, to the gateway port.
+    ingressAllow:
+      - namespace: agent-operator-system
+        podSelector: {app.kubernetes.io/name: agent-backend}
+        ports: [18789, 15008]
     # Egress of the per-agent identity proxy: MCP servers and the Keycloak token endpoint.
     identityEgressAllow:
       - namespace: agent-operator-system
