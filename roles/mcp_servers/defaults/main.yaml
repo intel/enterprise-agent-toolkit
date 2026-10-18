@@ -7,12 +7,29 @@
 mcp_servers_wait_timeout: "5m0s"
 mcp_servers_register_retries: 30
 
-# One release per entry: mcp-<name>-server running /code/mcp/<script>, registered as a Tool.
+# Sandboxes (agent-sandbox): each agent's claims come from this pool, empty until claimed.
+mcp_servers_sandbox_namespace: "{{ agent_sandbox_namespace | default('agent-sandbox-system') }}"
+mcp_servers_sandbox_pool: "claw-agent-pool"
+mcp_servers_sandbox_template: "claw-sandbox-template"
+mcp_servers_sandbox_image: "{{ agent_sandbox_python_runtime_image | default('registry.k8s.io/agent-sandbox/python-runtime-sandbox:' ~ (agent_sandbox_version | default('v0.5.0'))) }}"
+# The node-local DNS cache sandbox pods resolve through (Kubespray default).
+mcp_servers_sandbox_dns_ip: "{{ nodelocaldns_ip | default('169.254.25.10') }}"
+mcp_servers_sandbox_router_secret: "sandbox-router-auth"
+# Optional Secret (key `token`) in the operator namespace: the GitHub token for agents without their own.
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+mcp_servers_github_token_secret: "mcp-github-token"
+
+_mcp_proxy_env:
+  - {name: HTTP_PROXY, value: "{{ http_proxy | default('') }}"}
+  - {name: HTTPS_PROXY, value: "{{ https_proxy | default('') }}"}
+  - {name: NO_PROXY, value: "{{ no_proxy | default('') }}"}
+
+# One release per entry: mcp-<name>-server running /code/mcp/<script>, registered as Tool <name>
+# with audience mcp-<name>. Each server also gets the Keycloak settings.
 mcp_servers:
   - name: memory
     script: memory.py
     tool:
-      requiresIdentity: true
       alwaysOn: true
       description: Per-agent long-term memory (pgvector)
     env:
@@ -20,6 +37,37 @@ mcp_servers:
         valueFrom: {secretKeyRef: {name: "{{ claw_runtime_secret }}", key: pgvector-dsn}}
       - {name: EMBEDDING_URL, value: "{{ claw_model_base_url }}"}
       - {name: EMBEDDING_MODEL, value: "{{ claw_embedding_model }}"}
-      - {name: KEYCLOAK_URL, value: "{{ claw_keycloak_url }}"}
-      - {name: KEYCLOAK_REALM, value: "{{ claw_keycloak_realm }}"}
-      - {name: MCP_AUDIENCE, value: mcp-memory}
+  - name: sandbox
+    script: sandbox.py
+    requires_crd: sandboxclaims.extensions.agents.x-k8s.io
+    tool:
+      aliasSkills: [shell]
+      description: Isolated code execution in the agent's own sandbox
+    rbac:
+      namespace: "{{ mcp_servers_sandbox_namespace }}"
+      rules:
+        - apiGroups: [extensions.agents.x-k8s.io]
+          resources: [sandboxclaims]
+          verbs: [get, list, watch, create, patch, delete]
+        - apiGroups: [agents.x-k8s.io]
+          resources: [sandboxes]
+          verbs: [get, list, watch]
+        - apiGroups: [""]
+          resources: [pods]
+          verbs: [get, list, watch]
+    env:
+      - {name: SANDBOX_NAMESPACE, value: "{{ mcp_servers_sandbox_namespace }}"}
+      - {name: SANDBOX_WARMPOOL, value: "{{ mcp_servers_sandbox_pool }}"}
+      - {name: SANDBOX_ROUTER_URL, value: "http://sandbox-router-svc.{{ mcp_servers_sandbox_namespace }}.svc.cluster.local:8080"}
+      - name: ROUTER_AUTH_TOKEN
+        valueFrom: {secretKeyRef: {name: mcp-sandbox-router, key: token}}
+      - {name: SANDBOX_HTTP_PROXY, value: "{{ http_proxy | default('') }}"}
+      - {name: SANDBOX_HTTPS_PROXY, value: "{{ https_proxy | default('') }}"}
+      - {name: SANDBOX_NO_PROXY, value: "{{ no_proxy | default('') }}"}
+  - name: github
+    script: github.py
+    tool:
+      description: GitHub issues, branches, commits and draft pull requests
+    env: >-
+      {{ [{'name': 'GITHUB_TOKEN', 'valueFrom': {'secretKeyRef': {'name': mcp_servers_github_token_secret,
+           'key': 'token', 'optional': true}}}] + _mcp_proxy_env }}

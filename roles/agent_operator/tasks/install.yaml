@@ -94,6 +94,11 @@
         podSecurity:
           enabled: "{{ enforce_pss | default(true) | bool }}"
         maxAgentsPerOwner: "{{ claw_max_agents_per_owner }}"
+      webFetchProxy:
+        enabled: "{{ claw_web_fetch_proxy_enabled | bool }}"
+        httpProxy: "{{ http_proxy | default('') }}"
+        httpsProxy: "{{ https_proxy | default('') }}"
+        noProxy: "{{ no_proxy | default('') }}"
 
 - name: "agent_operator | Install complete"
   ansible.builtin.debug:
