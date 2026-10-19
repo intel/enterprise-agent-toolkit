@@ -23,11 +23,28 @@ remove_model_deployed_via_huggingface(){
         exit 1
     fi        
     
-    read -p "Enter the deployment name of the model you wish to deprovision: " hugging_face_model_remove_name    
-    if [ "$compute_platform" == "c" ]; then
-        hugging_face_model_remove_name="${hugging_face_model_remove_name}-cpu"
+    read -p "Enter the deployment name of the model you wish to deprovision: " hugging_face_model_remove_name
+    # Mirror the -cpu/-gpu suffix the install path appends to the release name.
+    # Suffix only a name that was actually entered — appending unconditionally
+    # turned an empty answer into "-cpu", which passed the emptiness check below
+    # and sent "helm uninstall -cpu" to the playbook. The -gpu case was missing
+    # entirely, so GPU deployments could never be removed by name.
+    if [ -n "$hugging_face_model_remove_name" ]; then
+        if [ "$compute_platform" == "c" ]; then
+            hugging_face_model_remove_name="${hugging_face_model_remove_name}-cpu"
+        elif [ "$compute_platform" == "g" ]; then
+            hugging_face_model_remove_name="${hugging_face_model_remove_name}-gpu"
+        fi
     fi
     if [ -n "$hugging_face_model_remove_name" ]; then
+        # Remove ONLY the named deployment. remove_inference_llm_models_playbook
+        # emits one uninstall-<model> tag per entry in model_name_list, which
+        # read_config_file populates from models= in agentic-config.cfg — so
+        # leaving it set tore down the pre-validated model from the config file
+        # as well, while reporting that it removed the named deployment.
+        models=""
+        model_name_list=""
+
         if [ "$brownfield_deployment" == "yes" ]; then
         echo "Setting up Bastion Node..."
         setup_bastion "$@"
@@ -38,7 +55,7 @@ remove_model_deployed_via_huggingface(){
             "Inference LLM Model is removed successfully." \
             "Failed to remove Inference LLM Model Exiting!."
         echo "---------------------------------------------------------------------"
-        echo "|     LLM Model Being Removed from Intel AI for Enterprise Inference! |"
+        echo "|     LLM Model Being Removed from Intel® AI for Enterprise Inference! |"
         echo "---------------------------------------------------------------------"
         echo ""        
     else

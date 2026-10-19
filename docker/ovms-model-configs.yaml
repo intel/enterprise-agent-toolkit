@@ -1,0 +1,356 @@
+# Docker OpenVINO Model Server (OVMS) Configuration Library
+# =========================================================
+#
+# This file defines model-specific configurations for OVMS deployments in Docker.
+# It is the OpenVINO counterpart of model-configs.yaml (vLLM) and is used when
+# docker/config.cfg has:
+#
+#   serving_engine=openvino
+#
+# The models= line in docker/config.cfg is shared between both engines, so the
+# same model IDs work either way — only the serving runtime changes.
+#
+# Configuration Structure:
+# ------------------------
+# models:
+#   "org/model-name":                     # Full HuggingFace model ID (required)
+#     served_name: "url-safe-identifier"  # Used ONLY for Docker resource naming (container, hostname)
+#                                          # The API uses the full HuggingFace model ID
+#                                          # Auto-generated if omitted
+#     source_model: "OpenVINO/..."        # Optional: HuggingFace repo OVMS actually pulls.
+#                                          # Defaults to the model ID above. Point this at a
+#                                          # pre-converted IR repo to skip runtime conversion.
+#     task: text_generation               # text_generation | embeddings | rerank | image_generation
+#     weight_format: int4                 # optimum-cli export precision — only applies to models
+#                                          # outside the OpenVINO org (int4, int8, fp16, fp32, ...)
+#     tool_parser: llama3                 # Optional: llama3 | hermes3 | phi4 (OVMS 2025.4 set)
+#     rest_workers: 32                    # Optional: REST thread pool size (default 32).
+#                                          # Left unset, OVMS derives it from the host core
+#                                          # count and exhausts the container's file
+#                                          # descriptors on many-core servers.
+#     litellm_mode: embedding             # Optional: registers a non-chat mode in LiteLLM
+#     environment:                        # Container environment variables
+#       OVMS_LOG_LEVEL: "INFO"
+#     extra_args:                         # Additional OVMS CLI arguments (array)
+#       - "--max_num_seqs"
+#       - "256"
+#     speculative_decoding:               # Optional: draft model for speculative decoding
+#       draft_model: "org/small-model"
+#     resources:                          # Resource limits (optional)
+#       memory: "64g"
+#
+# Usage:
+# ------
+# 1. Select the engine and models in docker/config.cfg:
+#    serving_engine=openvino
+#    models=Qwen/Qwen2.5-Coder-14B-Instruct,BAAI/bge-base-en-v1.5
+#
+# 2. Generate docker-compose.ovms.yml:
+#    bash docker/scripts/generate-docker-compose.sh
+#
+# 3. Deploy:
+#    ./deploy-agentic-stack.sh --platform=docker
+#
+# Notes:
+# ------
+# - Models under the "OpenVINO/" org are already in IR format: OVMS downloads and
+#   serves them directly, which is far faster and needs much less memory.
+# - Any other model is converted and quantized on first start with optimum-cli.
+#   That conversion needs roughly as much memory as the original fp16 checkpoint,
+#   which is why the memory limits below stay high even for int4 output.
+# - The first start of a converted model can take 30+ minutes (download + export).
+#   Converted weights are cached in the per-model Docker volume, so later starts
+#   only load the model.
+# - OVMS 2025.4 tool calling covers llama3/hermes3/phi4 templates only. Models
+#   without a matching parser still serve chat completions, just without
+#   automatic tool_calls extraction.
+# - OVMS 2025.4 has no speech-to-text task, so openai/whisper-small is vLLM-only.
+
+models:
+  "google/gemma-4-26B-A4B-it":
+    served_name: "google-gemma-4-26b-a4b-it"
+    task: text_generation
+    weight_format: int4
+    extra_args:
+      - "--cache_size"
+      - "20"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "128g"
+  "meta-llama/Llama-3.1-8B-Instruct":
+    served_name: "llama-3-1-8b-instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: llama3
+    extra_args:
+      - "--cache_size"
+      - "12"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "64g"
+  "meta-llama/Llama-3.1-8B-Instruct-Specdec":
+    served_name: "llama-3-1-8b-instruct-specdec"
+    source_model: "meta-llama/Llama-3.1-8B-Instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: llama3
+    extra_args:
+      - "--cache_size"
+      - "12"
+      - "--max_num_seqs"
+      - "256"
+    speculative_decoding:
+      draft_model: "meta-llama/Llama-3.2-1B-Instruct"
+    resources:
+      memory: "80g"
+  "meta-llama/Llama-3.2-3B-Instruct":
+    served_name: "llama-3-2-3b-instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: llama3
+    extra_args:
+      - "--cache_size"
+      - "8"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "32g"
+  "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B":
+    served_name: "deepseek-r1-distill-qwen-32b"
+    task: text_generation
+    weight_format: int4
+    extra_args:
+      - "--cache_size"
+      - "20"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "128g"
+  "deepseek-ai/DeepSeek-R1-Distill-Llama-8B":
+    served_name: "deepseek-r1-distill-llama-8b"
+    task: text_generation
+    weight_format: int4
+    extra_args:
+      - "--cache_size"
+      - "12"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "64g"
+  "Qwen/Qwen3-1.7B":
+    served_name: "qwen3-1-7b"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "8"
+      - "--max_num_seqs"
+      - "256"
+      - "--reasoning_parser"
+      - "qwen3"
+    resources:
+      memory: "32g"
+  "Qwen/Qwen3-4B-Instruct-2507":
+    served_name: "qwen3-4b-instruct-2507"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "8"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "32g"
+  "Qwen/Qwen2.5-Coder-7B-Instruct":
+    served_name: "qwen2-5-coder-7b-instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "12"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "64g"
+  "Qwen/Qwen2.5-Coder-14B-Instruct":
+    served_name: "qwen2-5-coder-14b-instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "16"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "96g"
+  "Qwen/Qwen2.5-Coder-14B-Instruct-Specdec":
+    served_name: "qwen2-5-coder-14b-instruct-specdec"
+    source_model: "Qwen/Qwen2.5-Coder-14B-Instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "16"
+      - "--max_num_seqs"
+      - "256"
+    speculative_decoding:
+      draft_model: "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+    resources:
+      memory: "112g"
+  "Qwen/Qwen3-Coder-30B-A3B-Instruct":
+    served_name: "qwen3-coder-30b-a3b-instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "20"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "128g"
+  "Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec":
+    served_name: "qwen3-coder-30b-a3b-instruct-specdec"
+    source_model: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "20"
+      - "--max_num_seqs"
+      - "256"
+    speculative_decoding:
+      draft_model: "Qwen/Qwen3-0.6B"
+    resources:
+      memory: "128g"
+  "Qwen/Qwen3-30B-A3B-Instruct-2507":
+    served_name: "qwen3-30b-a3b-instruct-2507"
+    task: text_generation
+    weight_format: int4
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "20"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "128g"
+  "nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1":
+    served_name: "llama-3-1-nemotron-nano-4b-v1-1"
+    task: text_generation
+    weight_format: int4
+    tool_parser: llama3
+    extra_args:
+      - "--cache_size"
+      - "8"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "32g"
+  "meta-llama/Llama-3.2-1B-Instruct":
+    served_name: "llama-3-2-1b-instruct"
+    task: text_generation
+    weight_format: int4
+    tool_parser: llama3
+    extra_args:
+      - "--cache_size"
+      - "8"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "24g"
+  # ---------------------------------------------------------------------------
+  # Pre-converted IR models from the OpenVINO organization: no optimum-cli
+  # export, so they start in minutes on a fraction of the memory a converted
+  # model needs. The small ones are the quickest way to smoke-test the stack.
+  # Note: the OpenVINO org publishes no Llama-3.2 IR repos — for those, point
+  # models= at the meta-llama ID above and let OVMS convert it.
+  # ---------------------------------------------------------------------------
+  "OpenVINO/TinyLlama-1.1B-Chat-v1.0-int4-ov":
+    served_name: "openvino-tinyllama-1-1b-chat-int4-ov"
+    task: text_generation
+    extra_args:
+      - "--cache_size"
+      - "4"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "8g"
+  "OpenVINO/Qwen2.5-1.5B-Instruct-int4-ov":
+    served_name: "openvino-qwen2-5-1-5b-instruct-int4-ov"
+    task: text_generation
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "8"
+      - "--max_num_seqs"
+      - "256"
+    resources:
+      memory: "12g"
+  "OpenVINO/Qwen3-1.7B-int4-ov":
+    served_name: "openvino-qwen3-1-7b-int4-ov"
+    task: text_generation
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "8"
+      - "--max_num_seqs"
+      - "256"
+      - "--reasoning_parser"
+      - "qwen3"
+    resources:
+      memory: "12g"
+  "OpenVINO/Qwen3-8B-int4-ov":
+    served_name: "openvino-qwen3-8b-int4-ov"
+    task: text_generation
+    tool_parser: hermes3
+    extra_args:
+      - "--cache_size"
+      - "12"
+      - "--max_num_seqs"
+      - "256"
+      - "--reasoning_parser"
+      - "qwen3"
+    resources:
+      memory: "24g"
+  "BAAI/bge-base-en-v1.5":
+    served_name: "bge-base-en-v1-5"
+    task: embeddings
+    weight_format: int8
+    litellm_mode: "embedding"
+    extra_args:
+      - "--num_streams"
+      - "2"
+    resources:
+      memory: "16g"
+  "BAAI/bge-reranker-base":
+    served_name: "bge-reranker-base"
+    task: rerank
+    weight_format: int8
+    litellm_mode: "rerank"
+    extra_args:
+      - "--num_streams"
+      - "2"
+    resources:
+      memory: "16g"
+# Default fallback configuration for unknown models
+default:
+  served_name: "auto-generated" # Will be auto-generated from model ID
+  task: text_generation
+  weight_format: int8
+  environment: {}
+  extra_args:
+    - "--cache_size"
+    - "12"
+    - "--max_num_seqs"
+    - "256"
+  resources:
+    memory: "80g"

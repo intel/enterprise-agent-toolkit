@@ -2,6 +2,72 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
+# ---------------------------------------------------------------------------
+# sync_rack_calico_config
+#
+# Copies the parser-generated k8s-net-calico.yml into kubespray's group_vars.
+# That file carries calico_mode settings AND the cluster CIDRs
+# (kube_pods_subnet / kube_service_addresses) derived from rack-profile.yaml.
+#
+# The values are copied VERBATIM. rack-profile.yaml is the single source of
+# truth, so nothing here rewrites them — an earlier version of this code sed'd
+# pod_cidr from agentic-config.cfg over the top, which silently reverted any
+# change made in the profile.
+#
+# Idempotent, so it is safe to call before and after the parser. Call it AFTER
+# rack-profile-parser.sh for the values to reflect the current profile:
+# setup_initial_env runs first and can only see the previous run's output.
+# ---------------------------------------------------------------------------
+sync_rack_calico_config() {
+    local _calico_src="$HOMEDIR/inventory/metadata/k8s-net-calico.yml"
+    local _calico_dst="$KUBESPRAYDIR/inventory/mycluster/group_vars/k8s_cluster/k8s-net-calico.yml"
+
+    if [[ ! -f "${_calico_src}" ]]; then
+        echo "${YELLOW}WARNING: k8s-net-calico.yml not found — Calico config not applied.${NC}"
+        return 0
+    fi
+    # Nothing to copy into yet — setup_initial_env creates mycluster/ from the
+    # kubespray sample. A later call (post-parser) will do the copy.
+    if [[ ! -d "$(dirname "${_calico_dst}")" ]]; then
+        return 0
+    fi
+
+    cp "${_calico_src}" "${_calico_dst}"
+
+    local _pods _svcs
+    _pods="$(awk '/^kube_pods_subnet:/{print $2}' "${_calico_dst}")"
+    _svcs="$(awk '/^kube_service_addresses:/{print $2}' "${_calico_dst}")"
+    echo "  -> k8s-net-calico.yml (pod_cidr: ${_pods:-unset}, service_cidr: ${_svcs:-unset})"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SYNC_REPO_TO_KUBESPRAY — copy the parts of core/ that ansible-playbook reads
+# at deploy time (helm-charts, scripts, playbooks, roles) into the kubespray
+# checkout, which is where ansible-playbook actually runs from.
+#
+# setup_initial_env() calls this once during full/prereq setup, but model
+# deploys triggered via the --menu path (add_model, install-model-hf) skip
+# setup_initial_env entirely once $prereq_executed is set for the session --
+# so without calling this again, they keep reading whatever was copied
+# during the LAST full setup, silently ignoring any edits made to
+# core/helm-charts or core/roles since then (e.g. a changed
+# tensor_parallel_size in xeon-values.yaml). Safe to call on every model
+# deploy: it only copies editable repo content, never touches cluster-
+# specific inventory (mycluster/, hosts.yaml, addons.yml, all.yml).
+# ──────────────────────────────────────────────────────────────────────────────
+sync_repo_to_kubespray() {
+    REMOTEDIR="${REMOTEDIR:-/tmp/helm-charts}"
+    cp -r "$HOMEDIR"/helm-charts "$HOMEDIR"/scripts "$KUBESPRAYDIR"/
+    cp -r "$HOMEDIR"/playbooks/* "$KUBESPRAYDIR"/playbooks/
+    xeon_values_file_path="$REMOTEDIR/vllm/xeon-values.yaml"
+    xpu_values_file_path="$REMOTEDIR/vllm/xpu-values.yaml"
+    # Copy roles to kubespray/roles/ AND to kubespray/playbooks/roles/ so Ansible
+    # finds them both via roles_path config and relative-to-playbook discovery.
+    mkdir -p "$KUBESPRAYDIR/roles" "$KUBESPRAYDIR/playbooks/roles"
+    cp -r "$HOMEDIR"/roles/* $KUBESPRAYDIR/roles/
+    cp -r "$HOMEDIR"/roles/* $KUBESPRAYDIR/playbooks/roles/
+}
+
 setup_initial_env() {
     echo "Setting up the Initial Environment..."
     
@@ -57,6 +123,16 @@ setup_initial_env() {
         sudo chown -R "$(id -u):$(id -g)" "$VENVDIR"
         rm -rf "$VENVDIR"
     fi
+    # Console-script shebangs (pip3, ansible-galaxy, ...) bake in the absolute
+    # venv path at creation time — a venv copied in from another clone path
+    # (e.g. rsync'd repo) keeps bin/activate but every script points at the
+    # old location and fails with "required file not found". pyvenv.cfg's
+    # `command=` line records the original creation path and, unlike a
+    # console-script shebang, is never truncated/wrapped for long paths.
+    if [[ -f "$VENVDIR/pyvenv.cfg" ]] && ! grep -qF "$VENVDIR" "$VENVDIR/pyvenv.cfg"; then
+        echo "Virtual environment was copied from another path (stale pyvenv.cfg) — removing and recreating..."
+        rm -rf "$VENVDIR"
+    fi
     if [ ! -d "$VENVDIR" ]; then                
         echo "Installing python3-venv package..."
         if command -v apt &> /dev/null; then            
@@ -103,21 +179,13 @@ setup_initial_env() {
     fi    
 
     echo -e "${GREEN} Enterprise Inference requirements installed.${NC}"
-    cp -r "$HOMEDIR"/helm-charts "$HOMEDIR"/scripts "$KUBESPRAYDIR"/
+    sync_repo_to_kubespray
     cp -r "$KUBESPRAYDIR"/inventory/sample/ "$KUBESPRAYDIR"/inventory/mycluster
     cp  "$HOMEDIR"/inventory/hosts.yaml $KUBESPRAYDIR/inventory/mycluster/
     cp "$HOMEDIR"/inventory/metadata/addons.yml $KUBESPRAYDIR/inventory/mycluster/group_vars/k8s_cluster/addons.yml    
-    cp "$HOMEDIR"/playbooks/* "$KUBESPRAYDIR"/playbooks/    
-    xeon_values_file_path="$REMOTEDIR/vllm/xeon-values.yaml"
-    cp "$HOMEDIR"/inventory/metadata/addons.yml $KUBESPRAYDIR/inventory/mycluster/group_vars/k8s_cluster/addons.yml
     cp "$HOMEDIR"/inventory/metadata/all.yml $KUBESPRAYDIR/inventory/mycluster/group_vars/all/all.yml
-    # Copy roles to kubespray/roles/ AND to kubespray/playbooks/roles/ so Ansible
-    # finds them both via roles_path config and relative-to-playbook discovery.
-    mkdir -p "$KUBESPRAYDIR/roles" "$KUBESPRAYDIR/playbooks/roles"
-    cp -r "$HOMEDIR"/roles/* $KUBESPRAYDIR/roles/
-    cp -r "$HOMEDIR"/roles/* $KUBESPRAYDIR/playbooks/roles/
 
-    mkdir -p "$KUBESPRAYDIR/config"        
+    mkdir -p "$KUBESPRAYDIR/config"
     chmod +x $HOMEDIR/scripts/generate-vault-secrets.sh
 
     # Only generate vault secrets if vault.yml doesn't exist or is incomplete
@@ -195,7 +263,63 @@ setup_initial_env() {
     cp "$HOMEDIR"/inventory/metadata/vault.yml $KUBESPRAYDIR/config/vault.yml            
     mkdir -p "$KUBESPRAYDIR/config/vars" 
     cp -r "$HOMEDIR"/inventory/metadata/vars/* $KUBESPRAYDIR/config/vars/    
-    cp "$HOMEDIR"/playbooks/* "$KUBESPRAYDIR"/playbooks/
+    cp -r "$HOMEDIR"/playbooks/* "$KUBESPRAYDIR"/playbooks/
+
+    # ── Rack-scale: copy Calico BGP config + per-leaf group_vars ─────────────
+    # Only when rack_scale_mode=on — standard deployments use kubespray's
+    # default Calico config and never touch this block.
+    if [[ "${rack_scale_mode:-no}" == "yes" ]]; then
+        echo "Rack-scale mode: copying Calico BGP config to kubespray..."
+
+        # Source the flags emitted by rack-profile-parser.sh so we know
+        # cp_on_fabric and ping_access_ip without re-parsing rack-profile.yaml.
+        local _flags_env="$HOMEDIR/inventory/metadata/rack-scale-flags.env"
+        if [[ -f "${_flags_env}" ]]; then
+            # shellcheck source=/dev/null
+            source "${_flags_env}"
+            echo "  -> rack-scale flags: cp_on_fabric=${rack_scale_cp_on_fabric} ping_access_ip=${rack_scale_ping_access_ip} calico=${rack_scale_calico_mode}"
+        fi
+
+        # When CP nodes have no fabric NIC the Ansible controller cannot reach worker
+        # fabric IPs via ping.  Disable the kubespray precheck to avoid false failures.
+        local _all_dst="$KUBESPRAYDIR/inventory/mycluster/group_vars/all/all.yml"
+        if [[ "${rack_scale_ping_access_ip:-true}" == "false" && -f "${_all_dst}" ]]; then
+            sed -i 's/^# *ping_access_ip:.*/ping_access_ip: false/' "${_all_dst}"
+            # In case the line was never present, append it
+            grep -q '^ping_access_ip:' "${_all_dst}" || echo 'ping_access_ip: false' >> "${_all_dst}"
+            echo "  -> all.yml: ping_access_ip set to false (CP nodes not on fabric)"
+        fi
+        # Calico config (which carries pod_cidr / service_cidr) is synced by
+        # sync_rack_calico_config. It is a separate function because this one runs
+        # BEFORE rack-profile-parser.sh, so the file on disk here is whatever the
+        # previous run left behind. Callers re-invoke it after the parser to pick
+        # up the current profile — see fresh-install.sh.
+        sync_rack_calico_config
+        # Prune Calico group_vars left by older parser versions.
+        #
+        # No group_vars are copied in any more: the parser no longer generates
+        # calico_ip_auto_method at all, because kubespray's default
+        # can-reach=$(NODEIP) resolves per-node from status.hostIP and is correct
+        # on every host without generated state.
+        #
+        # The pruning still matters. Copies made here by earlier runs are outside
+        # the parser's control and would otherwise persist forever — and a
+        # leftover group_vars/<group>/calico.yml still pins calico_ip_auto_method
+        # for every node in that group, to a NIC name that is only correct on
+        # some of them. Prune by convention: we own exactly the
+        # fabric*/leaf*/cp_mgmt* group_vars dirs, and nothing else here.
+        local _gv_dst="$KUBESPRAYDIR/inventory/mycluster/group_vars"
+        if [[ -d "${_gv_dst}" ]]; then
+            local _stale
+            for _stale in "${_gv_dst}"/fabric*/ "${_gv_dst}"/leaf*/ "${_gv_dst}"/cp_mgmt*/; do
+                [[ -d "${_stale}" ]] || continue
+                rm -rf "${_stale}"
+                echo "  -> pruned stale group_vars/$(basename "${_stale}")/"
+            done
+        fi
+    fi
+    # ─────────────────────────────────────────────────────────────────────────
+
     echo "Additional files and directories copied to Kubespray directory."
         
     if [[ "$skip_check" != "true" ]]; then
@@ -208,7 +332,7 @@ setup_initial_env() {
         echo "Skipping infrastructure readiness check due to --skip-check argument."
     fi
     echo "Infrastructure readiness check completed successfully."    
-    ansible-galaxy collection install community.kubernetes        
+    "$VENVDIR/bin/ansible-galaxy" collection install community.kubernetes        
 }
 
 
@@ -229,7 +353,7 @@ invoke_prereq_workflows() {
 
 install_ansible_collection() {
     echo "Installing community.general collection..."
-    ansible-galaxy collection install community.general
+    "$VENVDIR/bin/ansible-galaxy" collection install community.general
 }
 
 # ---------------------------------------------------------------------------
@@ -383,10 +507,14 @@ EOF
     local _https_proxy="${https_proxy:-${HTTPS_PROXY:-}}"
     local _no_proxy="${no_proxy:-${NO_PROXY:-}}"
 
+    # Always ensure k8s service and pod CIDRs are excluded from proxy so that
+    # the Calico CNI binary (which inherits containerd's env) never proxies
+    # traffic to the k8s API server — a proxied TLS connection causes x509 IP SAN failures.
+    # Values come from pod_cidr / service_cidr set in agentic-config.cfg (or defaults).
     # Derive the mandatory k8s NO_PROXY set from kubespray's live config so it
     # always matches actual cluster networking — prevents Calico CNI from routing
     # API-server traffic through the corporate proxy (x509 IP SAN failure).
-    local _k8s_noproxy; _k8s_noproxy="$(_build_k8s_no_proxy)"
+    local _k8s_noproxy="10.96.0.1,${service_cidr:-10.96.0.0/12},${pod_cidr:-10.244.0.0/16}${_build_k8s_no_proxy:+,${_build_k8s_no_proxy}}"
 
     if [[ -n "${_no_proxy}" ]]; then
         _no_proxy="${_no_proxy},${_k8s_noproxy}"
@@ -430,4 +558,26 @@ EOF
         sudo systemctl enable --now containerd
     fi
 
+    # ── Configure containerd proxy so image pulls (registry.k8s.io) work ──────
+    # containerd is installed via apt above (not Kubespray's containerd role), so
+    # it has NO proxy env. Behind a corporate proxy, kubeadm init's preflight image
+    # pulls fail with "dial tcp ... i/o timeout". Apply the drop-in unconditionally
+    # so the re-run case (containerd already running, install block skipped) is
+    # also covered.
+    if [[ -n "${http_proxy:-}" || -n "${https_proxy:-}" ]]; then
+        echo "Configuring containerd proxy (systemd drop-in)..."
+        # Cluster-internal traffic must bypass the proxy: service CIDR + pod CIDR.
+        # Values come from pod_cidr / service_cidr in agentic-config.cfg (or defaults).
+        local _ctr_no_proxy="${no_proxy:-localhost,127.0.0.1},${service_cidr:-10.96.0.0/12},${pod_cidr:-10.244.0.0/16}"
+        sudo mkdir -p /etc/systemd/system/containerd.service.d
+        sudo tee /etc/systemd/system/containerd.service.d/http-proxy.conf > /dev/null <<EOF
+[Service]
+Environment="HTTP_PROXY=${http_proxy:-${https_proxy}}"
+Environment="HTTPS_PROXY=${https_proxy:-${http_proxy}}"
+Environment="NO_PROXY=${_ctr_no_proxy}"
+EOF
+        sudo systemctl daemon-reload
+        sudo systemctl restart containerd
+        echo -e "${GREEN}containerd proxy configured.${NC}"
+    fi
 }

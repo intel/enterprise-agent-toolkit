@@ -1,0 +1,134 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# burn-extended.yml — Extended burn test (opt-in, tag: extended-burn)
+# For acceptance testing, pre-production sign-off, or periodic validation.
+# Same checks as quick burn but with configurable duration.
+# Run: ansible-playbook validate-stack.yml --tags all,extended-burn -e burn_duration=10m
+
+---
+- name: Parse burn duration to seconds
+  ansible.builtin.set_fact:
+    _burn_seconds: "{{ (burn_duration | regex_search('(\\d+)', '\\1') | first | default('2') | int) * (60 if 'm' in (burn_duration | string) else 1) }}"
+
+- name: Run extended fabric throughput test
+  ansible.builtin.shell: |
+    PEERS="{{ groups['all'] | difference([inventory_hostname]) | join(' ') }}"
+    FIRST_PEER=$(echo $PEERS | awk '{print $1}')
+    [ -z "$FIRST_PEER" ] && { echo '{"error": "no peer"}'; exit 0; }
+    PEER_IP="{{ hostvars[groups['all'] | difference([inventory_hostname]) | first | default(inventory_hostname)].access_ip | default('') }}"
+    [ -z "$PEER_IP" ] && { echo '{"error": "no peer IP"}'; exit 0; }
+
+    RESULT=$(iperf3 -c "$PEER_IP" -t {{ _burn_seconds }} -J 2>/dev/null || echo '{"error": "failed"}')
+    BPS=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('end',{}).get('sum_received',{}).get('bits_per_second', 0))" 2>/dev/null || echo "0")
+    GBPS=$(echo "scale=2; $BPS / 1000000000" | bc 2>/dev/null || echo "0")
+    echo "extended_throughput_gbps=$GBPS duration={{ _burn_seconds }}s peer=$PEER_IP"
+  register: _ext_burn_fabric
+  changed_when: false
+  ignore_errors: true
+  timeout: "{{ (_burn_seconds | int) + 60 }}"
+
+- name: Record extended fabric throughput
+  ansible.builtin.shell: |
+    HN=$(hostname -s)
+    STDOUT="{{ _ext_burn_fabric.stdout | default('test skipped') | regex_replace('\"', '') | truncate(100) }}"
+    GBPS=$(echo "$STDOUT" | grep -oP 'throughput_gbps=\K\S+' || echo "0")
+    FLOOR="{{ burn_fabric_floor_gbps | default(20) }}"
+    python3 -c "
+    import json
+    status = 'OK' if float('$GBPS') >= float('$FLOOR') else 'FAIL'
+    print(json.dumps([{'layer':'burn-extended','check':'Extended fabric throughput from $HN','status':status,
+      'evidence':'$STDOUT','hint':'Sustained throughput degradation — check thermal throttling, NIC errors'}]))
+    "
+  args:
+    executable: /bin/bash
+  register: _ext_burn_fabric_json
+  changed_when: false
+  ignore_errors: true
+
+- name: Append extended fabric throughput to host results
+  ansible.builtin.shell: "echo '{{ _ext_burn_fabric_json.stdout | default(\"[]\") }}' >> /tmp/validate-stack-host-results.jsonl"
+  changed_when: false
+
+- name: Run extended GPU burn (if GPU deployed)
+  ansible.builtin.shell: |
+    kubectl delete pod validate-stack-gpu-burn-ext --ignore-not-found=true --wait=false 2>/dev/null
+    sleep 2
+
+    kubectl run validate-stack-gpu-burn-ext \
+      --image=oguzpastirmaci/gpu-burn:latest \
+      --restart=Never \
+      --overrides='{
+        "spec": {
+          "containers": [{
+            "name": "gpu-burn",
+            "image": "oguzpastirmaci/gpu-burn:latest",
+            "command": ["gpu_burn", "{{ _burn_seconds }}"],
+            "resources": {"limits": {"nvidia.com/gpu": "1"}}
+          }],
+          "restartPolicy": "Never"
+        }
+      }' 2>/dev/null
+
+    sleep {{ (_burn_seconds | int) + 10 }}
+    kubectl logs pod/validate-stack-gpu-burn-ext 2>/dev/null | tail -10
+  register: _ext_burn_gpu
+  changed_when: false
+  ignore_errors: true
+  timeout: "{{ (_burn_seconds | int) + 120 }}"
+  run_once: true
+  delegate_to: localhost
+  when: rack_scale_gpu_vendor | default('') | length > 0
+
+- name: Record extended GPU burn
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'burn-extended', 'check': 'Extended GPU burn (' + (burn_duration | string) + ')', 'status': 'OK' if (_ext_burn_gpu.stdout is defined and ('PASSED' in (_ext_burn_gpu.stdout | default('')) or 'OK' in (_ext_burn_gpu.stdout | default('')))) else 'FAIL', 'evidence': _ext_burn_gpu.stdout_lines | default([]) | last | default('unknown') | truncate(150), 'hint': 'Extended GPU burn failed — check ECC errors, temperature stability: nvidia-smi -q -d ECC,TEMPERATURE' }] }}"
+  run_once: true
+  when: rack_scale_gpu_vendor | default('') | length > 0
+
+- name: Clean up extended burn pods
+  ansible.builtin.command:
+    cmd: kubectl delete pod validate-stack-gpu-burn-ext --ignore-not-found=true --wait=false
+  changed_when: false
+  ignore_errors: true
+  run_once: true
+  delegate_to: localhost
+  when: rack_scale_gpu_vendor | default('') | length > 0
+
+- name: Run inference latency test (if model ready)
+  ansible.builtin.shell: |
+    # Check if model is ready via ConfigMap
+    MODELS=$(kubectl get configmaps -l app=validate-stack -o jsonpath='{range .items[*]}{.data.status}:{.data.model}{"\n"}{end}' 2>/dev/null | grep "^OK:" | head -1)
+    if [ -z "$MODELS" ]; then
+      echo "SKIP:no model ready yet"
+      exit 0
+    fi
+    MODEL_NAME=$(echo "$MODELS" | cut -d: -f2)
+    GATEWAY="http://genai-gateway-service.genai-gateway.svc.cluster.local:4000"
+
+    # Send 50 sequential requests and measure TTFT
+    RESULTS=""
+    for i in $(seq 1 50); do
+      START=$(date +%s%N)
+      curl -sf "${GATEWAY}/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d "{\"model\":\"${MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Count to $i\"}],\"max_tokens\":10}" >/dev/null 2>&1
+      END=$(date +%s%N)
+      TTFT_MS=$(( (END - START) / 1000000 ))
+      RESULTS="$RESULTS $TTFT_MS"
+    done
+
+    # Calculate p99
+    P99=$(echo "$RESULTS" | tr ' ' '\n' | sort -n | awk 'BEGIN{c=0} {a[c++]=$1} END{print a[int(c*0.99)]}')
+    echo "p99_ttft_ms=$P99 model=$MODEL_NAME requests=50"
+  register: _ext_burn_inference
+  changed_when: false
+  ignore_errors: true
+  timeout: 600
+  run_once: true
+  delegate_to: localhost
+
+- name: Record inference latency
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'burn-extended', 'check': 'Inference p99 latency (50 requests)', 'status': 'OK' if ('SKIP' not in (_ext_burn_inference.stdout | default('SKIP')) and ((_ext_burn_inference.stdout | default('') | regex_search('p99_ttft_ms=(\\S+)', '\\1') | default(['99999'], true))[0] | int <= 5000)) else ('PENDING' if 'SKIP' in (_ext_burn_inference.stdout | default('SKIP')) else 'FAIL'), 'evidence': _ext_burn_inference.stdout | default('skipped — model not ready') | truncate(120), 'hint': 'p99 TTFT > 5s — check model serving performance, GPU utilization, request queuing' }] }}"
+  run_once: true

@@ -1,0 +1,18 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# flush-bird-routes.yml — Flush kernel routes installed by bird (Calico BGP).
+#
+# Called before kubespray's remove_node / reset role so that the broken xargs
+# approach in network_plugin/calico/tasks/reset.yml gets no routes to process.
+# ip route flush proto bird is a no-op when no bird routes exist, so this is
+# safe to run on non rack-scale and non-BGP deployments without gating.
+---
+- name: Flush bird-managed routes before node removal
+  hosts: "{{ node | default('k8s_cluster') }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Flush kernel routes installed by bird (Calico BGP / ECMP)
+      shell: ip route flush proto bird
+      changed_when: false

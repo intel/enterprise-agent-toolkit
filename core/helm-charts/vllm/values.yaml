@@ -25,7 +25,7 @@ image:
   # Uncomment the following line to set desired image pull policy if needed, as one of Always, IfNotPresent, Never.
   # pullPolicy: ""
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "v0.24.0"
+  tag: "v0.28.0"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -48,8 +48,7 @@ podAnnotations: {}
 #cpu_balloon_annotation: ""
 
 podSecurityContext:
-  # fsGroup: 1001
-  # runAsUser: 1001
+  fsGroup: 1001
 
 securityContext:
   allowPrivilegeEscalation: false

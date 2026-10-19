@@ -1,6 +1,8 @@
 # Multi-Node Deployment Guide
 
-This guide describes how to deploy the Intel AI for Enterprise Agent Toolkit across multiple nodes — a control-plane node running all stack services plus one or more worker nodes that host additional LLM inference workloads.
+> **100G Arista fabric deployment?** If your rack has a 100G Clos fabric, Intel® E810-C NICs, and NVMe storage nodes, use the **[Rack-Scale Deployment Guide](rack-scale-deployment.md)** instead — it covers BGP, dual-homed nodes, and Ceph-on-fabric with a single `rack-profile.yaml` config.
+
+This guide describes how to deploy the Intel® AI for Enterprise Agent Toolkit across multiple nodes — a control-plane node running all stack services plus one or more worker nodes that host additional LLM inference workloads.
 
 The Kubernetes layer is provisioned by **Kubespray**, which natively supports multi-node clusters. Everything above Kubernetes (LiteLLM, Langfuse, Redis, Prometheus/Grafana) runs on the cluster and is automatically distributed by Kubernetes scheduling.
 
@@ -8,15 +10,13 @@ The Kubernetes layer is provisioned by **Kubespray**, which natively supports mu
 ## Table of Contents
 
 - [Step 1 — Configure `hosts.yaml`](#step-1--configure-hostsyaml)
-- [Step 2 — Configure /etc/hosts and TLS](#step-2--configure-etchosts-and-tls)
-- [Step 3 — Configure agentic-config.cfg](#step-3--configure-agentic-configcfg)
-- [Step 4 — Deploy](#step-4--deploy)
-- [Step 5 — Verify](#step-5--verify)
-- [Step 6 — Semantic Router (Intelligent Query Routing)](#step-6--semantic-router-intelligent-query-routing)
-- [Step 7 — Redis (Shared Memory Backend)](#step-7--redis-shared-memory-backend)
-- [Step 8 — PostgreSQL + pgvector (Vector Store)](#step-8--postgresql--pgvector-vector-store--long-term-memory)
-- [Step 9 — Agent Sandbox (Sandboxed Code Execution)](#step-9--agent-sandbox-sandboxed-code-execution)
-- [Step 10 — OpenShell (Policy-Enforced Sandboxes, optional)](#step-10--openshell-policy-enforced-sandboxes-optional)
+- [Step 2 — Configure agentic-config.cfg](#step-2--configure-agentic-configcfg)
+- [Step 3 — Deploy](#step-3--deploy)
+- [Step 4 — Verify](#step-4--verify)
+- [Step 5 — Semantic Router (Intelligent Query Routing)](#step-5--semantic-router-intelligent-query-routing)
+- [Step 6 — Redis (Shared Memory Backend)](#step-6--redis-shared-memory-backend)
+- [Step 7 — PostgreSQL + pgvector (Vector Store)](#step-7--postgresql--pgvector-vector-store--long-term-memory)
+- [Step 8 — Agent Sandbox (Sandboxed Code Execution)](#step-8--agent-sandbox-sandboxed-code-execution)
 - [Adding a Worker Node to a Running Cluster](#adding-a-worker-node-to-a-running-cluster)
 - [Supported Deployment Topologies](#supported-deployment-topologies)
 - [Notes](#notes)
@@ -73,42 +73,7 @@ all:
 
 ---
 
-## Step 2 — Configure `/etc/hosts` and TLS
-
-### On every node
-
-Add all stack subdomains pointing to the control-plane node (or load balancer IP):
-
-```bash
-# Replace 10.0.0.1 with your control-plane/LB IP
-# Replace api.example.com with your actual cluster_url
-sudo bash -c 'cat >> /etc/hosts <<EOF
-10.0.0.1 api.example.com
-10.0.0.1 trace-api.example.com
-EOF'
-```
-
-### On the control-plane node — generate or supply TLS certificates
-
-```bash
-DOMAIN="api.example.com"   # replace with your cluster_url
-
-mkdir -p ~/certs && cd ~/certs && \
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
-  -subj "/CN=${DOMAIN}" \
-  -addext "subjectAltName = DNS:${DOMAIN}, DNS:trace-${DOMAIN}, DNS:*.${DOMAIN}"
-```
-
-Set the generated paths in `core/inventory/agentic-config.cfg`:
-
-```ini
-cert_file=/home/ubuntu/certs/cert.pem
-key_file=/home/ubuntu/certs/key.pem
-```
-
----
-
-## Step 3 — Configure `agentic-config.cfg`
+## Step 2 — Configure `agentic-config.cfg`
 
 Open `core/inventory/agentic-config.cfg` and fill in your values:
 
@@ -120,22 +85,33 @@ cluster_url=api.example.com
 # For a custom domain: supply your CA-signed or self-signed cert/key files
 cert_file=/path/to/your/fullchain.pem
 key_file=/path/to/your/private.key
+
 # HuggingFace token (required to pull gated models)
 hugging_face_token=hf_xxxxxxxxxxxxxxxxxxxx
-# Model to deploy — select the model from the model list (ex :cpu-qwen3-coder-30b)
-models=cpu-qwen3-coder-30b
+
+# Model(s) to deploy — select the model(s) from the model list (ex :cpu-qwen2-5-coder-14b), separated by commas
+models=cpu-qwen2-5-coder-14b
+
 # Enable/disable stack components
 deploy_kubernetes_fresh=on
 deploy_ingress_controller=on
 deploy_genai_gateway=on
 deploy_observability=on
 deploy_llm_models=on
-deploy_redis=on          # standalone Redis Stack in its own namespace
-deploy_pgvector=off      # optional: PostgreSQL 16 + pgvector — shared vector store and long-term memory backend
-deploy_agent_sandbox=on  # optional: Agent Sandbox controller — isolated pod environments for safe code execution
-deploy_openshell=off     # optional: NVIDIA OpenShell policy-enforced sandboxes (requires deploy_agent_sandbox=on)
-deploy_kuberay=off       # optional
+deploy_agenticai_plugin=off   # optional: Enables deployment of the Flowise agentic AI plugin
+deploy_redis=on               # standalone Redis Stack in its own namespace
+deploy_pgvector=on            # optional: PostgreSQL 16 + pgvector — shared vector store and long-term memory backend
+deploy_kuberay=off            # optional: KubeRay operator — enables Ray distributed computing inside the cluster
+deploy_agent_sandbox=on       # optional: Agent Sandbox controller — isolated pod environments for safe code execution
+deploy_openshell=off          # optional: NVIDIA OpenShell policy-enforced sandboxes (requires deploy_agent_sandbox=on)
+
+# Proxy settings (optional, depending on network)
+http_proxy=
+https_proxy=
+no_proxy=
 ```
+
+>*Note:* For proxy settings, see [running-behind-proxy.md](./running-behind-proxy.md).
 
 ### Choose your model
 
@@ -154,8 +130,12 @@ Set the `models` field in `agentic-config.cfg` to one value from the table below
 | `27` | `cpu-llama-8b` | meta-llama/Llama-3.1-8B-Instruct |
 | `28` | `cpu-llama-8b-specdec` | meta-llama/Llama-3.1-8B-Instruct *(with speculative decoding)* |
 | `29` | `cpu-qwen3-coder-30b-specdec` | Qwen/Qwen3-Coder-30B-A3B-Instruct *(with speculative decoding)* |
+| `30` | `cpu-qwen3-6-35b-a3b` | Qwen/Qwen3.6-35B-A3B |
 
 > **Note:** `meta-llama/Llama-3.1-8B-Instruct` does not support parallel tool calling. Only sequential tool calls are supported with this model.
+
+> **Note:** For how per-model CPU/memory sizing and vLLM flags are configured under the
+> hood, or to add a new model, see [Xeon (CPU) vLLM Model Configuration](xeon-model-configuration.md).
 
 **Speculative Decoding:**
 
@@ -173,7 +153,7 @@ Multiple models can be deployed together using a comma-separated list: `models=c
 
 ---
 
-## Step 4 — Deploy
+## Step 3 — Deploy
 
 Run the deployment script from the control-plane node:
 
@@ -186,7 +166,7 @@ Kubespray will use `core/inventory/hosts.yaml` to provision Kubernetes across al
 
 ---
 
-## Step 5 — Verify
+## Step 4 — Verify
 
 After deployment, confirm all nodes joined the cluster and all pods are healthy:
 
@@ -199,18 +179,22 @@ kubectl get nodes -o wide
 kubectl get pods -A
 
 # Retrieve the LiteLLM master key
+# Note: This can also be retrieved in core/inventory/metadata/vault.yml
 export LITELLM_MASTER_KEY=$(kubectl get deploy -n genai-gateway genai-gateway-deployment \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="LITELLM_MASTER_KEY")].value}')
 
-# List registered models to confirm the model name
+# (Optional) If behind a corporate proxy, update no_proxy to prevent the request from being intercepted by the proxy (replace api.example.com with your cluster_url)
+export no_proxy="${no_proxy},api.example.com,trace-api.example.com"
+
+# List registered models to confirm the model name (replace api.example.com with your cluster_url)
 curl -k https://api.example.com/v1/models \
   -H "Authorization: Bearer ${LITELLM_MASTER_KEY}"
 
-# Test chat completions (use the model name returned by /v1/models above)
+# Test chat completions (replace api.example.com with your cluster_url, then use the model name returned by /v1/models above)
 curl -k https://api.example.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${LITELLM_MASTER_KEY}" \
-  -d '{"model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+  -d '{"model": "Qwen/Qwen2.5-Coder-14B-Instruct",
        "messages": [{"role":"user","content":"Write a Python hello world"}],
        "max_tokens": 100}'
 ```
@@ -219,7 +203,7 @@ curl -k https://api.example.com/v1/chat/completions \
 
 ---
 
-## Step 6 — Semantic Router (Intelligent Query Routing)
+## Step 5 — Semantic Router (Intelligent Query Routing)
 
 Semantic routing automatically directs queries to the most appropriate model based on content analysis using embeddings. This allows you to route simple queries to faster/cheaper CPU models while directing complex tasks to more powerful GPU models or larger CPU models.
 
@@ -234,35 +218,45 @@ Semantic routing automatically directs queries to the most appropriate model bas
 
 ### Prerequisites
 
-- Step 5 complete and base stack verified
+- Step 4 complete and base stack verified
 - At least one model deployed (you'll add a second model for routing)
 
-### 1. Deploy a Second Model
+### 1. Deploy an Embedding Model for Semantic Matching and a Second Model
 
-Update `core/inventory/agentic-config.cfg` to add a more powerful model alongside your existing one:
+Semantic routing requires an embedding model to generate vector representations of user queries and match them against predefined utterances. A Text Embedding Inference (TEI) service with **BAAI/bge-base-en-v1.5** will be deployed using the deploy script.
+
+A second larger model i.e. **Qwen/Qwen3-Coder-30B-A3B-Instruct** with better capabilities will also be deployed alongside your existing one.
+
+**Update `core/inventory/agentic-config.cfg` to include the embedding model and second model:**
 
 ```ini
-models=cpu-qwen3-coder-30b,cpu-deepseek-r1-distill-qwen-32b
+models=cpu-qwen2-5-coder-14b,cpu-bge-base-en,cpu-qwen3-coder-30b
 ```
 
+**Deploy the model:**
+
+*Important:* For single-node deployments, the NRI balloon policy will use remaining CPUs to deploy models. Because the first model has already been deployed, there will not be enough CPUs to deploy additional models. To address this, the variable `nri_total_reserved_cpus` inside [core/inventory/metadata/vars/inference_llm_models.yml](../core/inventory/metadata/vars/inference_llm_models.yml) needs to be adjusted.
+
+The following formula can be used to calculate the value of `nri_total_reserved_cpus`. `total_cpus` depends on your system and `desired_vllm_cpus` should be large enough based on the model size. For a sizing guide, refer to the Intel AI Performance Advisor for [cloud instances](https://xeonprocessoradvisor.intel.com/csp-ai-performance-advisor) and [on-prem servers](https://xeonprocessoradvisor.intel.com/on-prem-ai-performance-advisor).
+
 ```bash
-# Re-run the deploy script — already-running components are skipped automatically
+nri_total_reserved_cpus = total_cpus - desired_vllm_cpus_per_model
+```
+
+After updating `inference_llm_models.yml`, proceeed with re-running the deploy script. Components already running will be skipped, the existing model will be re-deployed, and the two new models will be deployed.
+
+```bash
 ./deploy-agentic-stack.sh
 ```
 
-### 2. Deploy Embedding Model for Semantic Matching
-
-Semantic routing requires an embedding model to generate vector representations of user queries. Update `core/inventory/agentic-config.cfg` to include the embedding model:
-
-```ini
-models=cpu-bge-base-en
-```
-
+Restart the GenAI Gateway's Deployment:
 ```bash
-./deploy-agentic-stack.sh
+kubectl rollout restart deployment genai-gateway-deployment -n genai-gateway
 ```
 
-### 3. Access the LiteLLM UI
+Follow the steps to [re-verify the base stack](#verify-the-base-stack) to ensure models can be accessed.
+
+### 2. Access the LiteLLM UI
 
 Navigate to the LiteLLM UI in your browser:
 
@@ -270,23 +264,28 @@ Navigate to the LiteLLM UI in your browser:
 https://api.example.com
 ```
 
-Replace `api.example.com` with your actual `cluster_url`.
+Replace `api.example.com` with your actual `cluster_url`. Click on `LiteLLM Admin Panel on /ui`.
 
-### 4. Configure Semantic Router via UI
+Login credentials:
+- Username: default which is `admin`
+- Password: the value of `LITELLM_MASTER_KEY`
 
-**Step 4a — Verify the Embedding Model:**
+### 3. Configure Semantic Router via UI
 
-1. Navigate to: **Models+Endpoints** → **Models** tab
+**Step 3a — Verify the Embedding Model:**
+
+1. Navigate to: **Models+Endpoints** → **All Models** tab
 2. Look for `BAAI/bge-base-en-v1.5` in the models list
 
-**Step 4b — Configure the Auto Router:**
+**Step 3b — Configure the Auto Router:**
 
-Navigate to: **Models+Endpoints** → **Add Model** → **Auto Router** Tab
+Navigate to: **Models+Endpoints** → **Add Model** → **Auto Router** Tab.
+For **Router Type**, select `Semantic Router`.
 
 | Field | Value | Description |
 |-------|-------|-------------|
 | **Auto Router Name** | `smart_router` | The model name developers will use in API requests |
-| **Default Model** | `Qwen/Qwen3-Coder-30B-A3B-Instruct` | Fallback model when no route matches |
+| **Default Model** | `Qwen/Qwen2.5-Coder-14B-Instruct` | Fallback model when no route matches |
 | **Embedding Model** | `BAAI/bge-base-en-v1.5` | The embedding model deployed above |
 
 **Configure Routes:**
@@ -294,7 +293,9 @@ Navigate to: **Models+Endpoints** → **Add Model** → **Auto Router** Tab
 Click **Add Route** to create routing rules. Configure at least two routes:
 
 **Route 1 — Simple Queries (Smaller/Faster Model):**
-- **Target Model:** `Qwen/Qwen3-Coder-30B-A3B-Instruct`
+- **Target Model:** `Qwen/Qwen2.5-Coder-14B-Instruct`
+- **Description:** Simple queries and basic coding tasks
+- **Score Threshold:** `0.5`
 - **Utterances:**
   ```
   what is [topic]
@@ -303,10 +304,11 @@ Click **Add Route** to create routing rules. Configure at least two routes:
   hello
   write a simple [language] function
   ```
-- **Score Threshold:** `0.5`
 
 **Route 2 — Complex Queries (More Powerful Model):**
-- **Target Model:** `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B`
+- **Target Model:** `Qwen/Qwen3-Coder-30B-A3B-Instruct`
+- **Description:** Complex coding tasks and system design
+- **Score Threshold:** `0.5`
 - **Utterances:**
   ```
   design a [system] architecture
@@ -317,11 +319,10 @@ Click **Add Route** to create routing rules. Configure at least two routes:
   create a production-ready [application]
   how to code a program in [language]
   ```
-- **Score Threshold:** `0.5`
 
-Click **Save** to activate the semantic router.
+Click **Add Auto Router** to activate the semantic router. To view it, refresh the page and go back to the **Models+Endpoints** → **All Models** tab.
 
-### 5. Verify Semantic Routing
+### 4. Verify Semantic Routing
 
 ```bash
 export LITELLM_MASTER_KEY=$(kubectl get deploy -n genai-gateway genai-gateway-deployment \
@@ -340,11 +341,15 @@ curl -k https://api.example.com/v1/chat/completions \
   -d '{"model": "smart_router", "messages": [{"role":"user","content":"How to code a program in Python that implements a distributed task queue with Redis backend"}], "max_tokens": 200}'
 ```
 
-Check routing decisions in Langfuse at `https://trace-api.example.com` — look for the `model` field in trace details.
+Check routing decisions in Langfuse at `https://trace-api.example.com`.
+
+Login credentials: refer to the Langfuse login and password in [core/inventory/metadata/vault.yml](../core/inventory/metadata/vault.yml).
+
+Go inside the `default` project. Under **Tracing**, select the most recent `litellm_request`, scroll down to **Metadata** → **attributes**. Look at the `llm.model_name` field to confirm routing decisions.
 
 ---
 
-## Step 7 — Redis (Shared Memory Backend)
+## Step 5 — Redis (Shared Memory Backend)
 
 Redis is the **common memory backend** for all agentic workloads in this stack — deploy it before any use-case agent (MCP agents, etc.).
 
@@ -352,10 +357,16 @@ The `core/helm-charts/redis` chart deploys **Redis Stack** (includes RediSearch)
 
 **Automated deployment (recommended):**
 
-Set `deploy_redis=on` in `core/inventory/agentic-config.cfg` before running `./deploy-agentic-stack.sh`. Redis is deployed automatically as part of the stack.
+By default, Redis should already be deployed. You can check by running `kubectl get pods -n redis`. If not, follow the instructions below to deploy it.
 
+Set `deploy_redis=on` in `core/inventory/agentic-config.cfg`:
 ```ini
 deploy_redis=on
+```
+
+Then re-run `deploy-agentic-stack.sh`:
+```bash
+./deploy-agentic-stack.sh
 ```
 
 **Manual deployment (alternative / standalone):**
@@ -411,7 +422,7 @@ Redis holds agent session state and is a code-execution surface (Lua, plus JavaS
 
 ---
 
-## Step 8 — PostgreSQL + pgvector (Vector Store & Long-Term Memory)
+## Step 6 — PostgreSQL + pgvector (Vector Store & Long-Term Memory)
 
 PostgreSQL 16 with the **pgvector** extension gives every agentic workload a persistent, queryable vector store for long-term memory, RAG pipelines, semantic search, and structured state storage.
 
@@ -420,12 +431,14 @@ PostgreSQL 16 with the **pgvector** extension gives every agentic workload a per
 - You are building RAG pipelines that store and retrieve embeddings
 - Use cases require structured relational + vector data in the same store
 
-**Enable in `core/inventory/agentic-config.cfg`:**
+By default, `pgvector` should already be deployed. You can check by running `kubectl get pods -n pgvector`. If not, follow the instructions below to deploy it.
 
+Enable it in `core/inventory/agentic-config.cfg`:
 ```ini
 deploy_pgvector=on
 ```
 
+Then re-run the deploy script:
 ```bash
 ./deploy-agentic-stack.sh
 ```
@@ -472,20 +485,23 @@ postgresql://agentuser:<password>@pgvector.pgvector.svc.cluster.local:5432/agent
 
 ---
 
-## Step 9 — Agent Sandbox (Sandboxed Code Execution)
+## Step 7 — Agent Sandbox (Sandboxed Code Execution)
 
 Agent Sandbox provides **isolated, ephemeral Kubernetes pods** for safe code execution. Every sandbox is a fully self-contained pod — the agent can run arbitrary code, install packages, and write files without touching the host or other workloads.
 
+By default, Agent Sandbox should already be deployed. You can check by running `kubectl get pods -n agent-sandbox-system`. If not, follow the instructions below to deploy it.
+
+Enable it in `core/inventory/agentic-config.cfg`:
 ```ini
-# core/inventory/agentic-config.cfg
 deploy_agent_sandbox=on
 ```
 
+Then re-run the deploy script:
 ```bash
 ./deploy-agentic-stack.sh
 ```
 
-**What gets deployed** (all in the `agent-sandbox` namespace):
+**What gets deployed** (all in the `agent-sandbox-system` namespace):
 
 | Component | Description |
 |---|---|
@@ -497,12 +513,12 @@ deploy_agent_sandbox=on
 **Verify:**
 
 ```bash
-kubectl get pods -n agent-sandbox
+kubectl get pods -n agent-sandbox-system
 # NAME                                          READY   STATUS    RESTARTS
 # agent-sandbox-controller-xxx                  1/1     Running   0
 # sandbox-router-deployment-xxx                 1/1     Running   0
 
-kubectl get sandboxtemplate -n agent-sandbox
+kubectl get sandboxtemplate -n agent-sandbox-system
 # NAME                      AGE
 # python-sandbox-template   1m
 ```
@@ -511,46 +527,6 @@ kubectl get sandboxtemplate -n agent-sandbox
 > `http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080`
 
 For the full guide — adding custom templates, WarmPools, and SDK usage — see **[agent-sandbox.md](agent-sandbox.md)**.
-
----
-
-## Step 10 — OpenShell (Policy-Enforced Sandboxes, optional)
-
-NVIDIA OpenShell is an optional policy layer on top of Agent Sandbox. It is off by default. Its
-gateway creates sandboxes whose egress, filesystem access and credentials are controlled by a
-per-sandbox policy, and it registers the GenAI Gateway as a provider, so sandboxes call models
-with a placeholder key instead of the LiteLLM key. It requires Agent Sandbox, and it is
-validated with OpenShell `0.0.116` in single-admin mode (no user authentication; access is
-gated by Kubernetes RBAC).
-
-```ini
-# core/inventory/agentic-config.cfg
-deploy_agent_sandbox=on
-deploy_openshell=on
-```
-
-```yaml
-# core/inventory/metadata/vars/inference_openshell.yml — single-admin mode
-openshell_allow_unauthenticated_clusterip_only: true
-```
-
-```bash
-./deploy-agentic-stack.sh
-```
-
-The gateway is placed on `ei-infra-eligible` nodes. The sandbox NetworkPolicy the toolkit adds is enforced only if the CNI enforces
-`NetworkPolicy` (Calico does).
-
-**Verify:**
-
-```bash
-kubectl get pods -n openshell-system
-# NAME          READY   STATUS    RESTARTS
-# openshell-0   1/1     Running   0
-```
-
-For CLI setup, running a sandbox against the GenAI Gateway, and known limitations, see
-**[openshell.md](openshell.md)**.
 
 ---
 

@@ -1,0 +1,264 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# ---------------------------------------------------------------------------
+# Probe ONE node's real CPU topology (sockets, NUMA layout, physical vs
+# logical cores, reserved CPUs) via its utils-cpu-topology-probe pod, and
+# merge the result into per_node_cpu_topology[probe_node].
+#
+# Included in a loop from get_optimized_cpu_topology.yaml so every node gets
+# its own measurement, instead of one arbitrarily-sampled node's numbers
+# being reused fleet-wide on a heterogeneous cluster (see workload_cpus in
+# get_optimal_cpu_allocation.yaml, which takes the min across this table).
+#
+# Input: probe_node (node name); optimizer_pods_info must already be set.
+#
+# k8s_exec calls retry a few times: the exec pod can occasionally report
+# Running before its exec path is actually ready, surfacing as a raw
+# "'NoneType' object has no attribute 'decode'" failure from the
+# kubernetes.core.k8s_exec module itself (a transient client/module issue,
+# not a real command failure) -- observed on both control-plane and worker
+# nodes, so it isn't node-role specific.
+# ---------------------------------------------------------------------------
+
+- name: "Find optimizer pod on {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_optimizer_pod: "{{ (optimizer_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | selectattr('spec.nodeName', 'equalto', probe_node) | list | first | default({})).metadata.name | default('') }}"
+
+- name: "Get lscpu on {{ probe_node }}"
+  kubernetes.core.k8s_exec:
+    pod: "{{ _pn_optimizer_pod }}"
+    container: ubuntu
+    namespace: kube-system
+    command: bash -c "lscpu"
+  register: _pn_detailed_cpu_info
+  until: _pn_detailed_cpu_info is succeeded
+  retries: 3
+  delay: 5
+  when: _pn_optimizer_pod != ''
+
+- name: "Get socket count on {{ probe_node }}"
+  kubernetes.core.k8s_exec:
+    pod: "{{ _pn_optimizer_pod }}"
+    container: ubuntu
+    namespace: kube-system
+    command: bash -c "lscpu | grep 'Socket(s):' | awk '{print $2}'"
+  register: _pn_total_sockets
+  until: _pn_total_sockets is succeeded
+  retries: 3
+  delay: 5
+  when: _pn_optimizer_pod != ''
+
+- name: "Get NUMA node count on {{ probe_node }}"
+  kubernetes.core.k8s_exec:
+    pod: "{{ _pn_optimizer_pod }}"
+    container: ubuntu
+    namespace: kube-system
+    command: bash -c "lscpu | grep 'NUMA node(s):' | awk '{print $3}'"
+  register: _pn_total_numa_nodes
+  until: _pn_total_numa_nodes is succeeded
+  retries: 3
+  delay: 5
+  when: _pn_optimizer_pod != ''
+
+- name: "Compute NUMA-per-socket for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_numa_nodes_per_socket: "{{ (_pn_total_numa_nodes.stdout | int) // (_pn_total_sockets.stdout | int) }}"
+  when: _pn_optimizer_pod != ''
+
+- name: "Get accurate CPU counts per NUMA node on {{ probe_node }}"
+  kubernetes.core.k8s_exec:
+    pod: "{{ _pn_optimizer_pod }}"
+    container: ubuntu
+    namespace: kube-system
+    command: >-
+      bash -c '
+      total_numa_cpus=0;
+      total_numa={{ _pn_total_numa_nodes.stdout | int }};
+      for i in $(seq 0 $((total_numa - 1))); do
+        numa_cpus=$(lscpu | grep "NUMA node$i CPU(s):" | cut -d: -f2 | xargs);
+        if [[ "$numa_cpus" != "" ]]; then
+          cpu_count=0;
+          for range in $(echo $numa_cpus | tr "," " "); do
+            if [[ $range == *-* ]]; then
+              start=${range%-*}; end=${range#*-}; count=$((end - start + 1));
+              cpu_count=$((cpu_count + count));
+            else
+              cpu_count=$((cpu_count + 1));
+            fi;
+          done;
+          total_numa_cpus=$((total_numa_cpus + cpu_count));
+        fi;
+      done;
+      echo "TOTAL_CPUS=$total_numa_cpus";
+      echo "CPUS_PER_NUMA=$((total_numa_cpus / total_numa))";
+      '
+  register: _pn_accurate_cpu_counts
+  until: _pn_accurate_cpu_counts is succeeded
+  retries: 3
+  delay: 5
+  when: _pn_optimizer_pod != ''
+
+- name: "Parse per-NUMA CPU counts for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_cpus_per_numa_node: >-
+      {%- for line in _pn_accurate_cpu_counts.stdout_lines -%}
+        {%- if line.startswith('CPUS_PER_NUMA=') -%}
+          {{ line.split('=')[1] | int }}
+        {%- endif -%}
+      {%- endfor -%}
+    _pn_total_cpu_count: >-
+      {%- for line in _pn_accurate_cpu_counts.stdout_lines -%}
+        {%- if line.startswith('TOTAL_CPUS=') -%}
+          {{ line.split('=')[1] | int }}
+        {%- endif -%}
+      {%- endfor -%}
+  when: _pn_optimizer_pod != ''
+
+- name: "Parse threads per core for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_threads_per_core: "{{ _pn_detailed_cpu_info.stdout | regex_search('Thread\\(s\\) per core:\\s*(\\d+)', '\\1') | first | default(1) | int }}"
+  when: _pn_optimizer_pod != ''
+
+- name: "Compute physical CPUs per NUMA node for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_physical_cpus_per_numa_node: "{{ (_pn_cpus_per_numa_node | int) // (_pn_threads_per_core | int) }}"
+  when: _pn_optimizer_pod != ''
+
+- name: "Read CPU reservation script content for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_cpu_script_content: "{{ lookup('file', role_path + '/files/compute_reserved_cpus.sh') }}"
+  when: _pn_optimizer_pod != ''
+
+- name: "Run reserved CPU computation on {{ probe_node }}"
+  ansible.builtin.shell:
+    cmd: echo {{ _pn_cpu_script_content | quote }} | kubectl exec -n kube-system {{ _pn_optimizer_pod | quote }} -c ubuntu -i -- bash -s {{ nri_total_reserved_cpus | default(8) | int }}
+  register: _pn_computed_reserved_cpu_list
+  changed_when: false
+  when: _pn_optimizer_pod != ''
+
+- name: "Set reserved CPU list for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_reserved_cpu_list: >-
+      {{
+        (_pn_computed_reserved_cpu_list.stdout | default('') | trim)
+        | regex_replace('^.*NRI_RESERVED_CPU_LIST=', '')
+        | regex_replace('\\s.*$', '')
+        | regex_replace(',+$', '')
+      }}
+  when: _pn_optimizer_pod != ''
+
+- name: "Set reserved CPU count for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_reserved_cpu_count: "{{ _pn_reserved_cpu_list.split(',') | length if _pn_reserved_cpu_list | length > 0 else 0 }}"
+  when: _pn_optimizer_pod != ''
+
+- name: "Compute this node's workload_cpus (physical, single-NUMA budget) for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_workload_cpus: >-
+      {%- set total_physical = (_pn_physical_cpus_per_numa_node | int) -%}
+      {%- set numa_count = ([_pn_total_numa_nodes.stdout | int, 1] | max) -%}
+      {%- set reserved_per_numa = (_pn_reserved_cpu_count | int) / numa_count -%}
+      {%- set reserved_physical = (reserved_per_numa / (_pn_threads_per_core | int)) | round(0, 'ceil') | int -%}
+      {%- if reserved_physical >= total_physical -%}{%- set reserved_physical = total_physical -%}{%- endif -%}
+      {{ total_physical - reserved_physical }}
+  when: _pn_optimizer_pod != ''
+
+- name: "Gather NUMA node meminfo on {{ probe_node }}"
+  kubernetes.core.k8s_exec:
+    pod: "{{ _pn_optimizer_pod }}"
+    container: ubuntu
+    namespace: kube-system
+    command: bash -c "for n in /sys/devices/system/node/node*/meminfo; do node=$(basename $(dirname $n)); size_kb=$(grep MemTotal $n | awk '{print $4}'); free_kb=$(grep MemFree $n | awk '{print $4}'); echo \"$node $size_kb $free_kb\"; done"
+  register: _pn_numa_info
+  until: _pn_numa_info is succeeded
+  retries: 3
+  delay: 5
+  when: _pn_optimizer_pod != ''
+
+- name: "Parse sysfs NUMA memory info for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_numa_memory: "{{ _pn_numa_memory_parsed | from_yaml }}"
+  vars:
+    _pn_numa_memory_parsed: |
+      {%- set result = {} -%}
+      {%- for line in _pn_numa_info.stdout_lines -%}
+        {%- set parts = line.split() -%}
+        {%- set node = parts[0].replace("node","") | int -%}
+        {%- set size_kb = parts[1] | int -%}
+        {%- set free_kb = parts[2] | int -%}
+        {%- set _ = result.update({node: {'size_kb': size_kb, 'free_kb': free_kb}}) -%}
+      {%- endfor -%}
+      {{ result }}
+  when: _pn_optimizer_pod != ''
+
+- name: "Aggregate memory per socket for {{ probe_node }}"
+  ansible.builtin.set_fact:
+    _pn_socket_memory_totals: "{{ _pn_socket_memory_parsed | from_yaml }}"
+  vars:
+    _pn_socket_memory_parsed: |
+      {%- set result = {} -%}
+      {%- for node, mem in _pn_numa_memory.items() -%}
+        {%- set socket = (node | int) // ([_pn_numa_nodes_per_socket | int, 1] | max) -%}
+        {%- set totals = result.get(socket, {'size_kb': 0, 'free_kb': 0}) -%}
+        {%- set totals = {
+              'size_kb': totals.size_kb + mem.size_kb,
+              'free_kb': totals.free_kb + mem.free_kb
+            } -%}
+        {%- set _ = result.update({socket: totals}) -%}
+      {%- endfor -%}
+      {{ result }}
+  when: _pn_optimizer_pod != ''
+
+- name: "Calculate usable memory per socket for {{ probe_node }} (leave 18% free)"
+  ansible.builtin.set_fact:
+    _pn_usable_memory_per_socket: "{{ _pn_usable_memory_parsed | to_json | from_json }}"
+  vars:
+    _pn_usable_memory_parsed: |
+      {%- set result = {} -%}
+      {%- for socket_id, mem in _pn_socket_memory_totals.items() -%}
+        {%- set free_gb = (mem.free_kb / 1048576) -%}
+        {%- set usable_gb = (free_gb * 0.82) | round(0, 'floor') -%}
+        {%- set _ = result.update({ socket_id: usable_gb | int }) -%}
+      {%- endfor -%}
+      {{ result }}
+  when: _pn_optimizer_pod != ''
+
+- name: "Extract socket0 usable memory for {{ probe_node }}"
+  # Single expression (not a defined-ness check across two tasks): _pn_* facts
+  # persist across loop iterations in Ansible, so a "when: X is not defined"
+  # guard would silently reuse the PREVIOUS node's value once X is set once.
+  #
+  # regex_search() returns None (not Jinja's Undefined) on no match, and
+  # `default()` only catches Undefined -- piping a None through `default()`
+  # is a no-op, so `| last` on a bare None blows up with "'NoneType' object
+  # is not reversible". Check for None explicitly instead of relying on
+  # default() to paper over a missing/empty socket-0 entry.
+  ansible.builtin.set_fact:
+    _pn_usable_memory_gb: >-
+      {%- if _pn_usable_memory_per_socket is mapping and 0 in _pn_usable_memory_per_socket -%}
+      {{ _pn_usable_memory_per_socket[0] | int }}
+      {%- else -%}
+      {%- set _m = _pn_usable_memory_per_socket | string | regex_search('0: (\\d+)') -%}
+      {{ (_m | last | int) if _m else 0 }}
+      {%- endif -%}
+  when: _pn_optimizer_pod != ''
+
+- name: "Merge {{ probe_node }} into per_node_cpu_topology"
+  ansible.builtin.set_fact:
+    per_node_cpu_topology: >-
+      {{
+        per_node_cpu_topology | combine({
+          probe_node: {
+            'total_sockets': _pn_total_sockets.stdout | int,
+            'total_numa_nodes': _pn_total_numa_nodes.stdout | int,
+            'numa_nodes_per_socket': _pn_numa_nodes_per_socket | int,
+            'cpus_per_numa_node': _pn_cpus_per_numa_node | int,
+            'threads_per_core': _pn_threads_per_core | int,
+            'physical_cpus_per_numa_node': _pn_physical_cpus_per_numa_node | int,
+            'total_cpu_count': _pn_total_cpu_count | int,
+            'workload_cpus': _pn_workload_cpus | int,
+            'usable_memory_gb': _pn_usable_memory_gb | default(0) | int,
+          }
+        })
+      }}
+  when: _pn_optimizer_pod != ''

@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Agent Sandbox — deployment overrides for the Intel AI for Enterprise Agent Toolkit
+# Agent Sandbox — deployment overrides for the Intel® AI for Enterprise Agent Toolkit
 #
 # These values are merged on top of the upstream helm/values.yaml at deploy
 # time via:

@@ -77,6 +77,27 @@ if [[ "${#PROFILES[@]}" -eq 0 && -f "${DOCKER_CFG}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Resolve the model serving engine from docker/config.cfg
+# ---------------------------------------------------------------------------
+# vllm     → vLLM CPU containers,             OpenAI API on /v1, named agentic-vllm-*
+# openvino → OpenVINO Model Server containers, OpenAI API on /v3, named agentic-ovms-*
+SERVING_ENGINE="$(_dcfg serving_engine)"
+SERVING_ENGINE="${SERVING_ENGINE:-vllm}"
+case "${SERVING_ENGINE}" in
+    vllm)
+        MODEL_CONTAINER_PREFIX="agentic-vllm-"
+        MODEL_COMPOSE_FILE="${DOCKER_DIR}/docker-compose.vllm.yml"
+        ;;
+    openvino)
+        MODEL_CONTAINER_PREFIX="agentic-ovms-"
+        MODEL_COMPOSE_FILE="${DOCKER_DIR}/docker-compose.ovms.yml"
+        ;;
+    *)
+        die "Invalid serving_engine '${SERVING_ENGINE}' in ${DOCKER_CFG}. Valid options: vllm, openvino"
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Deduplicate profiles
 # ---------------------------------------------------------------------------
 PROFILES=($(printf '%s\n' "${PROFILES[@]:-}" | sort -u))
@@ -251,7 +272,7 @@ install_docker_fresh() {
         die "Docker Compose installation failed"
     fi
 
-    # Install yq for vLLM model configuration
+    # Install yq for model serving configuration (vLLM / OpenVINO)
     if ! command -v yq &>/dev/null; then
         info "Installing yq for model configuration..."
         local yq_version="v4.44.1"
@@ -388,27 +409,61 @@ get_model_list() {
     echo "$models_raw"
 }
 
-# Generate vLLM container names for NO_PROXY
-# Matches the naming logic in generate-docker-compose.sh (reads served_name from model-configs.yaml)
-get_vllm_container_names() {
+# Model config library for the selected engine — the source of served_name overrides
+if [[ "${SERVING_ENGINE}" == "openvino" ]]; then
+    MODEL_CONFIGS_FILE="${DOCKER_DIR}/ovms-model-configs.yaml"
+else
+    MODEL_CONFIGS_FILE="${DOCKER_DIR}/model-configs.yaml"
+fi
+
+# Read a value from the model config library, falling back to its default: block.
+# Returns empty when yq or the library is unavailable so callers can substitute
+# the generator's own defaults.
+_model_cfg() {
+    local model="$1" path="$2" val
+    [[ -f "$MODEL_CONFIGS_FILE" ]] || return 0
+    command -v yq &>/dev/null || return 0
+    val=$(yq eval ".models[\"${model}\"].${path} // .default.${path} // \"\"" "$MODEL_CONFIGS_FILE" 2>/dev/null)
+    [[ "$val" == "null" ]] && val=""
+    echo "$val"
+}
+
+# Read the value that follows a flag in a model's extra_args (OVMS CLI style)
+_model_cfg_arg() {
+    local model="$1" flag="$2"
+    [[ -f "$MODEL_CONFIGS_FILE" ]] || return 0
+    command -v yq &>/dev/null || return 0
+    yq eval ".models[\"${model}\"].extra_args // .default.extra_args // [] | .[]" "$MODEL_CONFIGS_FILE" 2>/dev/null \
+        | awk -v f="$flag" 'found { print; exit } $0 == f { found=1 }'
+}
+
+# Read an environment variable a model sets (vLLM tuning style)
+_model_cfg_env() {
+    local model="$1" var="$2"
+    _model_cfg "$model" "environment.${var}"
+}
+
+# Generate model server container names for NO_PROXY
+# Matches the naming logic in generate-docker-compose.sh (reads served_name from
+# the selected engine's model config library)
+get_model_container_names() {
     local models=$(get_model_list)
     IFS=',' read -ra MODEL_LIST <<< "$models"
     local container_names=""
-    local model_configs="${DOCKER_DIR}/model-configs.yaml"
 
     for model_id in "${MODEL_LIST[@]}"; do
         model_id=$(echo "$model_id" | xargs)
-        # Try to read served_name override from model-configs.yaml
+        # Try to read served_name override from the model config library
         local served_name=""
-        if command -v yq &>/dev/null && [[ -f "$model_configs" ]]; then
-            served_name=$(yq eval ".models[\"${model_id}\"].served_name" "$model_configs" 2>/dev/null || echo "null")
+        if command -v yq &>/dev/null && [[ -f "$MODEL_CONFIGS_FILE" ]]; then
+            served_name=$(yq eval ".models[\"${model_id}\"].served_name" "$MODEL_CONFIGS_FILE" 2>/dev/null || echo "null")
             [[ "$served_name" == "null" || "$served_name" == "auto-generated" ]] && served_name=""
         fi
         # Fall back to derived name if no override
         if [[ -z "$served_name" ]]; then
             served_name=$(echo "${model_id//\//-}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
         fi
-        local container_name="agentic-vllm-${served_name}"
+        local container_name="${MODEL_CONTAINER_PREFIX}${served_name}"
 
         if [[ -z "$container_names" ]]; then
             container_names="$container_name"
@@ -605,9 +660,9 @@ chmod 644 "${DOCKER_DIR}/postgres/init.sql"
 # without routing through the corporate proxy. We also export the variable so
 # that docker compose (invoked below) uses this value even when the host shell
 # already has $NO_PROXY set from /etc/environment or similar system-wide files.
-_docker_services="flowise,litellm,vllm,pgvector,langfuse-web,redis,postgres,clickhouse,minio"
-_vllm_containers=$(get_vllm_container_names)
-NO_PROXY="${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,${_docker_services},${_vllm_containers}"
+_docker_services="flowise,litellm,vllm,ovms,pgvector,langfuse-web,redis,postgres,clickhouse,minio"
+_model_containers=$(get_model_container_names)
+NO_PROXY="${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,${_docker_services},${_model_containers}"
 export NO_PROXY
 
 # Capture old NO_PROXY from existing .env before overwriting (to detect env changes that require litellm recreate)
@@ -710,39 +765,70 @@ print_deployment_config() {
     # General Configuration
     echo -e "${CYAN}── General Configuration ──────────────────────────────${NC}"
     echo "  Domain              : ${DOMAIN}"
+    if [[ "${SERVING_ENGINE}" == "openvino" ]]; then
+        echo "  Serving Engine      : openvino (OpenVINO Model Server, API /v3)"
+    else
+        echo "  Serving Engine      : vllm (vLLM CPU, API /v1)"
+    fi
     echo ""
 
     # LLM Models
     echo -e "${CYAN}── LLM Models ─────────────────────────────────────────${NC}"
     local port=2080
     local total_memory=0
+    local has_conversion=false
     for i in "${!MODEL_LIST[@]}"; do
         local model="${MODEL_LIST[$i]}"
         model=$(echo "$model" | xargs)  # Trim whitespace
 
-        # Generate served name
-        local served_name=$(echo "${model//\//-}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+        # Served name and memory limit come from the engine's model config library
+        # so this summary matches what the generator actually emits; the fallbacks
+        # mirror the generator's own defaults for unlisted models.
+        local served_name memory
+        served_name=$(_model_cfg "$model" "served_name")
+        [[ -z "$served_name" || "$served_name" == "auto-generated" ]] && \
+            served_name=$(echo "${model//\//-}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+        memory=$(_model_cfg "$model" "resources.memory")
 
-        # Memory per model (default 80GB, whisper is 40GB)
-        local memory="80GB"
-        local kvcache="40GB"
-        if [[ "$model" == *"whisper"* ]]; then
-            memory="40GB"
-            kvcache="10GB"
-            total_memory=$((total_memory + 40))
+        local kvcache
+        if [[ "${SERVING_ENGINE}" == "openvino" ]]; then
+            memory="${memory:-80g}"
+            kvcache="$(_model_cfg_arg "$model" "--cache_size")"
+            kvcache="${kvcache:-12}GB"
+            # Models already published in IR format are downloaded and served as-is;
+            # everything else is converted with optimum-cli on first start.
+            [[ "$model" == OpenVINO/* ]] || has_conversion=true
         else
-            total_memory=$((total_memory + 80))
+            memory="${memory:-80g}"
+            kvcache="$(_model_cfg_env "$model" "VLLM_CPU_KVCACHE_SPACE")"
+            kvcache="${kvcache:-40}GB"
         fi
+
+        # Sum the numeric part of the compose memory limit (e.g. "96g" → 96)
+        total_memory=$((total_memory + ${memory%%[!0-9]*}))
 
         echo "  Model $((i+1)): ${model}"
         echo "    Served Name     : ${served_name}"
         echo "    Port            : ${port}"
-        echo "    Memory Limit    : ${memory}"
+        echo "    Memory Limit    : ${memory^^}B"
         echo "    KV Cache Space  : ${kvcache}"
         echo ""
 
         port=$((port + 1))
     done
+
+    if [[ "${SERVING_ENGINE}" == "openvino" ]]; then
+        for m in "${MODEL_LIST[@]}"; do
+            if [[ "$(echo "$m" | xargs)" == *whisper* ]]; then
+                warn "OpenVINO Model Server 2025.4 has no speech-to-text task — '$(echo "$m" | xargs)' will not start."
+                warn "Use serving_engine=vllm for speech models."
+            fi
+        done
+        if [[ "${has_conversion}" == "true" ]]; then
+            info "Models outside the OpenVINO org are converted to IR on first start (can take 30+ minutes)."
+            info "Converted weights are cached in Docker volumes, so later starts only load the model."
+        fi
+    fi
 
     echo "  Total Models        : ${model_count}"
     echo "  Total Memory        : ~${total_memory}GB"
@@ -820,10 +906,10 @@ check_system_resources() {
 }
 
 # ---------------------------------------------------------------------------
-# Generate vLLM compose file from model configs
+# Generate the model serving compose file for the selected engine
 # ---------------------------------------------------------------------------
-MODEL_CONFIGS_FILE="${DOCKER_DIR}/model-configs.yaml"
-VLLM_COMPOSE_FILE="${DOCKER_DIR}/docker-compose.vllm.yml"
+# MODEL_CONFIGS_FILE and MODEL_COMPOSE_FILE were resolved from serving_engine
+# near the top of this script.
 GENERATOR_SCRIPT="${DOCKER_DIR}/scripts/generate-docker-compose.sh"
 
 LITELLM_CONFIG_FILE="${DOCKER_DIR}/litellm/config.yaml"
@@ -831,16 +917,41 @@ _litellm_config_hash_before=""
 [[ -f "${LITELLM_CONFIG_FILE}" ]] && _litellm_config_hash_before=$(sha256sum "${LITELLM_CONFIG_FILE}" 2>/dev/null | awk '{print $1}')
 
 if [[ -f "${MODEL_CONFIGS_FILE}" && -f "${GENERATOR_SCRIPT}" ]]; then
-    bash "${GENERATOR_SCRIPT}" || die "Failed to generate vLLM configuration"
+    bash "${GENERATOR_SCRIPT}" || die "Failed to generate ${SERVING_ENGINE} configuration"
 
-    # Append vLLM compose file to main compose command if it exists
-    if [[ -f "${VLLM_COMPOSE_FILE}" ]]; then
-        VLLM_COMPOSE_ARG="-f ${VLLM_COMPOSE_FILE}"
+    # Append the generated model compose file to the main compose command if it exists
+    if [[ -f "${MODEL_COMPOSE_FILE}" ]]; then
+        MODEL_COMPOSE_ARG="-f ${MODEL_COMPOSE_FILE}"
     fi
 else
     # Fallback: no multi-model support, use legacy single-model setup
-    VLLM_COMPOSE_ARG=""
+    MODEL_COMPOSE_ARG=""
 fi
+
+# ---------------------------------------------------------------------------
+# Engine switch cleanup — remove the other engine's model containers
+# ---------------------------------------------------------------------------
+# Switching serving_engine leaves the previous engine's containers running and
+# holding the model ports (2080+). Compose cannot see them any more because the
+# other engine's compose file was deleted by the generator, so remove them here.
+# Model caches live in named volumes and are intentionally left untouched, so
+# switching back does not re-download or re-convert anything.
+cleanup_other_engine_containers() {
+    local stale_prefix
+    if [[ "${SERVING_ENGINE}" == "openvino" ]]; then
+        stale_prefix="agentic-vllm-"
+    else
+        stale_prefix="agentic-ovms-"
+    fi
+
+    local stale
+    stale=$(${DOCKER_CMD} ps -aq --filter "name=^${stale_prefix}" 2>/dev/null || true)
+    if [[ -n "${stale}" ]]; then
+        info "Removing model containers from the previous serving engine (${stale_prefix}*)..."
+        # shellcheck disable=SC2086
+        ${DOCKER_CMD} rm -f ${stale} >/dev/null 2>&1 || warn "Could not remove all ${stale_prefix}* containers"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Display deployment configuration
@@ -868,6 +979,8 @@ fi
 # ---------------------------------------------------------------------------
 # Pre-deployment checks
 # ---------------------------------------------------------------------------
+cleanup_other_engine_containers
+
 # Remove any manually created network so Docker Compose can manage it properly
 NETWORK_NAME="docker_agentic-net"
 if ${DOCKER_CMD} network inspect "${NETWORK_NAME}" &>/dev/null 2>&1; then
@@ -881,7 +994,7 @@ fi
 # ---------------------------------------------------------------------------
 # Build docker compose command
 # ---------------------------------------------------------------------------
-COMPOSE_CMD="${DOCKER_COMPOSE_CMD} -f ${COMPOSE_FILE} ${VLLM_COMPOSE_ARG} --env-file ${ENV_FILE}"
+COMPOSE_CMD="${DOCKER_COMPOSE_CMD} -f ${COMPOSE_FILE} ${MODEL_COMPOSE_ARG} --env-file ${ENV_FILE}"
 for p in "${PROFILES[@]:-}"; do
     [[ -n "${p}" ]] && COMPOSE_CMD+=" --profile ${p}"
 done
@@ -901,36 +1014,16 @@ info "Starting services..."
 eval "${COMPOSE_CMD} up -d --no-recreate"
 
 # Reconcile LiteLLM after --no-recreate:
-#   - NO_PROXY changed (new vLLM containers added) → force-recreate so new env vars take effect
+#   - NO_PROXY changed (new model containers added) → force-recreate so new env vars take effect
 #   - config.yaml changed only                    → restart is enough (bind-mount, no env change)
 _litellm_no_proxy_after=$(grep '^NO_PROXY=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2-)
 _litellm_config_hash_after=$(sha256sum "${LITELLM_CONFIG_FILE}" 2>/dev/null | awk '{print $1}')
 if [[ "${_litellm_no_proxy_before}" != "${_litellm_no_proxy_after}" ]]; then
     info "LiteLLM NO_PROXY changed — recreating container to register updated model endpoints..."
-    eval "${DOCKER_COMPOSE_CMD} -f ${COMPOSE_FILE} --env-file ${ENV_FILE} up -d --force-recreate litellm" || warn "LiteLLM recreate failed (non-fatal)"
+    eval "${DOCKER_COMPOSE_CMD} -f ${COMPOSE_FILE} ${MODEL_COMPOSE_ARG} --env-file ${ENV_FILE} up -d --force-recreate litellm" || warn "LiteLLM recreate failed (non-fatal)"
 elif [[ -n "${_litellm_config_hash_after}" && "${_litellm_config_hash_before}" != "${_litellm_config_hash_after}" ]]; then
     info "LiteLLM config changed — restarting to register updated models..."
-    eval "${DOCKER_COMPOSE_CMD} -f ${COMPOSE_FILE} --env-file ${ENV_FILE} restart litellm" || warn "LiteLLM restart failed (non-fatal)"
-fi
-
-# ---------------------------------------------------------------------------
-# Post-start: create MinIO langfuse bucket (observability profile)
-# ---------------------------------------------------------------------------
-if [[ " ${PROFILES[*]} " =~ " observability " ]]; then
-    info "Waiting for MinIO to become healthy..."
-    for i in $(seq 1 30); do
-        if ${DOCKER_CMD} exec agentic-minio mc ready local &>/dev/null 2>&1; then
-            break
-        fi
-        sleep 2
-    done
-    if ${DOCKER_CMD} exec agentic-minio mc alias set local http://localhost:9000 \
-        "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" &>/dev/null 2>&1; then
-        ${DOCKER_CMD} exec agentic-minio mc mb --ignore-existing local/langfuse &>/dev/null 2>&1 && \
-            ok "MinIO: langfuse bucket ready" || warn "MinIO: bucket creation failed (non-fatal)"
-    else
-        warn "MinIO: could not configure mc alias (non-fatal)"
-    fi
+    eval "${DOCKER_COMPOSE_CMD} -f ${COMPOSE_FILE} ${MODEL_COMPOSE_ARG} --env-file ${ENV_FILE} restart litellm" || warn "LiteLLM restart failed (non-fatal)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -980,6 +1073,26 @@ if [[ " ${PROFILES[*]} " =~ " flowise " ]]; then
     else
         FLOWISE_SETUP_PENDING=1
         info "Flowise: no owner account yet — claim it in the UI (see summary below)"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Post-start: create MinIO langfuse bucket (observability profile)
+# ---------------------------------------------------------------------------
+if [[ " ${PROFILES[*]} " =~ " observability " ]]; then
+    info "Waiting for MinIO to become healthy..."
+    for i in $(seq 1 30); do
+        if ${DOCKER_CMD} exec agentic-minio mc ready local &>/dev/null 2>&1; then
+            break
+        fi
+        sleep 2
+    done
+    if ${DOCKER_CMD} exec agentic-minio mc alias set local http://localhost:9000 \
+        "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" &>/dev/null 2>&1; then
+        ${DOCKER_CMD} exec agentic-minio mc mb --ignore-existing local/langfuse &>/dev/null 2>&1 && \
+            ok "MinIO: langfuse bucket ready" || warn "MinIO: bucket creation failed (non-fatal)"
+    else
+        warn "MinIO: could not configure mc alias (non-fatal)"
     fi
 fi
 

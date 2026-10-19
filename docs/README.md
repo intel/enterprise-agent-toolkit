@@ -16,5 +16,6 @@ Complete all [prerequisites](./prerequisites.md).
 
 | Feature | Description | Guide |
 |---|---|---|
-| Agent Sandbox | Isolated, ephemeral pods for agent code execution, with templates, WarmPools and an SDK | [Agent Sandbox Guide](agent-sandbox.md) |
-| OpenShell (optional) | NVIDIA OpenShell `0.0.116` on top of Agent Sandbox: per-sandbox egress and filesystem policy, GenAI Gateway key kept out of the sandbox. Off by default; validated in single-admin mode | [OpenShell Guide](openshell.md) |
+| Hybrid Router | Complexity-aware, cost/latency-optimizing inference routing for the GenAI Gateway | [Hybrid Router Guide](hybrid-router.md) |
+| Intel® Arc™ (XPU) GPU | Deploy vLLM models on Intel discrete GPUs (Arc/Flex/Max, incl. Battlemage) via `compute_platform=xpu` | [Intel Arc XPU Guide](intel-arc-xpu-deployment.md) |
+| Stack Validation | Post-deploy health checks, preflight node readiness, burn tests, and traffic-light reporting | [Validate Stack Guide](validate-stack.md) |

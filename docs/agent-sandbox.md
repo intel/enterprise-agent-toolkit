@@ -9,12 +9,6 @@ or other workloads.
 The implementation is based on
 [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox).
 
-> **Optional policy layer:** [NVIDIA OpenShell](openshell.md) (`deploy_openshell=on`, off by
-> default) runs on this controller. Its gateway creates its own `Sandbox` resources in
-> `openshell-sandboxes` and applies a per-sandbox egress and filesystem policy. It does not use
-> the router, `SandboxTemplate`, `WarmPool` or the SDK described here; both kinds of sandbox
-> can run on the same cluster.
-
 ---
 
 ## Architecture
@@ -61,6 +55,164 @@ sandbox-router-svc.agent-sandbox.svc.cluster.local:8080
 | `sandbox-router-deployment` | Deployment (×2) | `agent-sandbox` | `us-central1-docker.pkg.dev/.../sandbox-router:latest-main` (staging) |
 | `sandbox-router-svc` | Service | `agent-sandbox` | ClusterIP :8080 |
 | `python-sandbox-template` | SandboxTemplate CR | `agent-sandbox` | Uses `registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.0` |
+
+---
+
+## microVM Isolation with Kata Containers (kata-fc / kata-qemu)
+
+By default a sandbox is an ordinary pod on the `runc` runtime: it is isolated by
+namespaces and cgroups, but it **shares the host kernel** with every other
+workload on the node. For untrusted, agent-generated code that may not be
+enough — a kernel exploit escapes the sandbox.
+
+[Kata Containers](https://github.com/kata-containers/kata-containers) closes that
+gap by booting each pod inside its own lightweight virtual machine with its own
+guest kernel. Two runtimes are supported here:
+
+| RuntimeClass | Hypervisor | Notes |
+|---|---|---|
+| `kata-fc` | [Firecracker](https://github.com/kata-containers/kata-containers/tree/main/docs/design/arch-images#firecracker) | Minimal device model, ~125 ms boot. Requires the containerd **devmapper** snapshotter. |
+| `kata-qemu` | QEMU | Broader device support (e.g. VFIO/device passthrough), heavier boot. Works with the default snapshotter. |
+
+This follows the upstream
+[firecracker-sandbox example](https://agent-sandbox.sigs.k8s.io/docs/use-cases/examples/firecracker-sandbox/),
+but reuses the published `python-runtime-sandbox` image so the
+`k8s-agent-sandbox` SDK keeps working unchanged — the only difference between
+the two templates is `runtimeClassName`.
+
+### Enable it
+
+```ini
+# core/inventory/agentic-config.cfg
+deploy_agent_sandbox=on       # required — Kata is an add-on, not a standalone component
+deploy_kata_containers=on
+kata_runtime=kata-fc          # kata-fc | kata-qemu | both
+```
+
+```ini
+# core/inventory/metadata/agentic-metadata.cfg
+kata_version="3.32.0"         # kata-deploy Helm chart version
+```
+
+Kata is an **add-on to Agent Sandbox**: the `SandboxTemplate` it publishes needs
+the agent-sandbox CRDs. With `deploy_kata_containers=on` and
+`deploy_agent_sandbox=off` the stack prints a warning and skips Kata entirely —
+the rest of the deployment is unaffected.
+
+### Node prerequisites
+
+| Requirement | Needed by | Handling |
+|---|---|---|
+| `/dev/kvm` (Intel VT-x on bare metal, or nested virtualisation on a VM) | both runtimes | `stat`; if missing, the playbook loads `kvm` plus `kvm_intel` (when the CPU exposes the `vmx` flag) and re-checks. If `vmx` is absent the host has no usable virtualisation — warn and skip. |
+| containerd **devmapper** snapshotter in `ok` state | `kata-fc` only | **Auto-provisioned.** When `kata_runtime` includes `kata-fc`, the playbook sets up a loopback-backed thin-pool (`/var/lib/containerd/devmapper`, via a `containerd-devmapper.service` systemd unit so it survives reboots) and registers the snapshotter in `/etc/containerd/config.toml`, then restarts containerd — on each KVM-capable node. |
+
+Firecracker cannot use overlayfs for the container rootfs — it needs the
+devmapper snapshotter. Because the kata playbook runs **after** kubespray (which
+regenerates `/etc/containerd/config.toml` on every fresh install), the feature
+re-applies this configuration itself on every deploy, so `kata-fc` survives
+fresh installs and works on brownfield clusters without any manual host setup.
+The thin-pool defaults to a 100 GB sparse data file; to back it with a real
+block device instead, pre-create a `containerd-thinpool` dm device and the
+playbook will reuse it.
+
+Missing prerequisites **never fail the stack run** — the playbook warns and
+skips:
+
+| Situation | Behaviour |
+|---|---|
+| No node exposes `/dev/kvm` | Warn, install nothing, exit 0 |
+| `kata_runtime=kata-fc` but devmapper setup did not succeed on any node | Warn (with the fix), install nothing, exit 0 |
+| `kata_runtime=both` but devmapper setup did not succeed | Warn, install `kata-qemu` only |
+| `deploy_agent_sandbox=off` | Warn, skip Kata |
+| Invalid `kata_runtime` value | Warn listing valid values, skip Kata |
+
+### What gets installed
+
+| Resource | Kind | Namespace |
+|---|---|---|
+| `containerd-thinpool` + `containerd-devmapper.service` | devmapper thin-pool (kata-fc only, per KVM node) | host |
+| `kata-deploy` | DaemonSet (upstream Helm chart) | `kube-system` |
+| `kata-fc` / `kata-qemu` | RuntimeClass | cluster-scoped |
+| `ei-kata-eligible=true` | Node label (only on nodes that passed the preflight) | — |
+| `kata-sandbox-template` | SandboxTemplate CR | `agent-sandbox-system` |
+| `kata-pool` (size 1) | SandboxWarmPool CR | `agent-sandbox-system` |
+
+The chart is pulled from
+`oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy`. `kata-deploy`
+installs the Kata binaries, guest kernel and rootfs image onto each node and
+restarts containerd there, which is why the rollout wait is generous (15 min).
+
+The warm pool is created **without** a readiness gate on purpose: a
+virtualisation problem on a single node must not hang the stack deployment.
+Check it with the verification commands below.
+
+### Verification
+
+```bash
+kubectl get ds -n kube-system kata-deploy
+kubectl get runtimeclass                                  # kata-fc and/or kata-qemu
+kubectl get nodes -l ei-kata-eligible=true
+kubectl get sandboxtemplate,sandboxwarmpool -n agent-sandbox-system
+
+# Confirm a sandbox pod really runs on the Kata runtime
+kubectl get pod -n agent-sandbox-system -l sandbox=kata \
+  -o jsonpath='{.items[0].spec.runtimeClassName}{"\n"}'   # kata-fc
+```
+
+### Use it from the SDK
+
+Only the template name changes:
+
+```python
+sandbox = client.create_sandbox(
+    template="kata-sandbox-template",
+    namespace="agent-sandbox-system",
+)
+try:
+    # A microVM has its own guest kernel — this differs from `uname -r` on the host
+    print(sandbox.commands.run("uname -r").stdout)
+finally:
+    sandbox.terminate()
+```
+
+### Troubleshooting
+
+```bash
+# kata-deploy install logs (per node)
+kubectl logs -n kube-system -l name=kata-deploy --tail=100
+
+# Why a kata sandbox pod is not running
+kubectl describe pod -n agent-sandbox-system -l sandbox=kata
+```
+
+| Symptom | Cause / fix |
+|---|---|
+| `FailedCreatePodSandBox ... ENOENT` on a `kata-fc` pod | devmapper snapshotter not active on that node — check `systemctl status containerd-devmapper` and `ctr plugins ls \| grep devmapper`, or use `kata_runtime=kata-qemu` |
+| Sandbox pod stuck `Pending` | No node carries both `ei-kata-eligible=true` and the `katacontainers.io/kata-runtime=true` label that the RuntimeClass selects; check `kubectl get nodes --show-labels` |
+| `RuntimeClass 'kata-fc' was not created by kata-deploy` | The chart version does not ship the fc shim — check `kata_version` |
+| Pod runs but `uname -r` matches the host | The pod landed on `runc`; confirm `spec.runtimeClassName` on the pod |
+
+### Cleanup
+
+```bash
+kubectl delete sandboxwarmpool kata-pool -n agent-sandbox-system
+kubectl delete sandboxtemplate kata-sandbox-template -n agent-sandbox-system
+helm uninstall kata-deploy -n kube-system
+```
+
+> `kata-deploy` runs a cleanup hook on uninstall that removes the Kata artefacts
+> and containerd configuration from each node.
+
+To also remove the Firecracker devmapper thin-pool from a node (optional):
+
+```bash
+sudo systemctl disable --now containerd-devmapper.service
+sudo rm -f /etc/systemd/system/containerd-devmapper.service /usr/local/bin/containerd-devmapper-setup.sh
+sudo dmsetup remove containerd-thinpool
+sudo rm -rf /var/lib/containerd/devmapper
+# remove the "kata devmapper snapshotter (managed)" block from /etc/containerd/config.toml, then:
+sudo systemctl restart containerd
+```
 
 ---
 
@@ -548,14 +700,27 @@ sandbox_router_image: "us-central1-docker.pkg.dev/.../sandbox-router:latest-main
 python_runtime_sandbox_image: "registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.0"
 ```
 
+`core/inventory/metadata/vars/inference_kata.yml`:
+```yaml
+kata_namespace: "kube-system"
+kata_chart_ref: "oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
+kata_node_label_key: "ei-kata-eligible"
+kata_sandbox_template_name: "kata-sandbox-template"
+kata_warm_pool_size: 1
+```
+
 ### Deployment Script
 
 - **Playbook**: `core/playbooks/deploy-agent-sandbox.yml` (Ansible)
 - **Wrapper**: `core/lib/components/agent-sandbox-controller.sh` (calls Ansible)
+- **Kata playbook**: `core/playbooks/deploy-kata-containers.yml` (Ansible)
+- **Kata wrapper**: `core/lib/components/kata-containers-controller.sh` (calls Ansible)
 
 ### Templates
 
 - **Default SandboxTemplate**: `core/helm-charts/agent-sandbox/default-templates.yaml`
+- **Kata SandboxTemplate**: `core/helm-charts/agent-sandbox/kata-templates.yaml`
+- **kata-deploy chart values**: `core/helm-charts/kata-deploy/values.yaml`
 
 ---
 
@@ -567,3 +732,7 @@ python_runtime_sandbox_image: "registry.k8s.io/agent-sandbox/python-runtime-sand
 - [k8s-agent-sandbox Python SDK README](https://github.com/kubernetes-sigs/agent-sandbox/tree/main/clients/python/agentic-sandbox-client/README.md)
 - [PyPI: k8s-agent-sandbox](https://pypi.org/project/k8s-agent-sandbox/)
 - [Agent Sandbox Documentation](https://agent-sandbox.sigs.k8s.io/docs/)
+- [Firecracker sandbox example](https://agent-sandbox.sigs.k8s.io/docs/use-cases/examples/firecracker-sandbox/) — upstream microVM walkthrough
+- [kata-containers/kata-containers](https://github.com/kata-containers/kata-containers) — Kata Containers runtime
+- [Kata architecture: Firecracker](https://github.com/kata-containers/kata-containers/tree/main/docs/design/arch-images#firecracker) — fc shim design and devmapper requirement
+- [kata-deploy Helm chart](https://github.com/kata-containers/kata-containers/tree/main/tools/packaging/kata-deploy/helm-chart) — chart values reference

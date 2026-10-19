@@ -1,0 +1,26 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+{{- if .Values.customRouter.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: genai-gateway-router-code
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: litellm
+data:
+  custom_hybrid_router.py: |
+    {{ .Files.Get "router/custom_hybrid_router.py" | nindent 4 }}
+  router_strategy.__init__.py: |
+    {{ .Files.Get "router/router_strategy/__init__.py" | nindent 4 }}
+  efficiency_router.__init__.py: |
+    {{ .Files.Get "router/router_strategy/efficiency_router/__init__.py" | nindent 4 }}
+  efficiency_router.bandit.py: |
+    {{ .Files.Get "router/router_strategy/efficiency_router/bandit.py" | nindent 4 }}
+  efficiency_router.efficiency_router.py: |
+    {{ .Files.Get "router/router_strategy/efficiency_router/efficiency_router.py" | nindent 4 }}
+  hybrid_router.__init__.py: |
+    {{ .Files.Get "router/router_strategy/hybrid_router/__init__.py" | nindent 4 }}
+  hybrid_router.hybrid_router.py: |
+    {{ .Files.Get "router/router_strategy/hybrid_router/hybrid_router.py" | nindent 4 }}
+{{- end }}

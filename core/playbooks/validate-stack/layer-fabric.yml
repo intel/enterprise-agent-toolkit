@@ -1,0 +1,121 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# layer-fabric.yml — Validates fabric connectivity (star and Clos topology)
+# Runs on all nodes (Play 2, hosts: all)
+
+---
+- name: Run fabric checks
+  ansible.builtin.shell: |
+    HN=$(hostname -s)
+    TOPO="{{ rack_scale_topology | default('star') }}"
+    RESULTS="[]"
+
+    add_result() {
+      local check="$1" status="$2" evidence="$3" hint="$4"
+      RESULTS=$(echo "$RESULTS" | python3 -c "
+    import sys,json
+    r=json.load(sys.stdin)
+    r.append({'layer':'fabric','check':sys.argv[1],'status':sys.argv[2],'evidence':sys.argv[3],'hint':sys.argv[4]})
+    json.dump(r,sys.stdout)
+    " "$check" "$status" "$evidence" "$hint")
+    }
+
+    # --- Star topology hub checks ---
+    {% if rack_scale_topology | default('star') == 'star' and 'fabric_routers' in group_names | default([]) %}
+    IP_FWD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "0")
+    [ "$IP_FWD" = "1" ] && s="OK" || s="FAIL"
+    add_result "ip_forward=1 on hub $HN" "$s" "net.ipv4.ip_forward=$IP_FWD" "sysctl -w net.ipv4.ip_forward=1"
+
+    RP_FILTER=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null || echo "0")
+    [ "$RP_FILTER" = "2" ] && s="OK" || s="FAIL"
+    add_result "rp_filter=2 on hub $HN" "$s" "rp_filter=$RP_FILTER" "sysctl -w net.ipv4.conf.all.rp_filter=2"
+
+    FWD_RULES=$(iptables -S FORWARD 2>/dev/null | grep -c ACCEPT || echo "0")
+    [ "$FWD_RULES" -gt 0 ] && s="OK" || s="FAIL"
+    add_result "iptables FORWARD ACCEPT rules on hub" "$s" "$FWD_RULES ACCEPT rules" "Re-run deploy-ecmp-sysctl.yml"
+
+    PERSIST_RULES=$(iptables-save 2>/dev/null | grep -c 'FORWARD.*ACCEPT' || echo "0")
+    [ "$PERSIST_RULES" -gt 0 ] && s="OK" || s="FAIL"
+    add_result "iptables rules persisted on hub" "$s" "$PERSIST_RULES persisted FORWARD rules" "netfilter-persistent save"
+    {% endif %}
+
+    # --- Clos topology checks ---
+    {% if rack_scale_topology | default('star') == 'clos' %}
+    BIRD_STATUS=$(systemctl is-active bird 2>/dev/null || echo "inactive")
+    [ "$BIRD_STATUS" = "active" ] && s="OK" || s="FAIL"
+    add_result "BIRD daemon on $HN" "$s" "bird service $BIRD_STATUS" "systemctl status bird"
+
+    ECMP_HASH=$(sysctl -n net.ipv4.fib_multipath_hash_policy 2>/dev/null || echo "0")
+    [ "$ECMP_HASH" = "1" ] && s="OK" || s="FAIL"
+    add_result "ECMP hash policy on $HN" "$s" "fib_multipath_hash_policy=$ECMP_HASH" "sysctl -w net.ipv4.fib_multipath_hash_policy=1"
+
+    BGP_OUT=$(sudo calicoctl node status 2>/dev/null || echo "")
+    BGP_TOTAL=$(echo "$BGP_OUT" | grep -c 'node-to-node mesh' || echo "0")
+    BGP_EST=$(echo "$BGP_OUT" | grep -c 'Established' || echo "0")
+    [ "$BGP_TOTAL" -gt 0 ] && [ "$BGP_TOTAL" -eq "$BGP_EST" ] && s="OK" || s="FAIL"
+    add_result "BGP peers Established on $HN" "$s" "total=$BGP_TOTAL established=$BGP_EST" "sudo calicoctl node status"
+
+    BIRD_ROUTES=$(ip route show proto bird 2>/dev/null | grep -cv 'blackhole' || echo "0")
+    [ "$BIRD_ROUTES" -gt 0 ] && s="OK" || s="FAIL"
+    add_result "BIRD routes on $HN" "$s" "bird_routes=$BIRD_ROUTES" "ip route show proto bird"
+
+    CROSS=$(ip route show proto static 2>/dev/null | grep -cE '10\.20[12]\.' || echo "0")
+    add_result "Cross-fabric routes on $HN" "OK" "cross_routes=$CROSS" "Check netplan for dual-homed routes"
+    {% endif %}
+
+    # --- MTU check (both topologies) ---
+    MTU_TARGET="{{ groups['fabric_routers'] | default(groups['all']) | first | default('') }}"
+    MTU_IP="{{ hostvars[groups['fabric_routers'] | default(groups['all']) | first | default(inventory_hostname)].access_ip | default('') }}"
+    if [ "$(hostname -s)" = "{{ groups['fabric_routers'] | default(groups['all']) | first | default('') }}" ]; then
+      MTU_IP="{{ hostvars[groups['all'] | difference(groups.get('fabric_routers', [])) | first | default(inventory_hostname)].access_ip | default('') }}"
+    fi
+    if [ -n "$MTU_IP" ]; then
+      if ping -M do -s 8950 -c 2 -W 5 "$MTU_IP" >/dev/null 2>&1; then
+        add_result "Fabric MTU (jumbo frames) from $HN" "OK" "8950-byte ping to $MTU_IP OK" "Check switch MTU >= 9000"
+      else
+        add_result "Fabric MTU (jumbo frames) from $HN" "FAIL" "8950-byte ping to $MTU_IP failed" "Check switch MTU and NIC MTU: ip link show"
+      fi
+    fi
+
+    # --- NIC MTU and speed ---
+    NICS=""
+    MTU_BAD=""
+    for DEV in $(ip -o link show up | awk -F': ' '{print $2}' | grep -v 'lo\|cali\|vxlan\|tunl\|docker\|br-\|veth'); do
+      MTU=$(cat /sys/class/net/$DEV/mtu 2>/dev/null || echo "?")
+      SPEED=$(cat /sys/class/net/$DEV/speed 2>/dev/null || echo "?")
+      [ "$SPEED" = "-1" ] && SPEED="virtual"
+      [ "$SPEED" != "?" ] && [ "$SPEED" != "virtual" ] && SPEED="${SPEED}Mbps"
+      NICS="${NICS}${DEV}:mtu=${MTU},speed=${SPEED} "
+      IS_MGMT=$(ip route show default | grep -c "$DEV" || echo "0")
+      if [ "$MTU" != "9000" ] && [ "$SPEED" != "virtual" ] && [ "$IS_MGMT" = "0" ] && [ "$MTU" != "?" ]; then
+        MTU_BAD="${MTU_BAD}${DEV}:mtu=${MTU} "
+      fi
+    done
+    [ -n "$MTU_BAD" ] && nic_s="FAIL" || nic_s="OK"
+    add_result "NIC MTU & speed on $HN" "$nic_s" "$NICS" "Fabric NIC MTU should be 9000: ip link set <dev> mtu 9000"
+
+    # --- Spoke-to-spoke ping ---
+    PASS=0; FAIL_IPS=""
+    {% for host in groups['all'] | default([]) %}
+    {% if host != inventory_hostname %}
+    PEER="{{ hostvars[host].access_ip | default(hostvars[host].ansible_host | default('')) }}"
+    if [ -n "$PEER" ]; then
+      ping -c 1 -W 3 "$PEER" >/dev/null 2>&1 && PASS=$((PASS+1)) || FAIL_IPS="${FAIL_IPS}$PEER "
+    fi
+    {% endif %}
+    {% endfor %}
+    TOTAL=$((PASS + $(echo "$FAIL_IPS" | wc -w)))
+    [ -z "$FAIL_IPS" ] && ping_s="OK" || ping_s="FAIL"
+    add_result "Spoke-to-spoke ping from $HN" "$ping_s" "passed=$PASS/$TOTAL" "Check fabric NICs and routing: ip route show"
+
+    echo "$RESULTS"
+  args:
+    executable: /bin/bash
+  register: _fabric_results
+  changed_when: false
+  ignore_errors: true
+
+- name: Append fabric results to host results file
+  ansible.builtin.shell: "echo '{{ _fabric_results.stdout | default(\"[]\") }}' >> /tmp/validate-stack-host-results.jsonl"
+  changed_when: false

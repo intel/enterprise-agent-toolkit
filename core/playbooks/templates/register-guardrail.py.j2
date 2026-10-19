@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+"""Create or update the content-safety guardrail in the GenAI Gateway (LiteLLM).
+
+Rendered by playbooks/register-guardrail-genai-gateway.yml and piped into the
+gateway pod, so it talks to 127.0.0.1 with the pod's own master key and needs
+nothing beyond the stdlib.
+
+Only %-formatting and concatenation are used below: this file is a Jinja
+template, so the doubled-brace and brace-percent sequences an f-string around a
+dict literal produces would be swallowed by the renderer.
+"""
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+BASE_URL = "{{ reg_gateway_url }}"
+GUARDRAIL_NAME = "{{ reg_guardrail_name }}"
+# Base64 so neither the JSON nor the sandboxed Python inside it has to survive
+# shell, YAML and Jinja quoting on the way here.
+PAYLOAD = json.loads(base64.b64decode("{{ reg_payload_b64 }}").decode())
+# The pod's own env first, so the master key does not have to be rendered into
+# this script at all on a normal deploy.
+MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY") or "{{ litellm_master_key }}"
+
+
+def die(message):
+    sys.stderr.write("ERROR: " + message + "\n")
+    sys.exit(1)
+
+
+def call(method, path, body=None):
+    """(status, parsed body). HTTP errors are returned, not raised."""
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(BASE_URL + path, data=data, method=method)
+    request.add_header("Authorization", "Bearer " + MASTER_KEY)
+    request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            status, raw = response.status, response.read().decode()
+    except urllib.error.HTTPError as err:
+        status, raw = err.code, err.read().decode()
+    except Exception as err:
+        die("%s %s failed: %s" % (method, path, err))
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, raw
+
+
+def compile_check(custom_code):
+    """Reject code the sandbox cannot compile, before it is registered.
+
+    A compile gate, not a verdict check: this endpoint calls apply_guardrail
+    without awaiting it, so async code (ours is -- http_post is async) always
+    comes back as action "allow" with a coroutine warning. What it does prove is
+    that RestrictedPython accepts the code and that apply_guardrail exists with
+    the right signature -- the failure mode that would otherwise leave the
+    gateway with a guardrail it cannot run, i.e. every request blocked.
+
+    The empty test input also hits apply_guardrail's early return, so nothing
+    here waits on the guard model (the endpoint caps execution at 5s).
+    """
+    status, body = call(
+        "POST",
+        "/guardrails/test_custom_code",
+        {
+            "custom_code": custom_code,
+            "input_type": "request",
+            "test_input": {"texts": [], "structured_messages": []},
+        },
+    )
+    if status != 200 or not isinstance(body, dict) or not body.get("success"):
+        die("guardrail code rejected by the gateway sandbox (HTTP %s): %s"
+            % (status, json.dumps(body)))
+    result = body.get("result") or {}
+    action = result.get("action")
+    # Only meaningful on a gateway that awaits async guardrail code; today's
+    # returns "allow" plus a coroutine warning, so this is a no-op here rather
+    # than a false pass that has to be remembered.
+    if "coroutine" not in str(result.get("warning") or "") and action != "allow":
+        die("sandbox returned '%s' for empty input, expected 'allow' -- the "
+            "guardrail would block every request" % action)
+    print("Guardrail code compiles in the gateway sandbox")
+
+
+def find_guardrail_id():
+    status, body = call("GET", "/v2/guardrails/list")
+    if status != 200 or not isinstance(body, dict):
+        die("could not list guardrails (HTTP %s): %s" % (status, json.dumps(body)))
+    for entry in body.get("guardrails") or []:
+        if entry.get("guardrail_name") == GUARDRAIL_NAME:
+            return entry.get("guardrail_id")
+    return None
+
+
+def main():
+    compile_check(PAYLOAD["guardrail"]["litellm_params"]["custom_code"])
+
+    # Upsert, never skip-if-present: a re-run has to replace the stored code, or
+    # a changed guard model, a changed endpoint or an edit to the template never
+    # reaches the gateway. PUT also re-initializes the in-memory guardrail, so no
+    # gateway restart is needed (PATCH cannot change litellm_params).
+    guardrail_id = find_guardrail_id()
+    if guardrail_id:
+        status, body = call("PUT", "/guardrails/" + guardrail_id, PAYLOAD)
+        verb = "updated"
+    else:
+        status, body = call("POST", "/guardrails", PAYLOAD)
+        verb = "registered"
+    if status not in (200, 201):
+        die("guardrail %s failed (HTTP %s): %s" % (verb, status, json.dumps(body)))
+
+    if isinstance(body, dict):
+        guardrail_id = body.get("guardrail_id") or guardrail_id
+    print("Guardrail '%s' %s (id %s)" % (GUARDRAIL_NAME, verb, guardrail_id))
+
+
+main()

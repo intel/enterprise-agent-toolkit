@@ -1,0 +1,189 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# layer-e2e-inference.yml — End-to-end inference validation via deferred K8s Job
+# Submits a Job that waits for model readiness and proves inference through the
+# full external path. Reports AMBER/PENDING while the job is running.
+# Guardrail models are excluded — they don't serve chat/completions.
+
+---
+- name: Get deployed model names from vLLM pods
+  ansible.builtin.shell: |
+    kubectl get pods --all-namespaces -l app.kubernetes.io/name=vllm \
+      -o jsonpath='{range .items[*]}{.spec.containers[0].args}{"\n"}{end}' 2>/dev/null | \
+    python3 -c "
+    import sys, json
+    models = set()
+    for line in sys.stdin:
+        line = line.strip()
+        if not line: continue
+        try:
+            args = json.loads(line)
+            for i, a in enumerate(args):
+                if a in ('--model', '--served-model-name') and i+1 < len(args):
+                    models.add(args[i+1])
+        except:
+            import re
+            for m in re.findall(r'--(?:model|served-model-name)\s+(\S+)', line):
+                models.add(m)
+    for m in sorted(models):
+        print(m)
+    " 2>/dev/null || echo ""
+  register: _e2e_models
+  changed_when: false
+  ignore_errors: true
+
+- name: Set model list fact (exclude guardrail models)
+  ansible.builtin.set_fact:
+    _inference_models: "{{ _e2e_models.stdout_lines | default([]) | select('match', '.+') | reject('search', '(?i)guard') | list }}"
+
+- name: Check existing inference smoke results (ConfigMaps)
+  ansible.builtin.shell: |
+    MODEL_SLUG=$(echo "{{ item }}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+    kubectl get configmap "inference-smoke-result-${MODEL_SLUG}" -o jsonpath='{.data.status}:{.data.response}:{.data.ttft_seconds}' 2>/dev/null || echo "NOT_FOUND"
+  register: _e2e_existing_results
+  changed_when: false
+  ignore_errors: true
+  loop: "{{ _inference_models }}"
+  when: _inference_models | length > 0
+
+- name: Check for running inference smoke jobs
+  ansible.builtin.shell: |
+    kubectl get jobs -l component=inference-smoke-test -o jsonpath='{range .items[*]}{.metadata.name}={.status.conditions[0].type}{"\n"}{end}' 2>/dev/null || echo ""
+  register: _e2e_running_jobs
+  changed_when: false
+  ignore_errors: true
+
+- name: Record inference results for models with existing ConfigMap evidence
+  ansible.builtin.set_fact:
+    health_results: >-
+      {{ health_results + [{
+        'layer': 'e2e-inference',
+        'check': 'Inference: ' + item.item,
+        'status': 'OK' if item.stdout is defined and item.stdout.startswith('OK:') else ('PENDING' if item.stdout is defined and 'NOT_FOUND' in item.stdout else 'FAIL'),
+        'evidence': item.stdout | default('no result') | truncate(150),
+        'hint': 'Check: kubectl get job -l component=inference-smoke-test; kubectl logs job/<job-name>'
+      }] }}
+  loop: "{{ _e2e_existing_results.results | default([]) }}"
+  when:
+    - _inference_models | length > 0
+    - item.stdout is defined
+    - "'NOT_FOUND' not in item.stdout"
+
+- name: Submit inference smoke test jobs for models without results
+  ansible.builtin.shell: |
+    MODEL_SLUG=$(echo "{{ item }}" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+    EXISTING=$(kubectl get configmap "inference-smoke-result-${MODEL_SLUG}" -o name 2>/dev/null || echo "")
+    RUNNING=$(kubectl get jobs -l "model=${MODEL_SLUG},component=inference-smoke-test" --field-selector=status.active=1 -o name 2>/dev/null || echo "")
+
+    if [ -n "$EXISTING" ]; then
+      echo "SKIP:already has result"
+    elif [ -n "$RUNNING" ]; then
+      echo "SKIP:job already running"
+    else
+      # Submit the job
+      cat <<EOF | kubectl apply -f -
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: "inference-smoke-test-${MODEL_SLUG}-{{ report_timestamp }}"
+      namespace: default
+      labels:
+        app: validate-stack
+        component: inference-smoke-test
+        model: "${MODEL_SLUG}"
+    spec:
+      activeDeadlineSeconds: 3600
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: validate-stack
+            component: inference-smoke-test
+        spec:
+          restartPolicy: Never
+          containers:
+          - name: smoke-test
+            image: curlimages/curl:latest
+            env:
+            - name: LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-api-key
+                  key: api-key
+                  optional: true
+            command:
+            - /bin/sh
+            - -c
+            - |
+              MODEL_NAME="{{ item }}"
+              GATEWAY_URL="http://genai-gateway-service.genai-gateway.svc.cluster.local:4000"
+              CONFIGMAP_NAME="inference-smoke-result-${MODEL_SLUG}"
+              SAFE_MODEL=\$(printf '%s' "\$MODEL_NAME" | tr -cd 'A-Za-z0-9._/-')
+              READY=false
+              for i in \$(seq 1 120); do
+                if [ -n "\$LITELLM_API_KEY" ]; then
+                  MODELS=\$(curl -sf -H "Authorization: Bearer \$LITELLM_API_KEY" "\${GATEWAY_URL}/v1/models" 2>/dev/null || echo "")
+                else
+                  MODELS=\$(curl -sf "\${GATEWAY_URL}/v1/models" 2>/dev/null || echo "")
+                fi
+                if echo "\$MODELS" | grep -q "\$MODEL_NAME"; then READY=true; break; fi
+                sleep 30
+              done
+              if [ "\$READY" != "true" ]; then
+                kubectl create configmap "\$CONFIGMAP_NAME" --from-literal=status=FAIL --from-literal=model="\$MODEL_NAME" --from-literal=error="timeout" --from-literal=timestamp="\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --dry-run=client -o yaml | kubectl apply -f -
+                exit 1
+              fi
+              PAYLOAD=\$(printf '{"model":"%s","messages":[{"role":"user","content":"Say hello in one word."}],"max_tokens":10}' "\$SAFE_MODEL")
+              START=\$(date +%s%N)
+              if [ -n "\$LITELLM_API_KEY" ]; then
+                RESP=\$(curl -sf -H "Authorization: Bearer \$LITELLM_API_KEY" -H "Content-Type: application/json" "\${GATEWAY_URL}/v1/chat/completions" -d "\$PAYLOAD")
+              else
+                RESP=\$(curl -sf -H "Content-Type: application/json" "\${GATEWAY_URL}/v1/chat/completions" -d "\$PAYLOAD")
+              fi
+              END=\$(date +%s%N)
+              TTFT=\$(( (END - START) / 1000000 ))
+              CONTENT=\$(echo "\$RESP" | grep -o '"content":"[^"]*"' | head -1 | cut -d'"' -f4)
+              STATUS="OK"; [ -z "\$CONTENT" ] && STATUS="FAIL" && CONTENT="no-response"
+              kubectl create configmap "\$CONFIGMAP_NAME" --from-literal=status="\$STATUS" --from-literal=model="\$MODEL_NAME" --from-literal=response="\$CONTENT" --from-literal=ttft_ms="\$TTFT" --from-literal=timestamp="\$(date -u +%Y-%m-%dT%H:%M:%SZ)" --dry-run=client -o yaml | kubectl apply -f -
+              [ "\$STATUS" = "OK" ] && exit 0 || exit 1
+            resources:
+              requests: {cpu: "100m", memory: "64Mi"}
+              limits: {cpu: "500m", memory: "128Mi"}
+          serviceAccountName: default
+    EOF
+      echo "SUBMITTED:inference-smoke-test-${MODEL_SLUG}-{{ report_timestamp }}"
+    fi
+  register: _e2e_job_submit
+  changed_when: false
+  no_log: true
+  ignore_errors: true
+  loop: "{{ _inference_models }}"
+  when: _inference_models | length > 0
+
+- name: Record PENDING status for newly submitted jobs
+  ansible.builtin.set_fact:
+    health_results: >-
+      {{ health_results + [{
+        'layer': 'e2e-inference',
+        'check': 'Inference: ' + item.item,
+        'status': 'PENDING',
+        'evidence': item.stdout | default('submitted') | truncate(100),
+        'hint': 'Model loading — check: kubectl get job -l component=inference-smoke-test; kubectl logs job/inference-smoke-test-*'
+      }] }}
+  loop: "{{ _e2e_job_submit.results | default([]) }}"
+  when:
+    - item.stdout is defined
+    - "'SUBMITTED' in item.stdout or 'SKIP:job already running' in item.stdout"
+
+- name: Record status when no models found
+  ansible.builtin.set_fact:
+    health_results: >-
+      {{ health_results + [{
+        'layer': 'e2e-inference',
+        'check': 'Inference models detected' + (' — configured: ' + configured_models if configured_models | default('') | length > 0 else ''),
+        'status': 'PENDING',
+        'evidence': 'No vLLM models running yet' + (' — expecting: ' + configured_models if configured_models | default('') | length > 0 else ' — no model configured in agentic-config.cfg'),
+        'hint': 'Check: kubectl get pods -A -l app.kubernetes.io/name=vllm; model deployment may still be in progress'
+      }] }}
+  when: _inference_models | length == 0

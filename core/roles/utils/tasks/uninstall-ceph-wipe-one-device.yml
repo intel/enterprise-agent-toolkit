@@ -1,0 +1,53 @@
+---
+# Per-device worker for uninstall-ceph-wipe-devices.yml. Expects 'wipe_device'
+# (device name without /dev/, set via loop_var) and optional 'require_ceph_signature'
+# (default true — set to false by uninstall-ceph-storage.yml, which already gates
+# the whole play behind an interactive 'yes-really-destroy-data' confirmation).
+
+- name: Check if device {{ wipe_device }} exists on this host
+  ansible.builtin.stat:
+    path: "/dev/{{ wipe_device }}"
+  register: wipe_device_stat
+
+- name: Detect existing Ceph/bluestore signature on {{ wipe_device }} (non-destructive)
+  ansible.builtin.command: wipefs -n /dev/{{ wipe_device }}
+  register: wipe_device_signature
+  changed_when: false
+  failed_when: false
+  when: wipe_device_stat.stat.exists
+
+- name: Determine whether {{ wipe_device }} should be wiped
+  ansible.builtin.set_fact:
+    wipe_device_should_wipe: >-
+      {{ wipe_device_stat.stat.exists and
+         (not (require_ceph_signature | default(true)) or
+          (wipe_device_signature.stdout | default('')) is search('ceph', ignorecase=True)) }}
+
+- name: Zap partition table with sgdisk
+  ansible.builtin.command: sgdisk --zap-all /dev/{{ wipe_device }}
+  when: wipe_device_should_wipe
+  failed_when: false
+
+- name: Wipe filesystem/LVM signatures with wipefs
+  ansible.builtin.command: wipefs -a /dev/{{ wipe_device }}
+  when: wipe_device_should_wipe
+  failed_when: false
+
+- name: Zero the first 100MiB (partition table + bluestore/LVM headers)
+  ansible.builtin.command: dd if=/dev/zero of=/dev/{{ wipe_device }} bs=1M count=100
+  when: wipe_device_should_wipe
+
+- name: Zero known bluestore metadata offsets
+  ansible.builtin.command: dd if=/dev/zero of=/dev/{{ wipe_device }} bs=4096 count=1 seek={{ item }}
+  loop: [262144, 2621440, 26214400, 262144000]
+  loop_control:
+    label: "{{ wipe_device }} @seek={{ item }}"
+  when: wipe_device_should_wipe
+  # Highest offset (1000G) seeks past the end on any OSD device <1TB — dd's
+  # seek failure there is expected and must not halt the rest of the wipe.
+  failed_when: false
+
+- name: Skip {{ wipe_device }} (no Ceph signature detected, nothing to wipe)
+  debug:
+    msg: "Skipping /dev/{{ wipe_device }} on {{ inventory_hostname }}: no Ceph/bluestore signature detected"
+  when: not wipe_device_should_wipe

@@ -14,7 +14,7 @@ auth:
 
 persistence:
   size: 10Gi
-  storageClassName: "local-path"
+  storageClassName: ""
 
 service:
   type: ClusterIP

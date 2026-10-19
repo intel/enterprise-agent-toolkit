@@ -6,12 +6,22 @@
   gather_facts: false
   vars_files:
     - "{{ lookup('env', 'PWD') }}/config/vars/inference_common.yml"
+  # ceph-storage.yml is loaded as a task (not vars_files) so playbook_dir resolves
+  # correctly regardless of the shell CWD when ansible-playbook is invoked.
+  # inference_common.yml may fail to load when CWD!=kubespray/ — the defaults
+  # below ensure helm_charts_base and remote_helm_charts_base are always defined.
   vars:
+    helm_charts_base: "{{ helm_charts_base | default(lookup('env', 'PWD') + '/helm-charts') }}"
+    remote_helm_charts_base: "{{ remote_helm_charts_base | default('/tmp/helm-charts') }}"
     ceph_values_template: "{{ helm_charts_base }}/ceph/cluster-values.yaml.j2"
-    ceph_values_template_single: "{{ helm_charts_base }}/ceph/cluster-values-single-node.yaml.j2"
     ceph_values_output: "{{ remote_helm_charts_base }}/ceph/cluster-values.yaml"
     release_namespace: rook-ceph
   tasks:
+    - name: Load ceph storage vars from rack-profile generated file
+      include_vars:
+        file: "{{ playbook_dir }}/../../inventory/metadata/vars/ceph-storage.yml"
+      run_once: true
+
     - name: Create remote helm charts directory for ceph
       file:
         path: "{{ remote_helm_charts_base }}/ceph"
@@ -22,21 +32,12 @@
 
     - name: Copy ceph template files to remote location
       copy:
-        src: "{{ item.src }}"
-        dest: "{{ item.dest }}"
+        src: "{{ ceph_values_template }}"
+        dest: "{{ remote_helm_charts_base }}/ceph/cluster-values.yaml.j2"
         mode: "0644"
-      loop:
-        - {
-            src: "{{ ceph_values_template }}",
-            dest: "{{ remote_helm_charts_base }}/ceph/cluster-values.yaml.j2",
-          }
-        - {
-            src: "{{ ceph_values_template_single }}",
-            dest: "{{ remote_helm_charts_base }}/ceph/cluster-values-single-node.yaml.j2",
-          }
       run_once: true
       delegate_to: "{{ groups['kube_control_plane'][0] }}"
-    - name: Build storage_nodes list from inventory
+    - name: Build storage_nodes list from inventory (production mode only)
       set_fact:
         storage_nodes: >-
           [{% for host in groups['all'] if hostvars[host].devices is defined %}
@@ -44,29 +45,35 @@
           {% endfor %}]
       run_once: true
 
-    - name: Print the number of storage nodes
-      debug:
-        msg: "Number of storage nodes: {{ (storage_nodes | from_yaml | length) }}"
-      run_once: true
-
-    - name: Fail if no storage nodes are defined
+    - name: Fail if no storage nodes defined
       fail:
-        msg: "No storage nodes are defined in the inventory. Ceph values file will not be generated."
+        msg: "No storage nodes with devices found in inventory. Check rack-profile.yaml storage.nodes."
       when: (storage_nodes | from_yaml | length) == 0
       run_once: true
 
-    - name: Choose Ceph values template based on node count
+    - name: Print the number of storage nodes
+      debug:
+        msg: "Storage nodes: {{ (storage_nodes | from_yaml | length) }}"
+      run_once: true
+
+    - name: Resolve ceph vars to concrete values (avoid Jinja2 self-reference recursion)
       set_fact:
-        ceph_template_to_use: >-
-          {{ ceph_values_template_single if (storage_nodes | from_yaml | length == 1) else ceph_values_template }}
+        _ceph_fabric_nic:      "{{ ceph_fabric_nic      | default('') }}"
+        _ceph_public_network:  "{{ ceph_public_network  | default('') }}"
+        _ceph_cluster_network: "{{ ceph_cluster_network | default('') }}"
+        _ceph_replica_size:    "{{ ceph_replica_size    | default(3)  }}"
       run_once: true
 
     - name: Template Ceph cluster-values.yaml
       ansible.builtin.template:
-        src: "{{ ceph_template_to_use }}"
+        src: "{{ ceph_values_template }}"
         dest: "{{ ceph_values_output }}"
       vars:
-        storage_nodes: "{{ storage_nodes | from_yaml }}"
+        storage_nodes:        "{{ storage_nodes | from_yaml }}"
+        ceph_fabric_nic:      "{{ _ceph_fabric_nic }}"
+        ceph_public_network:  "{{ _ceph_public_network }}"
+        ceph_cluster_network: "{{ _ceph_cluster_network }}"
+        ceph_replica_size:    "{{ _ceph_replica_size }}"
       run_once: true
 
     - name: Check if kubectl is available and cluster is ready

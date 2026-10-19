@@ -5,11 +5,10 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "vllm.fullname" . }}-pvc
-  namespace: default
+  namespace: {{ .Release.Namespace }}
 spec:
   accessModes:
   - ReadWriteOnce
-  storageClassName: local-path
   resources:
     requests:
       storage: 250Gi # Adjust this according to model storage size

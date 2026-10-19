@@ -1,0 +1,77 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# NVIDIA B300 HGX GPU override values for vLLM deployments.
+# This file contains GPU-specific overrides; base values are inherited from values.yaml.
+
+# fsGroup ensures Kubernetes chowns the PVC mount to this GID on attach,
+# so the non-root vLLM process (runAsUser: 1001) can write the model cache.
+podSecurityContext:
+  fsGroup: 1001
+
+# GPU accelerator resource
+accelDevice: "nvidia.com/gpu"
+gpu_count: 8
+
+# GPU vLLM image (CUDA-enabled, not the -cpu variant)
+image:
+  repository: vllm/vllm-openai
+  tag: "v0.28.0"
+  pullPolicy: Always
+
+# Tensor parallelism across all 8 GPUs on the B300 HGX
+tensor_parallel_size: 8
+
+# Large shared memory for GPU KV-cache and NCCL collectives
+shmSize: 10Gi
+
+# Schedule only on nodes labelled accelerator=b300 (emitted by label-nodes.yml)
+nodeSelector:
+  accelerator: b300
+
+# Tolerate the NVIDIA device-plugin taint applied by the GPU Operator
+tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+LLM_MODEL_ID: ""
+
+modelConfigs:
+  "meta-llama/Llama-3.1-70B-Instruct":
+    configMapValues:
+      # flashinfer JIT workspace — must be writable; root fs is read-only
+      FLASHINFER_WORKSPACE_BASE: "/tmp"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TORCHINDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
+      HOME: "/tmp"
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      USER: "vllm"
+    extraCmdArgs:
+      - "--dtype"
+      - "bfloat16"
+      - "--max-model-len"
+      - "131072"
+      - "--enable-prefix-caching"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "llama3_json"
+    tensor_parallel_size: "8"
+
+defaultModelConfigs:
+  configMapValues:
+    FLASHINFER_WORKSPACE_BASE: "/tmp"
+    XDG_CACHE_HOME: "/tmp/.cache"
+    TRITON_CACHE_DIR: "/tmp/.triton"
+    TORCHINDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
+    HOME: "/tmp"
+    HF_HUB_DISABLE_XET: "1"
+    HF_HUB_ENABLE_HF_TRANSFER: "0"
+    USER: "vllm"
+  extraCmdArgs:
+    - "--dtype"
+    - "bfloat16"
+    - "--enable-prefix-caching"
+  tensor_parallel_size: "{{ .Values.tensor_parallel_size }}"

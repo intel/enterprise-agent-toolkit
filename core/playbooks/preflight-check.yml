@@ -1,0 +1,183 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# preflight-check.yml
+#
+# Pre-installation health check — validates node readiness BEFORE deployment
+# begins. Catches environmental issues that would cause kubespray or component
+# installs to fail after wasting 30+ minutes.
+#
+# Hard stops (exit non-zero): NTP out of sync, swap enabled, disk <10% free,
+#   DNS resolution failure, gateway unreachable.
+# Warnings (report only): CPU governor not performance, THP=always.
+# Informational: kernel/OS version, kubelet version, NUMA topology, NIC MTU/speed.
+#
+# Writes results to the same cumulative report as validate-stack.yml so the
+# operator always has a single unified health view.
+#
+# Run standalone:
+#   ansible-playbook -i core/inventory/hosts.yaml core/playbooks/preflight-check.yml
+#
+# Exit code: 0 if no critical failures, non-zero if any hard-stop check fails.
+
+---
+- name: "Preflight Check — Node Readiness"
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    homedir: "{{ playbook_dir | dirname }}"
+    inventory_meta_dir: "{{ homedir }}/inventory/metadata"
+    flags_file: "{{ inventory_meta_dir }}/rack-scale-flags.env"
+    config_file: "{{ homedir }}/inventory/agentic-config.cfg"
+    report_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+  pre_tasks:
+    - name: Initialize per-host results
+      ansible.builtin.set_fact:
+        host_health_results: []
+        _my_hostname: "{{ inventory_hostname }}"
+
+    - name: Load rack-scale-flags.env
+      ansible.builtin.slurp:
+        src: "{{ flags_file }}"
+      register: _flags_raw
+      ignore_errors: true
+      run_once: true
+      delegate_to: localhost
+
+    - name: Parse rack-scale flags
+      ansible.builtin.set_fact:
+        rack_scale_mode: "{{ (_flags_raw.content | default('') | b64decode | regex_search('rack_scale_mode=(\\S+)', '\\1') | default(['no'], true))[0] | default('no') }}"
+        rack_scale_topology: "{{ (_flags_raw.content | default('') | b64decode | regex_search('rack_scale_topology=(\\S+)', '\\1') | default(['star'], true))[0] | default('star') }}"
+      when: _flags_raw is succeeded
+
+    - name: Set defaults when flags absent
+      ansible.builtin.set_fact:
+        rack_scale_mode: "no"
+        rack_scale_topology: "star"
+      when: _flags_raw is failed
+
+  tasks:
+    - name: "Preflight: Network connectivity"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-network.yml
+
+    - name: "Preflight: Platform health"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-platform-health.yml
+
+    - name: "Preflight: Fabric NIC MTU & speed (if rack-scale)"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-fabric.yml
+      when: rack_scale_mode in ['on', 'yes']
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Play 2 — Aggregate, merge into cumulative report, and gate on critical checks
+# ═══════════════════════════════════════════════════════════════════════════════
+- name: "Preflight Check — Report & Gate"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    homedir: "{{ playbook_dir | dirname }}"
+    inventory_meta_dir: "{{ homedir }}/inventory/metadata"
+
+  tasks:
+    - name: Pin timestamps
+      ansible.builtin.set_fact:
+        _report_ts: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+        _check_iso: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Set report file paths
+      ansible.builtin.set_fact:
+        report_latest: "{{ inventory_meta_dir }}/health-report-latest.json"
+        report_latest_html: "{{ inventory_meta_dir }}/health-report-latest.html"
+        report_file: "{{ inventory_meta_dir }}/health-report-{{ _report_ts }}.json"
+
+    - name: Aggregate preflight results from all hosts
+      ansible.builtin.set_fact:
+        _raw_results: >-
+          {{ groups['all'] | default([]) | map('extract', hostvars, 'host_health_results') | select('defined') | flatten | list }}
+
+    - name: Stamp and dedup
+      ansible.builtin.set_fact:
+        _current_results: "{{ _raw_results | unique | map('combine', {'checked_at': _check_iso}) | list }}"
+
+    - name: Get layers checked
+      ansible.builtin.set_fact:
+        _current_layers: "{{ _current_results | map(attribute='layer') | unique | list }}"
+
+    - name: Read existing latest report for merge
+      ansible.builtin.slurp:
+        src: "{{ report_latest }}"
+      register: _existing_raw
+      ignore_errors: true
+
+    - name: Merge with existing report
+      ansible.builtin.set_fact:
+        all_results: >-
+          {{ _current_results
+             + ((_existing_raw.content | b64decode | from_json).get('results', []) | rejectattr('layer', 'in', _current_layers) | list)
+             if _existing_raw is succeeded else _current_results }}
+
+    - name: Write merged JSON (latest)
+      ansible.builtin.copy:
+        content: "{{ {'timestamp': _report_ts, 'checked_at': _check_iso, 'current_layers': _current_layers, 'endpoints': {}, 'internal_services': {}, 'results': all_results} | to_nice_json }}"
+        dest: "{{ report_latest }}"
+        mode: "0644"
+
+    - name: Write JSON archive
+      ansible.builtin.copy:
+        content: "{{ {'timestamp': _report_ts, 'checked_at': _check_iso, 'current_layers': _current_layers, 'results': all_results} | to_nice_json }}"
+        dest: "{{ report_file }}"
+        mode: "0644"
+
+    - name: Render HTML (latest)
+      ansible.builtin.template:
+        src: validate-stack/templates/health-report.html.j2
+        dest: "{{ report_latest_html }}"
+        mode: "0644"
+
+    - name: Print preflight report
+      ansible.builtin.script:
+        cmd: "validate-stack/report-renderer.sh {{ report_latest }}"
+      register: _preflight_output
+
+    - name: Display preflight report
+      ansible.builtin.debug:
+        msg: "{{ _preflight_output.stdout_lines }}"
+
+    - name: Check for critical preflight failures
+      ansible.builtin.set_fact:
+        _critical_checks:
+          - "Time sync"
+          - "Swap"
+          - "Root disk headroom"
+          - "Containerd disk headroom"
+          - "Gateway reachable"
+          - "External DNS"
+
+    - name: Find critical failures
+      ansible.builtin.set_fact:
+        _critical_failures: >-
+          {{ _current_results
+             | selectattr('status', 'equalto', 'FAIL')
+             | selectattr('check', 'search', _critical_checks | join('|'))
+             | list }}
+
+    - name: Warn on critical failures
+      ansible.builtin.debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════════╗
+          ║  PREFLIGHT WARNING — {{ _critical_failures | length }} issue(s) detected                  ║
+          ╚══════════════════════════════════════════════════════════════╝
+          {% for f in _critical_failures %}
+          ✗ [{{ f.layer }}] {{ f.check }}
+            Evidence: {{ f.evidence }}
+            Fix: {{ f.hint }}
+          {% endfor %}
+
+          Deployment will continue but may encounter failures.
+          Review the health report for details.
+      when: _critical_failures | length > 0

@@ -169,6 +169,18 @@ service:
   annotations: {}
   labels: {}
 
+# Advertise this deployment to vLLM Semantic Router backend discovery
+# (core/playbooks/deploy-vllm-sr.yml). When enabled AND model.task is
+# text_generation, the Service is labelled `agentic.intel.com/serving-runtime:
+# ovms` and annotated with the model id, the REST port and the OVMS chat path -
+# which is what allows an OVMS deployment to be selected as a routing backend.
+#
+# Defaults to false deliberately: enabling it changes which backends the router
+# serves, so an existing OVMS deployment must not be enrolled by a chart upgrade
+# alone. Set to true to participate in routing.
+routingDiscovery:
+  enabled: false
+
 # OIDC Configuration (OpenID Connect Authentication)
 oidc:
   enabled: true

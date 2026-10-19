@@ -12,6 +12,10 @@ spec:
   # remove if replica count should not be reset on pod update (e.g. with HPA)
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  {{- if .Values.deploymentStrategy }}
+  strategy:
+    {{- toYaml .Values.deploymentStrategy | nindent 4 }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "vllm.selectorLabels" . | nindent 6 }}
@@ -141,6 +145,10 @@ spec:
           {{- if .Values.image.pullPolicy }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- end }}
+          {{- with .Values.image.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           # command:
           #   - /bin/bash
           #   - -c
@@ -192,6 +200,9 @@ spec:
             - mountPath: /workspace/vllm/examples
               name: chat-templates
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.port }}
@@ -208,27 +219,29 @@ spec:
           startupProbe:
             {{- toYaml .Values.startupProbe | nindent 12 }}
           {{- end }}
-          {{- if or .Values.accelDevice .Values.cpu .Values.memory }}
+          {{- $effectiveCpu := .Values.cpu | default $modelConfig.optimal_cpu_cores }}
+          {{- if or .Values.accelDevice $effectiveCpu .Values.memory }}
           resources:
             {{- if not .Values.accelDevice }}
-            {{- if or .Values.cpu .Values.memory }}
+            {{- if or $effectiveCpu .Values.memory }}
             requests:
-              {{- if .Values.cpu }}
-              cpu: {{ .Values.cpu | quote }}
+              {{- if $effectiveCpu }}
+              cpu: {{ $effectiveCpu | quote }}
               {{- end }}
               {{- if .Values.memory }}
               memory: {{ .Values.memory | quote }}
               {{- end }}
             limits:
-              {{- if .Values.cpu }}
-              cpu: {{ .Values.cpu | quote }}
+              {{- if $effectiveCpu }}
+              cpu: {{ $effectiveCpu | quote }}
               {{- end }}
-              {{- if .Values.memory }}
-              memory: {{ .Values.memory | quote }}
+              {{- if or .Values.memoryLimit .Values.memory }}
+              memory: {{ .Values.memoryLimit | default .Values.memory | quote }}
               {{- end }}
             {{- end }}
             {{- else }}
             limits:
+              {{ .Values.xpuDeviceResource | default .Values.accelDevice | quote }}: {{ .Values.gpu_count | default .Values.tensor_parallel_size | default $modelConfig.tensor_parallel_size | default .Values.defaultModelConfigs.tensor_parallel_size | default 1 | quote }}
             {{- end }}
           {{- end }}
             
@@ -256,6 +269,9 @@ spec:
         - name: chat-templates
           configMap:
             name: {{ include "vllm.fullname" . }}-chat-templates
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

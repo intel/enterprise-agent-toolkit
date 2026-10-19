@@ -3,8 +3,13 @@
 # Copyright (C) 2024-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 #
+# Model serving containers live in a generated companion file, selected by
+# serving_engine in docker/config.cfg:
+#   vllm     → docker-compose.vllm.yml  (vLLM CPU,             OpenAI API on /v1)
+#   openvino → docker-compose.ovms.yml  (OpenVINO Model Server, OpenAI API on /v3)
+#
 # Services (always-on core):
-#   vllm            — CPU LLM inference server (port 2080)
+#   <model servers> — CPU LLM inference, one container per model (ports 2080+)
 #   litellm         — GenAI Gateway / OpenAI-compatible API (port 4000)
 #   postgres        — PostgreSQL 16 + pgvector (shared: litellm, flowise, langfuse, rag) (port 5432)
 #   redis           — Redis Stack (shared: LiteLLM routing, Flowise queue, RAG search) (port 6379)

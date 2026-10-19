@@ -41,9 +41,11 @@
     - name: Deploy NRI Balloon Policy
       when: cpu_playbook == 'true'
       block:
-        - name: Deploy generic NRI CPU balloon policy
+        - name: Deploy NRI CPU balloon policy (topology-aware)
           ansible.builtin.include_role:
             name: nri_cpu_balloons
+          vars:
+            component_action: install
           tags:
             - install
 

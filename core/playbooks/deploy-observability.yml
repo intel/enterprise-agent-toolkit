@@ -116,6 +116,12 @@
               accessModes:
                 - ReadWriteOnce
               size: 10Gi
+            # The chart's init-chown-data container runs as root with only
+            # CAP_CHOWN, so it cannot traverse the 0700 csv/pdf/png dirs Grafana
+            # creates on first start and crash-loops on every restart. The PVC
+            # is already owned by 472:472 (Grafana's UID), so the step is unneeded.
+            initChownData:
+              enabled: false
             grafana.ini:
               users:
                 default_theme: light
@@ -128,6 +134,76 @@
       retries: 5
       delay: 10
       run_once: true
+
+    # ── GPU observability (NVIDIA DCGM) ──────────────────────────────────────
+    # Only wired up when the rack profile has NVIDIA GPU nodes. rack_scale_gpu_vendor
+    # is emitted to inventory/metadata/rack-scale-flags.env by rack-profile-parser.sh
+    # and passed in as an extra-var by observability-controller.sh. Empty (no GPU
+    # nodes) => every task below is skipped => no regression on CPU-only clusters.
+    #
+    # These tasks run AFTER the kube-prometheus-stack install above so the
+    # ServiceMonitor / PrometheusRule CRDs already exist. The GPU Operator enables
+    # the DCGM exporter (dcgmExporter.enabled=true) but we own the ServiceMonitor
+    # here so it carries the release=observability label that this Prometheus's
+    # serviceMonitorSelector requires — the operator's own monitor uses a different
+    # label and would be ignored.
+    #
+    # The ServiceMonitor MUST live in the observability namespace, NOT in
+    # gpu-operator. The GPU Operator's ClusterPolicy controller reconciles the
+    # gpu-operator namespace and removes a ServiceMonitor named
+    # nvidia-dcgm-exporter that it does not own, which it did within ~13 minutes
+    # of deploy — Prometheus silently lost the DCGM target and every GPU panel
+    # went blank with no alert. Prometheus is configured with an empty
+    # serviceMonitorNamespaceSelector (all namespaces), and the namespaceSelector
+    # below already points discovery at the exporter Service in gpu-operator, so
+    # the ServiceMonitor itself does not need to live there.
+    - name: Create ServiceMonitor for NVIDIA DCGM exporter
+      tags: deploy_observability
+      run_once: true
+      when: (rack_scale_gpu_vendor | default('')) == 'nvidia'
+      community.kubernetes.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: nvidia-dcgm-exporter
+            namespace: observability
+            labels:
+              release: observability
+          spec:
+            namespaceSelector:
+              matchNames:
+                - gpu-operator
+            selector:
+              matchLabels:
+                app: nvidia-dcgm-exporter
+            endpoints:
+              - port: gpu-metrics
+                interval: 30s
+
+    - name: Create Config for NVIDIA DCGM Grafana Dashboard
+      tags: deploy_observability
+      run_once: true
+      when: (rack_scale_gpu_vendor | default('')) == 'nvidia'
+      ansible.builtin.shell: |
+        kubectl create configmap nvidia-dcgm-dashboard-configmap \
+          --from-file=nvidia-dcgm.json={{ remote_helm_charts_base }}/dashboards/nvidia-dcgm.json \
+          -n observability --dry-run=client -o yaml | kubectl apply -f -
+
+        kubectl label configmap nvidia-dcgm-dashboard-configmap grafana_dashboard=1 -n observability --overwrite
+      args:
+        executable: /bin/bash
+
+    - name: Apply GPU PrometheusRule alerts
+      tags: deploy_observability
+      run_once: true
+      when: (rack_scale_gpu_vendor | default('')) == 'nvidia'
+      community.kubernetes.k8s:
+        state: present
+        namespace: observability
+        src: "{{ remote_helm_charts_base }}/gpu-alerts.yaml"
+
     - name: Create TLS cert for observability
       tags: deploy_observability
       community.kubernetes.k8s:

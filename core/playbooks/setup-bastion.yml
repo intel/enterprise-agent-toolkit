@@ -55,6 +55,11 @@
       tags: base_packages
 
     # Python Dependencies
+    # --break-system-packages is required on Ubuntu 24.04+ (PEP 668): the
+    # system Python is marked externally-managed, so a plain `pip3 install`
+    # into it aborts with "error: externally-managed-environment". These are
+    # deliberately system-wide, not venv — Ansible's kubernetes.core modules
+    # run under the system interpreter and must import them.
     - name: Install Python packages required for Kubernetes operations
       pip:
         name:
@@ -65,6 +70,7 @@
           - urllib3
         state: present
         executable: pip3
+        extra_args: "--break-system-packages"
       tags: python_packages
 
     # Kubectl Installation
@@ -154,6 +160,7 @@
       tags: helm
 
     # Ansible Installation and Configuration
+    # See the PEP 668 note above — same reason for --break-system-packages.
     - name: Install Ansible via pip
       pip:
         name:
@@ -161,6 +168,7 @@
           - ansible-core
         state: present
         executable: pip3
+        extra_args: "--break-system-packages"
       tags: ansible
 
     - name: Install Ansible collections for Kubernetes

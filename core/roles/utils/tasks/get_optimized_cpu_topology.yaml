@@ -10,16 +10,16 @@
       apiVersion: apps/v1
       kind: DaemonSet
       metadata:
-        name: node-topology-optimizer
+        name: utils-cpu-topology-probe
         namespace: kube-system
       spec:
         selector:
           matchLabels:
-            app: node-topology-optimizer
+            app: utils-cpu-topology-probe
         template:
           metadata:
             labels:
-              app: node-topology-optimizer
+              app: utils-cpu-topology-probe
           spec:
             # For single-node clusters, run on any schedulable node
             # For multi-node clusters, prefer worker nodes
@@ -70,12 +70,12 @@
   tags:
     - install
 
-- name: Wait for node-topology-optimizer pods to be ready (single/multi-node support)
+- name: Wait for utils-cpu-topology-probe pods to be ready (single/multi-node support)
   kubernetes.core.k8s_info:
     kind: Pod
     namespace: kube-system
     label_selectors:
-      - app=node-topology-optimizer
+      - app=utils-cpu-topology-probe
   register: optimizer_pods_info
   until: optimizer_pods_info.resources | length > 0 and (optimizer_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0)
   retries: 30
@@ -103,6 +103,39 @@
     schedulable_nodes: "{{ all_nodes_info.resources | rejectattr('spec.taints', 'defined') | map(attribute='metadata.name') | list }}"
     all_node_names: "{{ all_nodes_info.resources | map(attribute='metadata.name') | list }}"
     running_optimizer_nodes: "{{ optimizer_pods_info.resources | selectattr('status.phase', 'equalto', 'Running') | map(attribute='spec.nodeName') | list }}"
+    inference_eligible_nodes: "{{ all_nodes_info.resources | selectattr('metadata.labels.ei-inference-eligible', 'defined') | selectattr('metadata.labels.ei-inference-eligible', 'equalto', 'true') | map(attribute='metadata.name') | list }}"
+  tags:
+    - install
+
+- name: Initialize per-node CPU topology table
+  ansible.builtin.set_fact:
+    per_node_cpu_topology: {}
+  tags:
+    - install
+
+- name: Probe real CPU topology on every inference-eligible node (heterogeneous-fleet safe)
+  # Each node gets its own lscpu-derived measurement instead of reusing one
+  # arbitrarily-sampled node's numbers fleet-wide -- see workload_cpus in
+  # get_optimal_cpu_allocation.yaml, which takes the min across this table
+  # so a model's fallback CPU request is safe no matter which node it lands on.
+  #
+  # Restricted to inference_eligible_nodes (ei-inference-eligible=true), NOT
+  # every running optimizer pod: the DaemonSet's `tolerations: [operator:
+  # Exists]` schedules it onto control-plane nodes too (e.g. master1), which
+  # never hosts a model (no node affinity would ever match it) and whose
+  # kubelet/exec path can behave differently -- probing it is both pointless
+  # and, on some clusters, a source of k8s_exec failures unrelated to CPU
+  # topology at all.
+  ansible.builtin.include_tasks: probe_node_cpu_topology.yaml
+  loop: "{{ running_optimizer_nodes | intersect(inference_eligible_nodes) }}"
+  loop_control:
+    loop_var: probe_node
+  tags:
+    - install
+
+- name: Debug per-node CPU topology table
+  ansible.builtin.debug:
+    var: per_node_cpu_topology
   tags:
     - install
 
@@ -211,7 +244,7 @@
 
 - name: Validate optimizer pod availability
   ansible.builtin.fail:
-    msg: "No running optimizer pods found. The node-topology-optimizer DaemonSet may not be ready yet."
+    msg: "No running optimizer pods found. The utils-cpu-topology-probe DaemonSet may not be ready yet."
   when: optimizer_pod_name == '' or target_worker_node == ''
   tags:
     - install
@@ -229,9 +262,10 @@
   tags:
     - install
 
-- name: Refresh node-topology-optimizer pod name (avoid stale pod references)
+- name: Refresh utils-cpu-topology-probe pod name (avoid stale pod references)
   ansible.builtin.command: >
-    kubectl -n kube-system get pods -l app=node-topology-optimizer
+    kubectl -n kube-system get pods -l app=utils-cpu-topology-probe
+    --field-selector spec.nodeName={{ target_worker_node }}
     -o jsonpath='{.items[0].metadata.name}'
   register: optimizer_pod_name_refresh
   changed_when: false
@@ -409,6 +443,18 @@
   tags:
     - install
 
+- name: Parse threads per core from lscpu (logical -> physical CPU conversion)
+  ansible.builtin.set_fact:
+    threads_per_core: "{{ detailed_cpu_info.stdout | regex_search('Thread\\(s\\) per core:\\s*(\\d+)', '\\1') | first | default(1) | int }}"
+  tags:
+    - install
+
+- name: Calculate physical CPUs per NUMA node
+  ansible.builtin.set_fact:
+    physical_cpus_per_numa_node: "{{ (cpus_per_numa_node | int) // (threads_per_core | int) }}"
+  tags:
+    - install
+
 - name: Gather NUMA node meminfo from target node
   kubernetes.core.k8s_exec:
     pod: "{{ optimizer_pod_name }}"
@@ -480,6 +526,8 @@
       numa_nodes_per_socket: "{{ numa_nodes_per_socket | int }}"
       cpus_per_numa_node: "{{ cpus_per_numa_node | int }}"
       cpus_per_socket: "{{ cpus_per_socket | int }}"
+      threads_per_core: "{{ threads_per_core | int }}"
+      physical_cpus_per_numa_node: "{{ physical_cpus_per_numa_node | int }}"
       total_cpu_count: "{{ total_cpu_count | int }}"
       recommended_balloons: "{{ total_sockets.stdout | int }}" # One balloon per socket
       numa_cpu_distribution: "{{ numa_cpu_counts }}"
@@ -542,12 +590,14 @@
       total_sockets: 1
       total_numa_nodes: 1
       numa_nodes_per_socket: 1
-      cpus_per_numa_node: 2
-      cpus_per_socket: 2
-      total_cpu_count: 2
+      cpus_per_numa_node: 8
+      cpus_per_socket: 8
+      threads_per_core: 1
+      physical_cpus_per_numa_node: 8
+      total_cpu_count: 8
       recommended_balloons: 1
-      numa_cpu_distribution: { 0: 2 }
-      socket_cpu_distribution: { 0: 2 }
+      numa_cpu_distribution: { 0: 8 }
+      socket_cpu_distribution: { 0: 8 }
   when: optimal_balloon_config is not defined
   tags:
     - install
@@ -579,12 +629,19 @@
     - install
 
 - name: Calculate workload CPUs
+  # Single-NUMA-node, physical-core budget: this is the fallback used when a
+  # model has no explicit optimal_cpu_cores, so it must not exceed what one
+  # NUMA node can actually give a TP=1 balloon (see get_model_sizing.yaml),
+  # and it's expressed in physical cores since that's the unit callers size
+  # models in (see xeon-values.yaml's optimal_cpu_cores values).
   ansible.builtin.set_fact:
     workload_cpus: >-
-      {%- set total_cpus = (cpus_per_socket | int) * (total_sockets.stdout | int) -%}
-      {%- set reserved_cpu_count = nri_reserved_cpu_list.split(',') | length -%}
-      {%- if reserved_cpu_count >= total_cpus -%}{%- set reserved_cpu_count = total_cpus -%}{%- endif -%}
-      {{ total_cpus - reserved_cpu_count }}
+      {%- set total_physical = (physical_cpus_per_numa_node | int) -%}
+      {%- set numa_count = (total_numa_nodes.stdout | default(1) | int) -%}
+      {%- set reserved_logical_per_numa = (nri_reserved_cpu_list.split(',') | length) / ([numa_count, 1] | max) -%}
+      {%- set reserved_physical = (reserved_logical_per_numa / (threads_per_core | int)) | round(0, 'ceil') | int -%}
+      {%- if reserved_physical >= total_physical -%}{%- set reserved_physical = total_physical -%}{%- endif -%}
+      {{ total_physical - reserved_physical }}
   tags:
     - install
 
@@ -627,8 +684,11 @@
       Total NUMA Nodes: {{ optimal_balloon_config.total_numa_nodes }}
       NUMA Nodes per Socket: {{ optimal_balloon_config.numa_nodes_per_socket }}
       Total CPUs: {{ optimal_balloon_config.total_cpu_count }}
-      CPUs per NUMA Node: {{ optimal_balloon_config.cpus_per_numa_node }}
-      CPUs per Socket: {{ optimal_balloon_config.cpus_per_socket }}
+      CPUs per NUMA Node (logical): {{ optimal_balloon_config.cpus_per_numa_node }}
+      CPUs per Socket (logical): {{ optimal_balloon_config.cpus_per_socket }}
+      Threads per Core: {{ optimal_balloon_config.threads_per_core }}
+      Physical CPUs per NUMA Node: {{ optimal_balloon_config.physical_cpus_per_numa_node }}
+      Workload CPUs (fallback, physical, single-NUMA): {{ optimal_balloon_config.workload_cpus | default('n/a') }}
 
       === NUMA CPU Distribution ===
       {% for numa_id, cpu_count in optimal_balloon_config.numa_cpu_distribution.items() %}
@@ -651,11 +711,11 @@
   tags:
     - install
 
-- name: Delete node-topology-optimizer daemonset
+- name: Delete utils-cpu-topology-probe daemonset
   kubernetes.core.k8s:
     state: absent
     kind: DaemonSet
-    name: node-topology-optimizer
+    name: utils-cpu-topology-probe
     namespace: kube-system
   tags:
     - install

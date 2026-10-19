@@ -64,7 +64,7 @@ langfuse:
   # Feature flags
   features:
     # -- Whether or not to report basic usage statistics to a centralized server.
-    telemetryEnabled: true
+    telemetryEnabled: false
     # -- Disable public sign up
     signUpDisabled: false
     # -- Enable experimental features

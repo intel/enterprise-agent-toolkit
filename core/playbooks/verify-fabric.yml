@@ -1,0 +1,103 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# verify-fabric.yml
+#
+# Verifies that every node's fabric access_ip is reachable from the deploy node,
+# BEFORE Kubespray runs. Kubespray publishes access_ip as each etcd member's
+# peer/client URL and as the apiserver advertise address, so an unreachable
+# fabric IP on a quorum member means the cluster cannot come up. Failing here
+# costs seconds; failing later surfaces as an opaque etcd timeout deep in the run.
+#
+# ORDERING IS LOAD-BEARING. This must run AFTER:
+#   1. deploy-netplan.yml      — puts the fabric addresses on the NICs
+#   2. deploy-ecmp-sysctl.yml  — star topology only: makes the hub forward
+#
+# On a star, every spoke-to-spoke flow transits the hub, and the hub only
+# forwards once ip_forward=1 AND its FORWARD chain permits fabric transit. Both
+# are set by deploy-ecmp-sysctl.yml. Probing before that reports a healthy,
+# correctly-cabled fabric as broken — the checks used to live at the end of
+# deploy-netplan.yml and did exactly that. The failure is not hypothetical: a
+# FORWARD policy of DROP is what both reset.yml and kubespray's reset role leave
+# behind (they flush the filter table), so on any redeploy the hub starts with
+# spoke-to-spoke transit blackholed and the masters can each reach the hub but
+# not each other.
+#
+# Run standalone to triage a fabric problem at any time:
+#   ansible-playbook -i core/inventory/hosts.yaml core/playbooks/verify-fabric.yml
+
+---
+- name: Verify fabric reachability from the deploy node
+  hosts: all
+  become: false
+  gather_facts: false
+  vars:
+    # Total seconds to wait for a fabric IP before declaring it unreachable.
+    # Overridable with -e fabric_verify_timeout=<seconds>.
+    fabric_verify_timeout: 15
+
+  tasks:
+    - name: Verify fabric IP is reachable from deploy node
+      wait_for:
+        host: "{{ access_ip }}"
+        port: 22
+        timeout: "{{ fabric_verify_timeout }}"
+        msg: "Fabric IP {{ access_ip }} port 22 not reachable — check switch connectivity"
+      delegate_to: localhost
+      ignore_errors: true
+      register: _fabric_check
+
+    # Quorum members are held to a hard requirement. access_ip becomes this
+    # node's etcd peer AND client URL and the apiserver advertise address, so if
+    # it is not reachable across the fabric the cluster cannot come up — the run
+    # would instead die much later inside the etcd role with a bare timeout.
+    - name: Fail if fabric IP is unreachable on an etcd / control-plane member
+      fail:
+        msg: >
+          Fabric IP {{ access_ip }} on {{ inventory_hostname }} ({{ node_hostname }})
+          is not reachable from the deploy node on port 22.
+
+          This node is an etcd / control-plane member, so {{ access_ip }} is used as
+          its etcd peer URL and apiserver advertise address. Deployment cannot
+          succeed while it is unreachable — stopping now instead of failing later
+          inside the etcd role.
+
+          Netplan was applied and the address is confirmed present on the node
+          itself, so the break is in fabric transit, not in node config. On a star
+          topology every spoke-to-spoke flow crosses the hub, so check the hub
+          (group fabric_routers) FIRST:
+
+            - iptables -S FORWARD
+              A policy of DROP with no fabric ACCEPT rules silently blackholes
+              spoke-to-spoke traffic while hub-to-spoke pings keep working, so
+              the fabric looks healthy. Both reset.yml and kubespray's reset role
+              flush the filter table, which leaves exactly this state. Fix by
+              re-running:
+                ansible-playbook -i core/inventory/hosts.yaml \
+                    core/playbooks/deploy-ecmp-sysctl.yml
+            - sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter
+              Expected 1 and 2 respectively.
+
+          If the hub is forwarding correctly, then check the node itself:
+            - fabric cabling / switch port state for this node's fabric NIC
+            - link state on the node:  ip -br addr show
+      when:
+        - _fabric_check is failed
+        - "'etcd' in group_names or 'kube_control_plane' in group_names"
+
+    # Non-quorum nodes (plain kube_node) are warned but not blocked: their
+    # access_ip is not part of etcd or apiserver addressing, and one-way
+    # unreachability from the deploy node specifically can be a routing
+    # asymmetry rather than a dead fabric link. Kubelet registration will
+    # surface a genuine problem shortly afterwards.
+    - name: Warn if fabric IP is not reachable on a non-quorum node
+      debug:
+        msg: >
+          WARNING: {{ access_ip }} on {{ inventory_hostname }} not reachable from
+          the deploy node. Netplan was applied — the IP is configured on the node.
+          This may be a routing asymmetry rather than a fabric fault, and this node
+          is not an etcd / control-plane member, so the deployment continues.
+          If node registration or Calico peering fails later, start here.
+      when:
+        - _fabric_check is failed
+        - "'etcd' not in group_names and 'kube_control_plane' not in group_names"

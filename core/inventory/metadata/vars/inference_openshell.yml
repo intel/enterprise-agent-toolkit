@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # NVIDIA OpenShell configuration (policy-enforced sandboxes on top of Agent Sandbox)
-# The two namespaces and the release name are also read by deploy-agentic-stack.sh (resume
-# check, summary), so change them here rather than through extra vars.
+# The two namespaces and the release name are also read by deploy-agentic-stack.sh (summary)
+# and openshell-controller.sh, so change them here rather than through extra vars.
 openshell_namespace: "openshell-system"             # gateway (holds provider credentials)
 openshell_sandbox_namespace: "openshell-sandboxes"  # sandbox workload + supervisor pods
 openshell_release_name: "openshell"
@@ -15,10 +15,6 @@ openshell_cli_url: "https://github.com/NVIDIA/OpenShell/releases/download/{{ ope
 # Empty = ~/.cache/eat/openshell-cli-<release tag> of the deploying user (mode 0700): private,
 # and versioned so a release bump fetches a matching CLI.
 openshell_cli_dir: ""
-
-# Set by openshell-controller.sh; stored in ConfigMap openshell-deploy-state after a
-# successful run so resume mode can tell a complete deployment from a partial one.
-openshell_deploy_fingerprint: ""
 
 # User authentication. OpenShell on Kubernetes authenticates users via OIDC only
 # (mTLS covers transport + supervisors). Set openshell_oidc_issuer (e.g. Keycloak realm URL),
@@ -34,6 +30,9 @@ openshell_allow_unauthenticated_clusterip_only: false
 # that sandbox policies may target.
 openshell_sandbox_network_policy: true
 openshell_sandbox_egress_cidrs: []
+# Resolver CIDRs reachable on port 53 besides the kube-dns pods; empty = auto-detect the
+# NodeLocal DNSCache address (kubespray default 169.254.25.10).
+openshell_sandbox_dns_cidrs: []
 openshell_upstream_proxy_cidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]  # proxy port only
 
 # GenAI Gateway (LiteLLM) provider: sandboxes see a placeholder, the supervisor injects a

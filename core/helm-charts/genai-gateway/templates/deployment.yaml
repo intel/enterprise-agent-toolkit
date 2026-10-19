@@ -86,11 +86,42 @@ spec:
 {{- end }}
           args:
             - "--config"
-            - "/litellm/proxy_config.yaml"
+            - "/app/proxy_config.yaml"
           volumeMounts:
             - name: config-volume
-              mountPath: /litellm
+              mountPath: /app/proxy_config.yaml
+              subPath: proxy_config.yaml
               readOnly: true
+{{- if .Values.customRouter.enabled }}
+            - name: router-code
+              mountPath: /app/custom_hybrid_router.py
+              subPath: custom_hybrid_router.py
+              readOnly: true
+            - name: router-code
+              mountPath: /app/router_strategy/__init__.py
+              subPath: router_strategy.__init__.py
+              readOnly: true
+            - name: router-code
+              mountPath: /app/router_strategy/efficiency_router/__init__.py
+              subPath: efficiency_router.__init__.py
+              readOnly: true
+            - name: router-code
+              mountPath: /app/router_strategy/efficiency_router/bandit.py
+              subPath: efficiency_router.bandit.py
+              readOnly: true
+            - name: router-code
+              mountPath: /app/router_strategy/efficiency_router/efficiency_router.py
+              subPath: efficiency_router.efficiency_router.py
+              readOnly: true
+            - name: router-code
+              mountPath: /app/router_strategy/hybrid_router/__init__.py
+              subPath: hybrid_router.__init__.py
+              readOnly: true
+            - name: router-code
+              mountPath: /app/router_strategy/hybrid_router/hybrid_router.py
+              subPath: hybrid_router.hybrid_router.py
+              readOnly: true
+{{- end }}
           resources:
 {{- if .Values.resources }}
             {{- toYaml .Values.resources | nindent 12 }}
@@ -135,3 +166,8 @@ spec:
         - name: on-prem-cert
           configMap:
             name: litellm-on-prem-cert
+{{- if .Values.customRouter.enabled }}
+        - name: router-code
+          configMap:
+            name: genai-gateway-router-code
+{{- end }}
