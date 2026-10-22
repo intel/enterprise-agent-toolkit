@@ -1,0 +1,27 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# Workload and Service name: mcp-<name>-server.
+name: ""
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/agent-operator
+  # "<tag>@sha256:<digest>"; set by the installer.
+  tag: ""
+  pullPolicy: IfNotPresent
+# Script under /code/mcp/ in the image.
+script: ""
+port: 8000
+# Extra container env (EnvVar list).
+env: []
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: "1", memory: 512Mi}
+affinity: {}
+
+# The Tool that makes the server reachable from agents.
+tool:
+  skill: ""
+  aliasSkills: []
+  requiresIdentity: true
+  alwaysOn: false
+  description: ""

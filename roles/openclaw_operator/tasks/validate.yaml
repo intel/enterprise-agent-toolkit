@@ -1,0 +1,69 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Read-only.
+
+- name: "openclaw_operator | validate | Check the Helm release"
+  kubernetes.core.helm_info:
+    name: "{{ openclaw_operator_release_name }}"
+    release_namespace: "{{ openclaw_operator_namespace }}"
+  register: _val_oco_release
+  failed_when: >-
+    _val_oco_release.status is not defined or _val_oco_release.status is none or
+    _val_oco_release.status.status != 'deployed' or
+    _val_oco_release.status.chart != 'openclaw-operator-' ~ openclaw_operator_version
+
+- name: "openclaw_operator | validate | Check the CRDs"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: "{{ item }}"
+  register: _val_oco_crds
+  failed_when: _val_oco_crds.resources | default([]) | length == 0
+  loop:
+    - openclawinstances.openclaw.rocks
+    - openclawclusterdefaults.openclaw.rocks
+    - openclawselfconfigs.openclaw.rocks
+
+- name: "openclaw_operator | validate | Check the controller is available"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ openclaw_operator_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=openclaw-operator
+  register: _val_oco_deploy
+  failed_when: >-
+    _val_oco_deploy.resources | default([]) | length == 0 or
+    _val_oco_deploy.resources[0].status.conditions | default([]) |
+    selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length == 0
+
+# The pod's imageID is what the node actually pulled; it must be the pinned digest.
+- name: "openclaw_operator | validate | Check the running image is the pinned digest"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ openclaw_operator_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=openclaw-operator
+    field_selectors:
+      - status.phase=Running
+  register: _val_oco_pods
+  failed_when: >-
+    _val_oco_pods.resources | default([]) | length == 0 or
+    _val_oco_pods.resources | map(attribute='status.containerStatuses') | flatten |
+    map(attribute='imageID') | reject('search', openclaw_operator_image_digest) | list | length > 0
+
+- name: "openclaw_operator | validate | List OpenClawInstances"
+  kubernetes.core.k8s_info:
+    api_version: openclaw.rocks/v1alpha1
+    kind: OpenClawInstance
+  register: _val_oco_instances
+
+- name: "openclaw_operator | validate | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "Release: {{ _val_oco_release.status.chart }} ({{ _val_oco_release.status.status }})"
+      - "CRDs: OK"
+      - "Controller: Available, image {{ openclaw_operator_image_digest }}"
+      - "OpenClawInstances: {{ _val_oco_instances.resources | default([]) | length }}"

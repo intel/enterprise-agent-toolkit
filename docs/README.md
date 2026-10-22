@@ -76,4 +76,5 @@ What the layer exposes inside the cluster, and how agent applications connect to
 | [Backend connection reference](reference/backend-connections.md) | Redis, pgvector, sandbox, and gateway URLs, plus how to read Kubernetes secrets |
 | [Agent sandbox](reference/agent-sandbox.md) | Isolated pods for agent-generated code: templates, warm pools, and the SDK |
 | [KubeRay](reference/kuberay.md) | Ray jobs inside the cluster. Disabled by default until you turn it on |
+| [Claw: persistent OpenClaw agents](claw.md) | Long-lived OpenClaw agents on the cluster, and the [end-to-end walkthrough](claw-e2e.md). Disabled by default until you turn it on |
 | [Glossary](reference/glossary.md) | Terms used across these guides, each linked to the page that owns it |

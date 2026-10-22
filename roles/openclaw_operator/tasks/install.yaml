@@ -1,0 +1,113 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "openclaw_operator | Check the pins are digests"
+  ansible.builtin.assert:
+    that:
+      - openclaw_operator_digest is match('^sha256:[a-f0-9]{64}$')
+      - openclaw_operator_image_digest is match('^sha256:[a-f0-9]{64}$')
+    fail_msg: "openclaw_operator_digest and openclaw_operator_image_digest must be sha256 digests; tags are mutable."
+    quiet: true
+
+- name: "openclaw_operator | Look for cosign (fails only if openclaw_operator_cosign_required)"
+  ansible.builtin.command:
+    cmd: cosign version
+  register: _oco_cosign
+  changed_when: false
+  failed_when: openclaw_operator_cosign_required | bool and _oco_cosign.rc != 0
+
+# The chart has no Helm provenance file; upstream signs keyless, so pin the signer identity.
+- name: "openclaw_operator | Verify signatures of the chart and the operator image"
+  ansible.builtin.command:
+    argv:
+      - cosign
+      - verify
+      - --certificate-identity
+      - "{{ openclaw_operator_cosign_identity }}"
+      - --certificate-oidc-issuer
+      - "{{ openclaw_operator_cosign_issuer }}"
+      - "{{ item }}"
+  loop:
+    - "{{ openclaw_operator_chart | regex_replace('^oci://', '') }}@{{ openclaw_operator_digest }}"
+    - "{{ openclaw_operator_image }}@{{ openclaw_operator_image_digest }}"
+  changed_when: false
+  when: _oco_cosign.rc == 0
+
+- name: "openclaw_operator | Create namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ openclaw_operator_namespace }}"
+        labels: >-
+          {{ {}
+             | combine({'pod-security.kubernetes.io/enforce': 'restricted',
+                        'pod-security.kubernetes.io/audit': 'restricted',
+                        'pod-security.kubernetes.io/warn': 'restricted'}
+                       if (enforce_pss | default(false) | bool) else {})
+             | combine({'istio.io/dataplane-mode': 'ambient'}
+                       if (istio_enabled | default(false) | bool) else {}) }}
+
+# Pull once by digest and install that copy, so the version check runs before any change.
+- name: "openclaw_operator | Install from the pinned chart"
+  block:
+    - name: "openclaw_operator | Create a scratch directory"
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: openclaw-operator
+      register: _oco_tmp
+      changed_when: false
+
+    - name: "openclaw_operator | Pull the chart by digest"
+      kubernetes.core.helm_pull:
+        chart_ref: "{{ openclaw_operator_chart }}@{{ openclaw_operator_digest }}"
+        destination: "{{ _oco_tmp.path }}"
+        untar_chart: true
+      changed_when: false
+
+    - name: "openclaw_operator | Read the chart metadata"
+      ansible.builtin.slurp:
+        src: "{{ _oco_tmp.path }}/openclaw-operator/Chart.yaml"
+      register: _oco_chart_yaml
+
+    - name: "openclaw_operator | Check the chart is the pinned version"
+      ansible.builtin.assert:
+        that: _oco_chart_version == openclaw_operator_version
+        fail_msg: >-
+          openclaw_operator_digest is chart version {{ _oco_chart_version }}, but
+          openclaw_operator_version is {{ openclaw_operator_version }}. Bump the
+          version and both digests together.
+        quiet: true
+      vars:
+        _oco_chart_version: "{{ (_oco_chart_yaml.content | b64decode | from_yaml).version }}"
+
+    - name: "openclaw_operator | Install or upgrade the chart"
+      kubernetes.core.helm:
+        name: "{{ openclaw_operator_release_name }}"
+        chart_ref: "{{ _oco_tmp.path }}/openclaw-operator"
+        release_namespace: "{{ openclaw_operator_namespace }}"
+        wait: true
+        timeout: "{{ openclaw_operator_wait_timeout }}"
+        values:
+          image:
+            repository: "{{ openclaw_operator_image }}"
+            tag: "v{{ openclaw_operator_version }}@{{ openclaw_operator_image_digest }}"  # chart renders repo:tag
+          affinity: "{{ _platform_affinity | default({}) }}"
+
+  always:
+    - name: "openclaw_operator | Remove the scratch directory"
+      ansible.builtin.file:
+        path: "{{ _oco_tmp.path }}"
+        state: absent
+      changed_when: false
+      when: _oco_tmp.path is defined
+
+- name: "openclaw_operator | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "OpenClaw operator {{ openclaw_operator_version }} in namespace '{{ openclaw_operator_namespace }}'"
+      - "Chart: {{ openclaw_operator_chart }}@{{ openclaw_operator_digest }}"
+      - "Signatures: {{ 'verified (cosign)' if _oco_cosign.rc == 0 else 'not checked (cosign not installed); digests still pin the bytes' }}"

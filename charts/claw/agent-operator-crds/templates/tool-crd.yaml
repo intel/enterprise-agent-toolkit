@@ -1,0 +1,83 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# A platform MCP server that agents reach through a skill. A Tool with requiresIdentity
+# receives the agent's token, so creating one is a cluster-admin action.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: tools.intel-stack.io
+  labels:
+    app.kubernetes.io/name: agent-operator
+    app.kubernetes.io/part-of: enterprise-agent-toolkit
+spec:
+  group: intel-stack.io
+  names:
+    kind: Tool
+    listKind: ToolList
+    plural: tools
+    singular: tool
+    shortNames: [agtool]
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - {name: Skill, type: string, jsonPath: .spec.skill}
+        - {name: Identity, type: boolean, jsonPath: .spec.requiresIdentity}
+        - {name: AlwaysOn, type: boolean, jsonPath: .spec.alwaysOn}
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: URL, type: string, jsonPath: .spec.url, priority: 1}
+        - {name: Aliases, type: string, jsonPath: .spec.aliasSkills, priority: 1}
+        - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [skill, url]
+              properties:
+                skill:
+                  type: string
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([-a-z0-9_]*[a-z0-9])?$'
+                  description: The spec.skills entry that wires this tool. The oldest Tool for a skill wins.
+                aliasSkills:
+                  type: array
+                  description: More skills that wire this tool; an alias never shadows another Tool's skill.
+                  items:
+                    type: string
+                    maxLength: 63
+                    pattern: '^[a-z0-9]([-a-z0-9_]*[a-z0-9])?$'
+                url:
+                  type: string
+                  maxLength: 253
+                  description: In-cluster Service URL of the MCP endpoint (".svc" required).
+                  pattern: '^https?://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?(/[^\s]*)?$'
+                transport:
+                  type: string
+                  enum: [sse]
+                  default: sse
+                requiresIdentity:
+                  type: boolean
+                  default: false
+                  description: Calls go through the agent's identity proxy with a token for audience mcp-<skill>.
+                alwaysOn:
+                  type: boolean
+                  default: false
+                  description: Wired into every agent, whatever its spec.skills.
+                description:
+                  type: string
+                  maxLength: 256
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Registered, Conflicting, Rejected]
+                observedGeneration:
+                  type: integer
+                  format: int64
