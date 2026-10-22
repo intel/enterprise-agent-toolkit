@@ -1,0 +1,60 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agents are deleted while the operator still runs, so each one is fully cleaned up.
+# Succeeds when nothing is installed.
+
+- name: "agent_operator | teardown | List Agents"
+  kubernetes.core.k8s_info:
+    api_version: intel-stack.io/v1alpha1
+    kind: Agent
+  register: _td_ao_agents
+
+- name: "agent_operator | teardown | Delete Agents"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: intel-stack.io/v1alpha1
+    kind: Agent
+    namespace: "{{ item.metadata.namespace }}"
+    name: "{{ item.metadata.name }}"
+    wait: true
+    wait_timeout: 600
+  loop: "{{ _td_ao_agents.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.namespace }}/{{ item.metadata.name }}"
+
+- name: "agent_operator | teardown | Uninstall the operator and the CRDs"
+  kubernetes.core.helm:
+    name: "{{ item }}"
+    release_namespace: "{{ agent_operator_namespace }}"
+    state: absent
+    wait: true
+  loop:
+    - "{{ agent_operator_release_name }}"
+    - "{{ agent_operator_crds_release_name }}"
+
+- name: "agent_operator | teardown | Remove the namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ agent_operator_namespace }}"
+    wait: true
+    wait_timeout: 300
+
+- name: "agent_operator | teardown | Remove the inference gateway policy this role added"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    name: claw-ai-gateway
+    namespace: "{{ claw_ai_gateway_namespace }}"
+  failed_when: false
+
+- name: "agent_operator | teardown | Remove the Keycloak service account"
+  ansible.builtin.include_tasks: keycloak_remove.yaml
+
+- name: "agent_operator | teardown | Remove the image trust and build toolchain"
+  ansible.builtin.include_role:
+    name: claw_image
+    tasks_from: remove.yaml
