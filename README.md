@@ -1,3 +1,5 @@
+<img src="docs/assets/banner.jpg" alt="Intel® Agent Toolkit" width="100%">
+
 <!-- vale off (due to hyperlinks) -->
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/intel/enterprise-agent-toolkit/blob/main/LICENSE)
 [![Platform: Intel hardware](https://img.shields.io/badge/Platform-Intel%C2%AE%20hardware-0068B5)](https://www.intel.com/content/www/us/en/products/details/processors.html)
@@ -8,7 +10,7 @@
 
 # Intel® Agent Toolkit
 
-**The fast path to deploying AI agents on Intel® Xeon® silicon. Go from bare metal to a working agent stack in minutes.**
+**The fast path to deploying AI agents on Intel® processors. Go from bare metal to a working agent stack in minutes.**
 
 > Deploy and connect LLM inference, RAG, and agent workflows in a customizable Kubernetes-based platform, with a GenAI gateway, security, intelligent routing, observability, model serving, and infrastructure automation built in.
 
@@ -16,7 +18,7 @@
 
 Teams that want **production AI agents** usually discover that a language-model endpoint is not enough. An agent has to remember a conversation, look up company data, call internal APIs, and sometimes run code it just generated. Doing that on a public cloud API also means prompts and documents leave the premises, and every team rebuilds the same plumbing (memory, sandbox, keys, traces).
 
-Intel® Agent Toolkit is that plumbing, running on Kubernetes on **Intel® hardware** you already operate. [AI Solutions](https://github.com/intel/enterprise-ai-solutions) installs, updates, and tears it down, including the cluster and model serving. Applications keep an **OpenAI-compatible API**. Developers change the base URL and API key; they do not rewrite clients or drop LangGraph, CrewAI, or similar frameworks. Data and weights stay on your hardware. A GPU is not required.
+Intel® Agent Toolkit is that plumbing, running on Kubernetes on **Intel® hardware** you already operate. [Stack Manager](https://github.com/intel/enterprise-ai-solutions) installs, updates, and tears it down, including the cluster and model serving. Applications keep an **OpenAI-compatible API**. Developers change the base URL and API key; they do not rewrite clients or drop LangGraph, CrewAI, or similar frameworks. Data and weights stay on your hardware. A GPU is not required.
 
 <p align="center">
   <img src="docs/assets/overview.png" alt="Intel® Agent Toolkit. Your agent (LangGraph, CrewAI, OpenClaw, Microsoft Agent Framework) calls an API gateway (LiteLLM, auth, rate limits). The stack provides memory (Redis, PostgreSQL, pgvector), inference and routing (vLLM, SGLang, cloud LLMs), tools and MCP servers, a policy-enforced sandbox (Agent Sandbox, OpenShell), and observability (Langfuse, Prometheus, Grafana). Deployment scales from one node to a rack with Ansible, Helm, and autoscaling, on Kubernetes or Docker Compose, using Intel® Xeon® for orchestration and execution, with GPUs and cloud LLMs for inference.">
@@ -35,9 +37,10 @@ A default install gives you the components below. Every one of them is configura
 | **Short-term memory** | Redis Stack (with RediSearch) | Session state and recent context |
 | **Long-term memory** | PostgreSQL + pgvector | RAG, embeddings, and data that persists across restarts |
 | **Code sandbox** | Isolated Kubernetes pods | Execute agent-generated code without access to the host |
+| **Tools** | MCP server templates | Register APIs and tools the agent can invoke |
 | **Observability** | Langfuse + Prometheus / Grafana | Tokens, latency, and each agent step |
 
-Out of the box, Redis, pgvector, and the sandbox are on; each has an `*_enabled` flag to switch it off. KubeRay (distributed Ray jobs) is off until you set `kuberay_enabled: true`.
+Out of the box, Redis, pgvector, and the sandbox are on; each has an `*_enabled` flag to switch it off. MCP templates are installed, but no MCP server runs until you add one. KubeRay (distributed Ray jobs) is off until you set `kuberay_enabled: true`.
 
 Agents are written in LangGraph, CrewAI, or any OpenAI-compatible SDK. This repository is the infrastructure those frameworks call; it does not replace them.
 
@@ -64,13 +67,13 @@ grep -q "api.example.com" /etc/hosts || \
 
 Continue only if the output includes `SSH OK`.
 
-### 2. Install AI Solutions and generate the configuration
+### 2. Install Stack Manager and generate the configuration
 
 ```bash
 git clone https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
-./es_auto_installer.sh configure                 # one-time: Python venv, yq, kubectl, helm
-./es_auto_installer.sh init agent-toolkit        # clones this repo under ext/ and writes env/local/
+./stack-manager configure                 # one-time: Python venv, yq, kubectl, helm
+./stack-manager init agent-toolkit        # clones this repo under ext/ and writes env/local/
 ```
 
 Run the remaining commands from the `enterprise-ai-solutions` directory.
@@ -91,7 +94,7 @@ The remaining defaults suit a single host: `gateway_tls_mode: selfsigned` genera
 ### 4. Install
 
 ```bash
-./es_auto_installer.sh install agent-toolkit
+./stack-manager install agent-toolkit
 ```
 
 The first install takes 20-40 minutes. If it stops, rerun the same command to resume.
@@ -117,12 +120,12 @@ curl -k https://api.example.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${LITELLM_MASTER_KEY}" \
   -d '{
-    "model": "qwen3-4b",
+    "model": "Qwen/Qwen3-4B-Instruct-2507",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-`/v1/models` lists `qwen3-4b`, and `/v1/chat/completions` returns the reply in `choices[0].message.content`. The `-k` flag is required because the certificate is self-signed.
+`/v1/models` lists `Qwen/Qwen3-4B-Instruct-2507`, and `/v1/chat/completions` returns the reply in `choices[0].message.content`. The `-k` flag is required because the certificate is self-signed.
 
 | Symptom | Resolution |
 |---|---|
@@ -143,7 +146,7 @@ The quickstart above installs on one host. For a different layout, pick it from 
 |---|---|---|
 | **Single node** | First run on one host, or a small pilot | [Single-node quickstart](docs/getting-started/quickstart.md) |
 | **Multi-node** | Several hosts: one control-plane node plus worker nodes for extra model pods | [Multi-node](docs/deployment/multi-node.md) |
-| **Docker Compose** | Containers on a single Linux host with `docker/deploy.sh` (not installed by `es_auto_installer.sh`) | [Docker](docs/deployment/docker.md) |
+| **Docker Compose** | **Not installed by Stack Manager yet.** Containers on a single Linux host. Needs a team review. | [Docker](docs/deployment/docker.md) |
 
 ---
 
@@ -152,7 +155,7 @@ The quickstart above installs on one host. For a different layout, pick it from 
 The technical documentation lives in [`docs/`](docs/README.md). The index is organized by task (meet, get started, deploy, customize, operate, reference). These are the pages most people open first:
 
 - [Docs index](docs/README.md): jump table into the rest of the docs
-- [Meet the Agent Toolkit](docs/overview/meet.md): what the toolkit is, how AI Solutions installs it, and what each component is for
+- [Meet the Agent Toolkit](docs/overview/meet.md): what the toolkit is, how Stack Manager installs it, and what each component is for
 - [Prerequisites](docs/getting-started/prerequisites.md): hardware, SSH keys, DNS, and TLS
 - [Single-node quickstart](docs/getting-started/quickstart.md): install, confirm pods, send a chat request
 - [Configuration](docs/configuration/configuration.md): the YAML files under `env/local/`
@@ -160,7 +163,7 @@ The technical documentation lives in [`docs/`](docs/README.md). The index is org
 - [Guardrails](docs/configuration/guardrails.md): content-safety screening before the main model
 - [Backend URLs](docs/reference/backend-connections.md): in-cluster Redis, pgvector, sandbox, and gateway
 - [FAQ](docs/faq-and-troubleshooting/frequently-asked-questions.md): short answers to the questions people ask first
-- [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md): AI Solutions, API, and pod failures
+- [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md): Stack Manager, API, and pod failures
 - [Intel® Chatbot Toolkit](https://swcatalog.intel.com/developer/docs/enterprise-rag): related product on the Intel® Software Catalog
 
 > Discover more Intel® AI software on the [Intel® Software Catalog](https://swcatalog.intel.com/).
@@ -169,7 +172,7 @@ The technical documentation lives in [`docs/`](docs/README.md). The index is org
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how AI Solutions installs this repository and how to add a component.
+Bug reports, doc fixes, and new components are all welcome. [CONTRIBUTING.md](CONTRIBUTING.md) starts with a table of what to do for each kind of change, then walks through your first pull request.
 
 ---
 
