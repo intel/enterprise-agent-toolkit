@@ -12,7 +12,7 @@ pgvector_release_name: "pgvector"
 pgvector_database: "agentdb"
 pgvector_username: "agentuser"
 pgvector_storage_size: "20Gi"
-pgvector_storage_class: ""         
+pgvector_storage_class: ""
 pgvector_version: "16"
 
 pgvector_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"

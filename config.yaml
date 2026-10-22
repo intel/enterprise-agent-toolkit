@@ -3,9 +3,16 @@
 # Agent Toolkit Configuration — enterprise.agent-toolkit
 # =============================================================================
 # Role defaults live in roles/<name>/defaults/main.yaml.
-# Override any of them here.  This file is loaded by the core installer
-# via:  -e @ext/enterprise.agent-toolkit/config.yaml
+# Override any of them here.  `es_auto_installer.sh init agent-toolkit` seeds
+# this file into env/<env>/config.agent-toolkit.yaml and the installer loads
+# that seeded copy: edit the copy to change an existing environment.
 # =============================================================================
+
+# --- API access (inference layer) ---
+# The toolkit serves agents through the LiteLLM gateway: virtual keys per agent or
+# sandbox, the content-safety guardrail, Langfuse tracing and the OpenShell provider.
+# Set "jwt" for Keycloak JWT access to the AI gateway instead (no LiteLLM).
+auth_type: "litellm_vkey"
 
 # --- Default model (inference layer, applied only where this layer is provisioned) ---
 # Deployed on install.
@@ -41,6 +48,10 @@ openshell_enabled: false
 # OpenShell authenticates users via OIDC only — when enabling it, set ONE of:
 openshell_oidc_issuer: ""                               # e.g. a Keycloak realm URL
 openshell_allow_unauthenticated_clusterip_only: false   # true = single-admin, ClusterIP + port-forward
+# Sandboxes run outside the Istio mesh, so with OpenShell on the inference layer's
+# LiteLLM admits them from the pod network on its API port; they still use the minted
+# virtual key. On a bring-your-own cluster, also set kubernetes_cluster_cidr to its pod CIDR.
+litellm_allow_pod_network: "{{ openshell_enabled | bool }}"
 
 # --- KubeRay (optional — disabled by default) ---
 kuberay_enabled: false

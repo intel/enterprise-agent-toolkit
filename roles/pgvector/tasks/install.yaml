@@ -9,6 +9,7 @@
     release_namespace: "{{ pgvector_namespace }}"
   register: _pgvector_release
   failed_when: false
+  no_log: true
 
 - name: "pgvector | Already installed — skipping"
   ansible.builtin.debug:
@@ -18,7 +19,7 @@
 - name: "pgvector | Install"
   when: _pgvector_release.status is not defined or _pgvector_release.status is none
   block:
-    
+
     - name: "pgvector | Resolve database password once"
       ansible.builtin.set_fact:
         _pgvector_pw: "{{ pgvector_password }}"
@@ -38,7 +39,7 @@
         create_namespace: true
         wait: true
         timeout: "5m0s"
-        values:         
+        values:
           auth:
             username: "{{ pgvector_username }}"
             password: "{{ _pgvector_pw }}"
@@ -48,6 +49,15 @@
             size: "{{ pgvector_storage_size }}"
             storageClassName: "{{ pgvector_storage_class }}"
           resources: "{{ pgvector_resources }}"
+      register: _pgvector_helm
+      no_log: true
+      ignore_errors: true
+
+    - name: "pgvector | Check Helm install result"
+      ansible.builtin.assert:
+        that: _pgvector_helm is succeeded
+        fail_msg: "pgvector Helm install failed: {{ _pgvector_helm.msg | default('no error message returned') }}"
+        quiet: true
 
     - name: "pgvector | Wait for pod to be ready"
       kubernetes.core.k8s_info:

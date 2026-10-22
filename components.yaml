@@ -28,7 +28,7 @@ components:
 
   - name: keycloak_agent_config
     layer: agent-toolkit
-    enabled: "{{ keycloak_agent_config_enabled | default(keycloak_enabled | default(auth_provider | default('keycloak') != 'litellm')) | bool }}"
+    enabled: "{{ keycloak_agent_config_enabled | default(keycloak_enabled | default(true)) | bool }}"
     depends_on: []
 
   - name: agent_sandbox

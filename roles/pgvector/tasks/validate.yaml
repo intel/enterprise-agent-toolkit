@@ -24,6 +24,7 @@
       -c "SELECT extname FROM pg_extension WHERE extname='vector';"
   register: _val_ext
   failed_when: "'vector' not in _val_ext.stdout | default('')"
+  changed_when: false
 
 - name: "pgvector | validate | Check credentials secret exists"
   kubernetes.core.k8s_info:

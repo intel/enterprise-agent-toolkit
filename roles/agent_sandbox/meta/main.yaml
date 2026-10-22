@@ -1,6 +1,8 @@
 ---
 galaxy_info:
   role_name: agent_sandbox
+  author: Intel Corporation
   description: Agent Sandbox — ephemeral code execution with policy-based isolation
+  license: Apache-2.0
   min_ansible_version: "2.15"
 dependencies: []

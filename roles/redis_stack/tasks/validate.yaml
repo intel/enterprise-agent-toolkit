@@ -28,17 +28,37 @@
   kubernetes.core.k8s_exec:
     namespace: "{{ redis_stack_namespace }}"
     pod: "{{ _val_pods.resources[0].metadata.name }}"
-    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}PING"
+    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim | quote) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}PING"
   register: _val_ping
-  failed_when: "'PONG' not in _val_ping.stdout | default('')"
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: "redis_stack | validate | Assert Redis answered PING"
+  ansible.builtin.assert:
+    that: "'PONG' in _val_ping.stdout | default('')"
+    fail_msg: >-
+      Redis PING failed:
+      {{ (_val_ping.stdout | default('') ~ ' ' ~ _val_ping.stderr | default('') ~ ' ' ~ _val_ping.msg | default('')) | trim }}
+    quiet: true
 
 - name: "redis_stack | validate | Check RediSearch module loaded"
   kubernetes.core.k8s_exec:
     namespace: "{{ redis_stack_namespace }}"
     pod: "{{ _val_pods.resources[0].metadata.name }}"
-    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}MODULE LIST"
+    command: "redis-cli {{ ('-a ' ~ (_redis_pass.stdout | trim | quote) ~ ' --no-auth-warning ') if (_redis_pass.stdout | default('') | trim | length > 0) else '' }}MODULE LIST"
   register: _val_modules
-  failed_when: "'search' not in _val_modules.stdout | default('')"
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: "redis_stack | validate | Assert RediSearch module is loaded"
+  ansible.builtin.assert:
+    that: "'search' in _val_modules.stdout | default('')"
+    fail_msg: >-
+      RediSearch module not loaded:
+      {{ (_val_modules.stdout | default('') ~ ' ' ~ _val_modules.stderr | default('') ~ ' ' ~ _val_modules.msg | default('')) | trim }}
+    quiet: true
 
 - name: "redis_stack | validate | Summary"
   ansible.builtin.debug:

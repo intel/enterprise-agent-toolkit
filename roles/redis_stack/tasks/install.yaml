@@ -9,6 +9,7 @@
     release_namespace: "{{ redis_stack_namespace }}"
   register: _redis_release
   failed_when: false
+  no_log: true
 
 - name: "redis_stack | Already installed — skipping"
   ansible.builtin.debug:
@@ -24,7 +25,6 @@
         kind: Namespace
         name: "{{ redis_stack_namespace }}"
         state: present
-
     - name: "redis_stack | Install via Helm"
       kubernetes.core.helm:
         name: "{{ redis_stack_release_name }}"
@@ -42,6 +42,15 @@
               auth:
                 enabled: "{{ redis_stack_auth_enabled | bool }}"
                 password: "{{ redis_stack_password }}"
+      register: _redis_helm
+      no_log: true
+      ignore_errors: true
+
+    - name: "redis_stack | Check Helm install result"
+      ansible.builtin.assert:
+        that: _redis_helm is succeeded
+        fail_msg: "Redis Stack Helm install failed: {{ _redis_helm.msg | default('no error message returned') }}"
+        quiet: true
 
     - name: "redis_stack | Wait for pods to be ready"
       kubernetes.core.k8s_info:

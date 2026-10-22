@@ -60,6 +60,7 @@
 
     # ── Sandbox router ────────────────────────────────────────────────────────
 
+    # The result returns the stored Secret, token included, so it stays out of the log.
     - name: "agent_sandbox | Create sandbox-router auth token secret"
       kubernetes.core.k8s:
         state: present
@@ -72,6 +73,15 @@
           type: Opaque
           stringData:
             ROUTER_AUTH_TOKEN: "{{ lookup('password', '/dev/null length=64 chars=hexdigits') }}"
+      register: _router_secret
+      no_log: true
+      ignore_errors: true
+
+    - name: "agent_sandbox | Check sandbox-router auth token secret"
+      ansible.builtin.assert:
+        that: _router_secret is succeeded
+        fail_msg: "Creating Secret sandbox-router-auth failed: {{ _router_secret.msg | default('no error message returned') }}"
+        quiet: true
 
     # Download with retry/backoff — raw.githubusercontent throttles (HTTP 429).
     - name: "agent_sandbox | Download sandbox-router manifest"

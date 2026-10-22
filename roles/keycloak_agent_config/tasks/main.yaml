@@ -3,4 +3,4 @@
   ansible.builtin.include_tasks: "{{ component_action | default('install') }}.yaml"
   when: >-
     (component_action | default('install')) != 'install' or
-    (keycloak_agent_config_enabled | default(keycloak_enabled | default(auth_provider | default('keycloak') != 'litellm')) | bool)
+    (keycloak_agent_config_enabled | default(keycloak_enabled | default(true)) | bool)

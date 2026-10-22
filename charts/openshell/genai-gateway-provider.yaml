@@ -5,7 +5,7 @@
 # GENAI_HOST / GENAI_PORT are substituted by the openshell role.
 id: eat-genai-gateway
 display_name: EAT GenAI Gateway (LiteLLM)
-description: Intel Enterprise Agent Toolkit LiteLLM gateway (OpenAI-compatible)
+description: Intel® Enterprise Agent Toolkit LiteLLM gateway (OpenAI-compatible)
 category: inference
 inference_capable: true
 credentials:

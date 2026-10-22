@@ -3,8 +3,9 @@
 # OpenShell — Install
 # =============================================================================
 # Requires agent_sandbox (CRDs + controller). The GenAI Gateway provider is
-# configured only when the inference LiteLLM is deployed (auth_provider=litellm);
-# otherwise OpenShell is deployed without a provider.
+# configured only when the inference LiteLLM is deployed (it runs when auth_type
+# is litellm_vkey or litellm_enabled is true); otherwise OpenShell is deployed
+# without a provider.
 # =============================================================================
 
 # ========================================================================
@@ -43,28 +44,42 @@
     - "{{ openshell_namespace }}"
     - "{{ openshell_sandbox_namespace }}"
 
+# The chart overlay and the role settings go in as one values dict: an unchanged
+# release then compares equal to it and is not upgraded again.
 - name: "openshell | Install OpenShell Helm chart"
-  ansible.builtin.command: >
-    helm upgrade --install {{ openshell_release_name }} {{ openshell_chart_ref }}
-    --version {{ openshell_chart_version }}
-    --namespace {{ openshell_namespace }}
-    -f {{ helm_charts_base_openshell }}/values.yaml
-    --set global.image.tag={{ openshell_image_tag }}
-    {% if openshell_image_tag == 'dev' %}
-    --set global.image.pullPolicy=Always
-    {% endif %}
-    --set server.sandboxNamespace={{ openshell_sandbox_namespace }}
-    {% if openshell_oidc_issuer | length > 0 %}
-    --set server.oidc.issuer={{ openshell_oidc_issuer }}
-    --set server.oidc.audience={{ openshell_oidc_audience }}
-    {% else %}
-    --set server.auth.allowUnauthenticatedUsers=true
-    {% endif %}
-    {% if openshell_upstream_proxy | length > 0 %}
-    --set upstreamProxy.url={{ openshell_upstream_proxy }}
-    --set-string upstreamProxy.noProxy="{{ openshell_upstream_no_proxy | replace(',', '\,') }}"
-    {% endif %}
-    --wait --timeout 10m
+  kubernetes.core.helm:
+    name: "{{ openshell_release_name }}"
+    chart_ref: "{{ openshell_chart_ref }}"
+    chart_version: "{{ openshell_chart_version }}"
+    release_namespace: "{{ openshell_namespace }}"
+    values: >-
+      {{ lookup('ansible.builtin.file', helm_charts_base_openshell ~ '/values.yaml') | from_yaml
+         | combine(helm_overrides | from_yaml, recursive=True) }}
+    wait: true
+    timeout: "10m0s"
+  vars:
+    helm_overrides: |
+      global:
+        image:
+          tag: {{ openshell_image_tag | to_json }}
+      {% if openshell_image_tag == 'dev' %}
+          pullPolicy: Always
+      {% endif %}
+      server:
+        sandboxNamespace: {{ openshell_sandbox_namespace | to_json }}
+      {% if openshell_oidc_issuer | length > 0 %}
+        oidc:
+          issuer: {{ openshell_oidc_issuer | to_json }}
+          audience: {{ openshell_oidc_audience | to_json }}
+      {% else %}
+        auth:
+          allowUnauthenticatedUsers: true
+      {% endif %}
+      {% if openshell_upstream_proxy | length > 0 %}
+      upstreamProxy:
+        url: {{ openshell_upstream_proxy | to_json }}
+        noProxy: {{ openshell_upstream_no_proxy | to_json }}
+      {% endif %}
   register: openshell_helm
 
 # Chart gap: supervisor pods in server.sandboxNamespace mount the client TLS secret,
@@ -80,6 +95,22 @@
   register: tls_copy
   changed_when: "'configured' in tls_copy.stdout or 'created' in tls_copy.stdout"
 
+# NodeLocal DNSCache is the pods' resolver on a link-local address that the kube-dns
+# pod selector does not match. Its DaemonSet is nodelocaldns on kubespray clusters and
+# node-local-dns with the upstream manifest. When neither exists, only the kube-dns
+# pods are allowed (openshell_sandbox_dns_cidrs names another resolver).
+- name: "openshell | Detect NodeLocal DNSCache"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: "{{ item }}"
+    namespace: kube-system
+  loop: [nodelocaldns, node-local-dns]
+  register: _openshell_nodelocaldns
+  when:
+    - openshell_sandbox_network_policy | bool
+    - openshell_sandbox_dns_cidrs | length == 0
+
 # Selects only pods without openshell.ai/boundary-role, so split-pod charts keep their
 # own (stricter) policies: NetworkPolicy allows are additive.
 - name: "openshell | Apply sandbox pod NetworkPolicy"
@@ -90,6 +121,18 @@
     # Proxy hostnames behind GSLB resolve to varying IPs: allow the proxy port on
     # openshell_upstream_proxy_cidrs (default: private ranges) instead of pinning /32s.
     proxy_cidrs: "{{ openshell_upstream_proxy_cidrs if openshell_upstream_proxy | length > 0 else [] }}"
+    # NodeLocal DNSCache container args, e.g. [-localip, <address>, -conf, ...].
+    nodelocaldns_args: >-
+      {{ _openshell_nodelocaldns.results | default([])
+         | map(attribute='resources', default=[]) | flatten
+         | map(attribute='spec.template.spec.containers') | flatten
+         | map(attribute='args', default=[]) | flatten }}
+    # Each -localip may list several comma-separated addresses.
+    nodelocaldns_cidrs: >-
+      {{ (nodelocaldns_args | zip(nodelocaldns_args[1:])
+          | selectattr(0, 'eq', '-localip') | map(attribute=1) | join(','))
+         | split(',') | map('trim') | select | unique | map('regex_replace', '$', '/32') | list }}
+    dns_cidrs: "{{ openshell_sandbox_dns_cidrs if openshell_sandbox_dns_cidrs | length > 0 else nodelocaldns_cidrs }}"
     sandbox_np: |
       apiVersion: networking.k8s.io/v1
       kind: NetworkPolicy
@@ -113,8 +156,10 @@
               matchLabels: {kubernetes.io/metadata.name: kube-system}
             podSelector:
               matchLabels: {k8s-app: kube-dns}
-          # kubespray nodelocaldns (hostNetwork, link-local IP) answers pod DNS
-          - ipBlock: {cidr: "{{ openshell_node_local_dns_ip }}/32"}
+          # NodeLocal DNSCache (hostNetwork, link-local IP) or openshell_sandbox_dns_cidrs
+      {% for cidr in dns_cidrs %}
+          - ipBlock: {cidr: "{{ cidr }}"}
+      {% endfor %}
           ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
         - to:
           - namespaceSelector:
@@ -164,7 +209,8 @@
     # The mesh-wide PeerAuthentication is STRICT and the LiteLLM namespace is ambient,
     # so plaintext from the (non-mesh) sandbox supervisor is rejected. Accept it on the
     # LiteLLM pods only, as envoy_gateway does for the edge (eg-gateway-edge); LiteLLM
-    # still requires the virtual key.
+    # still requires the virtual key. LiteLLM's ingress AuthorizationPolicy admits the
+    # sandboxes from the pod network (litellm_allow_pod_network, set in config.yaml).
     - name: "openshell | Let sandboxes reach LiteLLM under STRICT mTLS"
       kubernetes.core.k8s:
         state: present
@@ -212,6 +258,7 @@
                 {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
             print(json.load(urllib.request.urlopen(req))["key"])
       register: vk_mint
+      changed_when: true
       no_log: true
       when: vk_secret.rc != 0
 

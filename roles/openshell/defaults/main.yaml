@@ -44,12 +44,16 @@ openshell_allow_unauthenticated_clusterip_only: false
 # that sandbox policies may target.
 openshell_sandbox_network_policy: true
 openshell_sandbox_egress_cidrs: []
-openshell_node_local_dns_ip: "169.254.25.10"   # kubespray nodelocaldns_ip; sandbox DNS egress
+# Resolver CIDRs sandboxes may reach on port 53 besides the kube-dns pods. Empty = use the
+# NodeLocal DNSCache addresses (-localip of DaemonSet kube-system/nodelocaldns or
+# kube-system/node-local-dns); the kube-dns pods only when neither is found.
+openshell_sandbox_dns_cidrs: []
 openshell_upstream_proxy_cidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]  # proxy port only
 
 # GenAI Gateway (LiteLLM) provider: sandboxes see a placeholder, the supervisor injects a
 # per-deployment LiteLLM virtual key only toward the gateway service.
-# Unified: the gateway is the inference layer's LiteLLM (deployed when auth_provider=litellm).
+# The gateway is the inference layer's LiteLLM, which runs when auth_type is litellm_vkey
+# or litellm_enabled is true.
 openshell_genai_provider_enabled: true
 openshell_genai_namespace: "{{ litellm_namespace | default('litellm') }}"
 openshell_genai_deployment: "litellm"
