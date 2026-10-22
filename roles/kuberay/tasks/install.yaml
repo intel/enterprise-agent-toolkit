@@ -1,0 +1,93 @@
+---
+# =============================================================================
+# KubeRay — Install (Operator + RayCluster)
+# =============================================================================
+
+- name: "kuberay | Check for existing operator release"
+  kubernetes.core.helm_info:
+    name: "{{ kuberay_operator_release_name }}"
+    release_namespace: "{{ kuberay_namespace }}"
+  register: _kuberay_op_release
+  failed_when: false
+
+- name: "kuberay | Already installed — skipping"
+  ansible.builtin.debug:
+    msg: "KubeRay already deployed in {{ kuberay_namespace }} — skipping install."
+  when: _kuberay_op_release.status is defined and _kuberay_op_release.status is not none
+
+- name: "kuberay | Install"
+  when: _kuberay_op_release.status is not defined or _kuberay_op_release.status is none
+  block:
+
+    - name: "kuberay | Create namespace"
+      kubernetes.core.k8s:
+        kind: Namespace
+        name: "{{ kuberay_namespace }}"
+        state: present
+
+    # ── Step 1: KubeRay operator ──────────────────────────────────────────────
+
+    - name: "kuberay | Add Helm repository"
+      kubernetes.core.helm_repository:
+        name: kuberay
+        repo_url: "https://ray-project.github.io/kuberay-helm/"
+
+    - name: "kuberay | Install operator v{{ kuberay_operator_version }}"
+      kubernetes.core.helm:
+        name: "{{ kuberay_operator_release_name }}"
+        chart_ref: kuberay/kuberay-operator
+        chart_version: "{{ kuberay_operator_version }}"
+        release_namespace: "{{ kuberay_namespace }}"
+        create_namespace: true
+        wait: true
+        timeout: "5m0s"
+
+    # ── Step 2: RayCluster ────────────────────────────────────────────────────
+
+    - name: "kuberay | Deploy RayCluster"
+      kubernetes.core.helm:
+        name: "{{ kuberay_release_name }}"
+        chart_ref: "{{ role_path }}/../../charts/kuberay"
+        release_namespace: "{{ kuberay_namespace }}"
+        wait: true
+        timeout: "10m0s"
+        values:
+          cluster:
+            name: "{{ kuberay_release_name }}"
+            rayImage: "{{ kuberay_ray_image }}"
+            head:
+              cpuRequest: "{{ kuberay_head_cpu_request }}"
+              cpuLimit: "{{ kuberay_head_cpu_limit }}"
+              memoryRequest: "{{ kuberay_head_memory_request }}"
+              memoryLimit: "{{ kuberay_head_memory_limit }}"
+            worker:
+              replicas: "{{ kuberay_worker_replicas }}"
+              minReplicas: "{{ kuberay_worker_min_replicas }}"
+              maxReplicas: "{{ kuberay_worker_max_replicas }}"
+              cpuRequest: "{{ kuberay_worker_cpu_request }}"
+              cpuLimit: "{{ kuberay_worker_cpu_limit }}"
+              memoryRequest: "{{ kuberay_worker_memory_request }}"
+              memoryLimit: "{{ kuberay_worker_memory_limit }}"
+
+    # ── Wait for head pod ────────────────────────────────────────────────────
+
+    - name: "kuberay | Wait for Ray head pod"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Pod
+        namespace: "{{ kuberay_namespace }}"
+        label_selectors:
+          - ray.io/node-type=head
+      register: _ray_head
+      until:
+        - _ray_head.resources | default([]) | length > 0
+        - _ray_head.resources | selectattr('status.phase', 'eq', 'Running') | list | length > 0
+      retries: 60
+      delay: 5
+
+- name: "kuberay | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "KubeRay deployed in namespace '{{ kuberay_namespace }}'"
+      - "Ray Client: ray://{{ kuberay_release_name }}-head-svc.{{ kuberay_namespace }}.svc.cluster.local:10001"
+      - "Dashboard: http://{{ kuberay_release_name }}-head-svc.{{ kuberay_namespace }}.svc.cluster.local:8265"

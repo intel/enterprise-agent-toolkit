@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: keycloak_agent_config
+  author: Intel Corporation
+  description: Keycloak realm and client for agent-toolkit authentication
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+dependencies: []

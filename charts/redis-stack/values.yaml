@@ -1,0 +1,45 @@
+
+# ---------------------------------------------------------------------------
+# Standalone Redis Stack — shared memory backend for agentic workloads
+#
+# Deployed into the `redis` namespace as a single instance with RediSearch.
+# Access requires a password, and the Service is ClusterIP — reachable only
+# from inside the cluster. After deployment the in-cluster URL is:
+#
+#   redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379
+#
+# The password and the full URL are stored in a Kubernetes Secret:
+#
+#   kubectl get secret redis-stack-server-credentials -n redis \
+#     -o jsonpath='{.data.REDIS_URL}' | base64 -d
+#
+# ---------------------------------------------------------------------------
+
+redis-stack-server:
+  redis_stack_server:
+    # Leave storage_class empty to use the cluster's default StorageClass automatically.
+    # Override via --set "redis-stack-server.redis_stack_server.storage_class=<name>" if needed.
+    storage_class: ""
+    storage: 4Gi
+    auth:
+      # Required: set via --set or a custom values file. Do not use defaults in
+      # production. deploy_redis_controller reads this from vault.yml.
+      enabled: true
+      password: ""
+    service:
+      # Keep this ClusterIP. NodePort would publish Redis on every node IP.
+      type: ClusterIP
+    networkPolicy:
+      enabled: true
+      # Empty = any in-cluster pod may connect. List namespaces to restrict.
+      allowedNamespaces: []
+    # Placement is left to the scheduler (AI Solutions applies workload-class
+    # node labels/affinity at the platform layer).
+    affinity: {}
+    tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+      - key: "node-role.kubernetes.io/master"
+        operator: "Exists"
+        effect: "NoSchedule"

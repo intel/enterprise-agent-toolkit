@@ -1,0 +1,47 @@
+---
+# =============================================================================
+# Agent Sandbox Role Defaults
+# =============================================================================
+# kubernetes-sigs/agent-sandbox — ephemeral code execution with
+# policy-based blast-radius limits for agentic workloads.
+#
+#
+# In-cluster URL after deployment:
+#   http://sandbox-router-svc.{{ agent_sandbox_namespace }}.svc.cluster.local:8080
+#
+# Components deployed:
+#   1. CRDs + controller           (core manifest)
+#   2. SandboxTemplate/Claim/WarmPool CRDs (extensions manifest)
+#   3. sandbox-router              (downloaded manifest, published image)
+#   4. Default SandboxTemplate     (python-sandbox-template)
+# =============================================================================
+
+agent_sandbox_namespace: "agent-sandbox-system"
+agent_sandbox_version: "v0.5.0"
+agent_sandbox_release_name: "agent-sandbox"
+
+# Published images — no local builds needed. The controller image is baked
+# into the upstream core manifest (registry.k8s.io/agent-sandbox/agent-sandbox-controller).
+agent_sandbox_router_image: "us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/sandbox-router:latest-main"
+agent_sandbox_python_runtime_image: "registry.k8s.io/agent-sandbox/python-runtime-sandbox:{{ agent_sandbox_version }}"
+
+# Official upstream release manifest URLs
+agent_sandbox_core_manifest_url: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/{{ agent_sandbox_version }}/manifest.yaml"
+agent_sandbox_extensions_manifest_url: "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/{{ agent_sandbox_version }}/extensions.yaml"
+agent_sandbox_router_manifest_url: "https://raw.githubusercontent.com/kubernetes-sigs/agent-sandbox/{{ agent_sandbox_version }}/clients/python/agentic-sandbox-client/sandbox-router/sandbox_router.yaml"
+
+# Default python SandboxWarmPool — pre-warmed sandbox pods for low-latency
+# code execution. Set size to 0 to disable pre-creating warm pods.
+agent_sandbox_python_warm_pool_name: "python-pool"
+agent_sandbox_python_warm_pool_size: 5
+
+# Kata-backed SandboxTemplate + warm pool.
+# Applied only when the infrastructure kata_containers component is enabled
+# (kata_containers_enabled) and kata-deploy created a Kata RuntimeClass.
+kata_node_label_key: "ei-kata-eligible"
+kata_fc_runtime_class: "kata-fc"
+kata_qemu_runtime_class: "kata-qemu"
+kata_sandbox_template_name: "kata-sandbox-template"
+kata_warm_pool_name: "kata-pool"
+# microVMs cost more than plain pods — keep the default pool small
+kata_warm_pool_size: 1

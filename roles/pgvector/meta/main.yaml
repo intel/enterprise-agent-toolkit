@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: pgvector
+  author: Intel Corporation
+  description: PostgreSQL + pgvector — long-term memory and vector embeddings
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+dependencies: []

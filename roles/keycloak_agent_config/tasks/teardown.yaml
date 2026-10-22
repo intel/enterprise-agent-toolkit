@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# Keycloak Agent Config — Teardown
+# =============================================================================
+
+- name: "keycloak_agent_config | teardown | Remove KeycloakRealmImport"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: k8s.keycloak.org/v2beta1
+    kind: KeycloakRealmImport
+    name: "{{ keycloak_agent_realm }}"
+    namespace: "{{ keycloak_namespace }}"
+  failed_when: false
+
+- name: "keycloak_agent_config | teardown | Complete"
+  ansible.builtin.debug:
+    msg: "Keycloak agent realm '{{ keycloak_agent_realm }}' removed"

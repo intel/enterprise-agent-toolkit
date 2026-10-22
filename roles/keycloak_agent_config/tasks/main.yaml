@@ -1,0 +1,6 @@
+---
+- name: "keycloak_agent_config | Dispatch action: {{ component_action | default('install') }}"
+  ansible.builtin.include_tasks: "{{ component_action | default('install') }}.yaml"
+  when: >-
+    (component_action | default('install')) != 'install' or
+    (keycloak_agent_config_enabled | default(keycloak_enabled | default(true)) | bool)

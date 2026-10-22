@@ -1,0 +1,28 @@
+---
+# =============================================================================
+# pgvector Role Defaults
+# =============================================================================
+# PostgreSQL 16 + pgvector extension — provides long-term memory,
+# vector embeddings, and RAG state for agentic workloads.
+#
+# =============================================================================
+
+pgvector_namespace: "pgvector"
+pgvector_release_name: "pgvector"
+pgvector_database: "agentdb"
+pgvector_username: "agentuser"
+pgvector_storage_size: "20Gi"
+pgvector_storage_class: ""
+pgvector_version: "16"
+
+pgvector_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+
+
+# Resources
+pgvector_resources:
+  requests:
+    cpu: "250m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"

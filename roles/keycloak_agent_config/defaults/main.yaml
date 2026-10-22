@@ -1,0 +1,15 @@
+---
+# =============================================================================
+# Keycloak Agent Config Role Defaults
+# =============================================================================
+# Creates an agent-toolkit realm on the existing platform Keycloak.
+# Does NOT deploy Keycloak itself — that's handled by the platform layer.
+# =============================================================================
+
+keycloak_agent_realm: "agent-toolkit"
+
+# Platform Keycloak connection. Plain default (the base keycloak role uses the
+# `keycloak` namespace); overridden automatically if the platform sets it.
+keycloak_namespace: "keycloak"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
+keycloak_admin_secret: "keycloak-admin-secret"   # created by the base keycloak role

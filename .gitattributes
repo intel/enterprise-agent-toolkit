@@ -1,0 +1,6 @@
+# `git clone` on the node (or normalize after copy) to actually get LF on disk.
+* text=auto eol=lf
+*.sh    text eol=lf
+*.py    text eol=lf
+*.j2    text eol=lf
+*.jinja text eol=lf
