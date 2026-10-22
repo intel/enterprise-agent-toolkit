@@ -1,0 +1,114 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+{{- $a := .Values.agents }}
+{{- $i := .Values.isolation }}
+{{- $image := required "image.tag is required" .Values.image.tag | printf "%s:%s" .Values.image.repository }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  # One active reconciler: kopf runs standalone, without peering.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent-operator
+    spec:
+      serviceAccountName: agent-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: operator
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - {name: OPERATOR_NAMESPACE, valueFrom: {fieldRef: {fieldPath: metadata.namespace}}}
+            - {name: OPERATOR_SA_NAME, valueFrom: {fieldRef: {fieldPath: spec.serviceAccountName}}}
+            - {name: AUTO_SUSPEND_IDLE_MINUTES, value: {{ .Values.autoSuspendIdleMinutes | quote }}}
+            - {name: KEYCLOAK_URL, value: {{ .Values.keycloak.url | quote }}}
+            - {name: KEYCLOAK_REALM, value: {{ .Values.keycloak.realm | quote }}}
+            - {name: MCP_AUDIENCES, value: {{ .Values.keycloak.mcpAudiences | quote }}}
+            - name: KEYCLOAK_CLIENT_ID
+              valueFrom: {secretKeyRef: {name: {{ .Values.keycloak.credentialsSecret }}, key: client-id}}
+            - name: KEYCLOAK_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: {{ .Values.keycloak.credentialsSecret }}, key: client-secret}}
+            - name: PGVECTOR_DSN
+              valueFrom: {secretKeyRef: {name: {{ .Values.runtimeSecret }}, key: pgvector-dsn, optional: true}}
+            - name: MODEL_API_KEY
+              valueFrom: {secretKeyRef: {name: {{ .Values.runtimeSecret }}, key: model-api-key, optional: true}}
+            - {name: EMBEDDING_DIM, value: {{ .Values.memory.embeddingDim | quote }}}
+            - {name: MEMORY_RETAIN_ON_DELETE, value: {{ .Values.memory.retainOnDelete | quote }}}
+            - {name: SANDBOX_NAMESPACE, value: {{ .Values.sandboxNamespace | quote }}}
+            - {name: OPENCLAW_IMAGE, value: {{ $a.openclaw.image | quote }}}
+            - {name: OPENCLAW_TAG, value: {{ $a.openclaw.tag | quote }}}
+            - {name: OPENCLAW_DIGEST, value: {{ $a.openclaw.digest | quote }}}
+            - {name: AGENT_TIMEOUT_SECONDS, value: {{ $a.timeoutSeconds | quote }}}
+            - {name: MODEL_PROVIDER, value: {{ $a.model.provider | quote }}}
+            - {name: MODEL_ID, value: {{ required "agents.model.id is required" $a.model.id | quote }}}
+            - {name: MODEL_NAME, value: {{ $a.model.name | quote }}}
+            - {name: MODEL_BASE_URL, value: {{ $a.model.baseUrl | quote }}}
+            - {name: MODEL_CONTEXT_WINDOW, value: {{ $a.model.contextWindow | quote }}}
+            - {name: MODEL_ALLOW_PRIVATE_NETWORK, value: {{ $a.model.allowPrivateNetwork | quote }}}
+            - {name: COMPACTION_RESERVE_TOKENS, value: {{ $a.compactionReserveTokens | quote }}}
+            - {name: EMBEDDING_BASE_URL, value: {{ $a.embedding.baseUrl | quote }}}
+            - {name: EMBEDDING_MODEL, value: {{ $a.embedding.model | quote }}}
+            - {name: CONTROL_UI_ALLOWED_ORIGINS, value: {{ $a.controlUiAllowedOrigins | quote }}}
+            - {name: MESH_AMBIENT, value: {{ $i.meshAmbient | quote }}}
+            - {name: NETWORK_POLICY_ENABLED, value: {{ $i.networkPolicy.enabled | quote }}}
+            - {name: NETWORK_POLICY_EGRESS_ALLOW, value: {{ $i.networkPolicy.egressAllow | toJson | quote }}}
+            - {name: NETWORK_POLICY_IDENTITY_EGRESS_ALLOW, value: {{ $i.networkPolicy.identityEgressAllow | toJson | quote }}}
+            - {name: RESOURCE_QUOTA_ENABLED, value: {{ $i.resourceQuota.enabled | quote }}}
+            - {name: RESOURCE_QUOTA_HARD, value: {{ $i.resourceQuota.hard | toJson | quote }}}
+            - {name: LIMIT_RANGE_ENABLED, value: {{ $i.limitRange.enabled | quote }}}
+            - {name: LIMIT_RANGE_DEFAULT, value: {{ $i.limitRange.default | toJson | quote }}}
+            - {name: LIMIT_RANGE_DEFAULT_REQUEST, value: {{ $i.limitRange.defaultRequest | toJson | quote }}}
+            - {name: POD_SECURITY_ENABLED, value: {{ $i.podSecurity.enabled | quote }}}
+            - {name: POD_SECURITY_LEVEL, value: {{ $i.podSecurity.level | quote }}}
+            - {name: MAX_AGENTS_PER_OWNER, value: {{ $i.maxAgentsPerOwner | quote }}}
+            - {name: WEB_FETCH_PROXY_ENABLED, value: {{ .Values.webFetchProxy.enabled | quote }}}
+            - {name: WEB_FETCH_PROXY_PORT, value: {{ .Values.webFetchProxy.port | quote }}}
+            - {name: WEB_FETCH_PROXY_HTTP_PROXY, value: {{ .Values.webFetchProxy.httpProxy | quote }}}
+            - {name: WEB_FETCH_PROXY_HTTPS_PROXY, value: {{ .Values.webFetchProxy.httpsProxy | quote }}}
+            - {name: WEB_FETCH_PROXY_NO_PROXY, value: {{ .Values.webFetchProxy.noProxy | quote }}}
+            # The per-agent proxies run from this same image.
+            - {name: PROXY_IMAGE, value: {{ $image | quote }}}
+            - {name: IDENTITY_PROXY_PORT_BASE, value: {{ .Values.identityProxy.portBase | quote }}}
+            - {name: IDENTITY_PROXY_PORT_SPAN, value: {{ .Values.identityProxy.portSpan | quote }}}
+          ports:
+            - {name: health, containerPort: 8080}
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}

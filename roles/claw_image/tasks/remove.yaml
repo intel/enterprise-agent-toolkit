@@ -1,0 +1,18 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Removes the registry trust and the build toolchain; images stay in the registry.
+- name: "claw_image | Remove the registry trust"
+  ansible.builtin.file:
+    path: "/etc/containerd/certs.d/{{ claw_image_registry_host }}"
+    state: absent
+  become: true
+  delegate_to: "{{ item }}"
+  loop: "{{ claw_image_nodes }}"
+
+- name: "claw_image | Remove the build toolchain and cache"
+  ansible.builtin.file:
+    path: "{{ claw_image_root }}"
+    state: absent
+  become: true
+  delegate_to: "{{ claw_image_builder }}"
