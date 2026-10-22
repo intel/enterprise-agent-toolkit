@@ -2,87 +2,62 @@
 # =============================================================================
 # Keycloak Agent Config — Install
 # =============================================================================
-# Creates an agent-toolkit realm + client on the platform's existing Keycloak
-# via the KeycloakRealmImport CRD.
+# Creates the agent-toolkit realm on the platform's existing Keycloak via the
+# KeycloakRealmImport CRD. Components add their own confidential clients.
 # =============================================================================
 
-- name: "keycloak_agent_config | Check if realm already exists"
+- name: "keycloak_agent_config | Wait for Keycloak to be ready"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: StatefulSet
+    name: keycloak
+    namespace: "{{ keycloak_namespace }}"
+  register: _kc_sts
+  until:
+    - _kc_sts.resources | default([]) | length > 0
+    - (_kc_sts.resources[0].status.readyReplicas | default(0) | int) > 0
+  retries: 60
+  delay: 5
+
+- name: "keycloak_agent_config | Create KeycloakRealmImport"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: k8s.keycloak.org/v2beta1
+      kind: KeycloakRealmImport
+      metadata:
+        name: "{{ keycloak_agent_realm }}"
+        namespace: "{{ keycloak_namespace }}"
+      spec:
+        keycloakCRName: keycloak
+        realm:
+          realm: "{{ keycloak_agent_realm }}"
+          enabled: true
+
+- name: "keycloak_agent_config | Wait for realm import to complete"
   kubernetes.core.k8s_info:
     api_version: k8s.keycloak.org/v2beta1
     kind: KeycloakRealmImport
     name: "{{ keycloak_agent_realm }}"
     namespace: "{{ keycloak_namespace }}"
-  register: _realm_existing
-  failed_when: false
+  register: _realm_status
+  until: >-
+    _realm_status.resources | default([]) | length > 0 and
+    (_realm_status.resources[0].status.conditions | default([])
+     | selectattr('type', 'in', ['Done', 'HasErrors'])
+     | selectattr('status', 'eq', 'True') | list | length > 0)
+  retries: 30
+  delay: 5
 
-- name: "keycloak_agent_config | Already configured — skipping"
-  ansible.builtin.debug:
-    msg: "Agent-toolkit realm '{{ keycloak_agent_realm }}' already exists — skipping."
-  when: _realm_existing.resources | default([]) | length > 0
-
-- name: "keycloak_agent_config | Configure"
-  when: _realm_existing.resources | default([]) | length == 0
-  block:
-
-    - name: "keycloak_agent_config | Wait for Keycloak to be ready"
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: StatefulSet
-        name: keycloak
-        namespace: "{{ keycloak_namespace }}"
-      register: _kc_sts
-      until:
-        - _kc_sts.resources | default([]) | length > 0
-        - (_kc_sts.resources[0].status.readyReplicas | default(0) | int) > 0
-      retries: 60
-      delay: 5
-
-    - name: "keycloak_agent_config | Create KeycloakRealmImport"
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: k8s.keycloak.org/v2beta1
-          kind: KeycloakRealmImport
-          metadata:
-            name: "{{ keycloak_agent_realm }}"
-            namespace: "{{ keycloak_namespace }}"
-          spec:
-            keycloakCRName: keycloak
-            realm:
-              realm: "{{ keycloak_agent_realm }}"
-              enabled: true
-              clients:
-                - clientId: "{{ keycloak_agent_client_id }}"
-                  enabled: true
-                  protocol: openid-connect
-                  publicClient: true
-                  directAccessGrantsEnabled: true
-                  standardFlowEnabled: true
-                  attributes:
-                    # CRD requires client attribute values to be strings, not ints.
-                    access.token.lifespan: "{{ keycloak_agent_token_lifespan | string }}"
-
-    - name: "keycloak_agent_config | Wait for realm import to complete"
-      kubernetes.core.k8s_info:
-        api_version: k8s.keycloak.org/v2beta1
-        kind: KeycloakRealmImport
-        name: "{{ keycloak_agent_realm }}"
-        namespace: "{{ keycloak_namespace }}"
-      register: _realm_status
-      until: >-
-        _realm_status.resources | default([]) | length > 0 and
-        (_realm_status.resources[0].status.conditions | default([]) |
-        selectattr('type','eq','Done') | selectattr('status','eq','True') | list | length > 0
-        or
-        _realm_status.resources[0].status.conditions | default([]) |
-        selectattr('type','eq','HasErrors') | list | length > 0)
-      retries: 30
-      delay: 5
-      failed_when: false
+- name: "keycloak_agent_config | Fail on realm import errors"
+  vars:
+    _errors: >-
+      {{ _realm_status.resources[0].status.conditions | default([])
+         | selectattr('type', 'eq', 'HasErrors') | selectattr('status', 'eq', 'True') | list }}
+  ansible.builtin.fail:
+    msg: "Realm import '{{ keycloak_agent_realm }}' failed: {{ _errors[0].message | default('', true) or 'see the KeycloakRealmImport status' }}"
+  when: _errors | length > 0
 
 - name: "keycloak_agent_config | Install complete"
   ansible.builtin.debug:
-    msg:
-      - "Keycloak realm '{{ keycloak_agent_realm }}' configured"
-      - "Client ID: {{ keycloak_agent_client_id }}"
-      - "Token lifespan: {{ keycloak_agent_token_lifespan }}s"
+    msg: "Keycloak realm '{{ keycloak_agent_realm }}' configured"

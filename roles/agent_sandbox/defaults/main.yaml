@@ -36,7 +36,7 @@ agent_sandbox_python_warm_pool_name: "python-pool"
 agent_sandbox_python_warm_pool_size: 5
 
 # Kata-backed SandboxTemplate + warm pool.
-# Applied only when the platform kata_containers component is enabled
+# Applied only when the infrastructure kata_containers component is enabled
 # (kata_containers_enabled) and kata-deploy created a Kata RuntimeClass.
 kata_node_label_key: "ei-kata-eligible"
 kata_fc_runtime_class: "kata-fc"

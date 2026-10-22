@@ -45,9 +45,7 @@ agent_sandbox_version: "v0.5.0"
 
 # --- OpenShell  ---
 openshell_enabled: false
-# OpenShell authenticates users via OIDC only — when enabling it, set ONE of:
-openshell_oidc_issuer: ""                               # e.g. a Keycloak realm URL
-openshell_allow_unauthenticated_clusterip_only: false   # true = single-admin, ClusterIP + port-forward
+openshell_oidc_issuer: ""   # OIDC login (e.g. a Keycloak realm URL); empty = single-admin via kubectl port-forward
 # Sandboxes run outside the Istio mesh, so with OpenShell on the inference layer's
 # LiteLLM admits them from the pod network on its API port; they still use the minted
 # virtual key. On a bring-your-own cluster, also set kubernetes_cluster_cidr to its pod CIDR.
@@ -60,4 +58,3 @@ kuberay_operator_version: "1.3.0"
 
 # --- Keycloak ---
 keycloak_agent_realm: "agent-toolkit"
-keycloak_agent_client_id: "agent-toolkit-client"

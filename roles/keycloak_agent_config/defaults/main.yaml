@@ -2,13 +2,11 @@
 # =============================================================================
 # Keycloak Agent Config Role Defaults
 # =============================================================================
-# Creates an agent-toolkit realm and client on the existing platform Keycloak.
+# Creates an agent-toolkit realm on the existing platform Keycloak.
 # Does NOT deploy Keycloak itself — that's handled by the platform layer.
 # =============================================================================
 
 keycloak_agent_realm: "agent-toolkit"
-keycloak_agent_client_id: "agent-toolkit-client"
-keycloak_agent_token_lifespan: 900
 
 # Platform Keycloak connection. Plain default (the base keycloak role uses the
 # `keycloak` namespace); overridden automatically if the platform sets it.

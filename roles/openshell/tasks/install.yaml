@@ -15,14 +15,6 @@
   ansible.builtin.command: kubectl get nodes
   changed_when: false
 
-- name: "openshell | Require an explicit user-authentication mode"
-  ansible.builtin.assert:
-    that: openshell_oidc_issuer | length > 0 or openshell_allow_unauthenticated_clusterip_only | bool
-    fail_msg: >-
-      OpenShell on Kubernetes authenticates users via OIDC only. Set openshell_oidc_issuer
-      (e.g. a Keycloak realm URL) or openshell_allow_unauthenticated_clusterip_only=true
-      to accept single-admin access gated by Kubernetes RBAC (port-forward).
-
 - name: "openshell | Check Agent Sandbox API is served (agent_sandbox)"
   ansible.builtin.command: kubectl get crd sandboxes.agents.x-k8s.io -o jsonpath='{.spec.versions[*].name}'
   register: sandbox_crd
@@ -344,6 +336,7 @@
         trap 'kill $PF 2>/dev/null' EXIT
         for _ in $(seq 30); do grep -q 'Forwarding from 127.0.0.1' pf.log && break; sleep 1; done
         PORT=$(sed -nE 's/^Forwarding from 127\.0\.0\.1:([0-9]+).*/\1/p' pf.log | head -1)
+        [ -n "$PORT" ] || { echo "kubectl port-forward to svc/{{ openshell_release_name }} did not start:" >&2; cat pf.log >&2; exit 1; }
         ./openshell gateway add "https://127.0.0.1:${PORT}" --local --name eat > /dev/null
         # <= 0.0.116 composes provider endpoints into sandbox policy only behind this flag
         # (dev builds dropped the key and always compose).

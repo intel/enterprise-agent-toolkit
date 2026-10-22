@@ -30,13 +30,10 @@ openshell_cli_url: "https://github.com/NVIDIA/OpenShell/releases/download/{{ ope
 # and versioned so a release bump fetches a matching CLI.
 openshell_cli_dir: ""
 
-# User authentication. OpenShell on Kubernetes authenticates users via OIDC only
-# (mTLS covers transport + supervisors). Set openshell_oidc_issuer (e.g. Keycloak realm URL),
-# or explicitly accept the single-admin mode: gateway stays ClusterIP-only and is reached
-# via `kubectl port-forward`, so access is gated by Kubernetes RBAC on openshell_namespace.
+# User authentication: OIDC when openshell_oidc_issuer is set; otherwise single-admin, with the
+# gateway ClusterIP-only and reached via `kubectl port-forward` (Kubernetes RBAC on openshell_namespace).
 openshell_oidc_issuer: ""
 openshell_oidc_audience: "openshell-cli"
-openshell_allow_unauthenticated_clusterip_only: false
 
 # Pod-level NetworkPolicy for sandbox pods the chart leaves unselected (all-in-one pods of
 # chart <= 0.0.116; split supervisor/workload pods of newer charts carry their own policies).
@@ -70,8 +67,10 @@ openshell_upstream_no_proxy: "{{ no_proxy | default('') }}"
 # checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
 openshell_client_tls_secret: "openshell-client-tls"
 # CLI talks to 127.0.0.1 via port-forward; never route that through a corporate proxy.
+# Keeps no_proxy so kubectl (port-forward) still reaches the API server directly.
+openshell_cli_no_proxy: "127.0.0.1,localhost{{ (',' ~ no_proxy) if no_proxy | default('') | length > 0 else '' }}"
 openshell_cli_env:
   XDG_CONFIG_HOME: "{{ openshell_cli_path }}/config"
-  NO_PROXY: "127.0.0.1,localhost"
-  no_proxy: "127.0.0.1,localhost"
+  NO_PROXY: "{{ openshell_cli_no_proxy }}"
+  no_proxy: "{{ openshell_cli_no_proxy }}"
   OPENSHELL_GATEWAY: "eat"

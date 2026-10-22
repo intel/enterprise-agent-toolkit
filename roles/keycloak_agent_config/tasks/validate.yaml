@@ -10,10 +10,11 @@
     name: "{{ keycloak_agent_realm }}"
     namespace: "{{ keycloak_namespace }}"
   register: _val_realm
-  failed_when: _val_realm.resources | default([]) | length == 0
+  failed_when: >-
+    _val_realm.resources | default([]) | length == 0 or
+    (_val_realm.resources[0].status.conditions | default([])
+     | selectattr('type', 'eq', 'Done') | selectattr('status', 'eq', 'True') | list | length == 0)
 
 - name: "keycloak_agent_config | validate | Summary"
   ansible.builtin.debug:
-    msg:
-      - "Realm '{{ keycloak_agent_realm }}': {{ 'OK' if _val_realm.resources | length > 0 else 'FAIL' }}"
-      - "Client: {{ keycloak_agent_client_id }}"
+    msg: "Realm '{{ keycloak_agent_realm }}': OK"
