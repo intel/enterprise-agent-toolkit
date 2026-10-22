@@ -1,0 +1,34 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Runs files/<script> with kcadm in the Keycloak pod; `_kc_args` follow the admin credentials.
+
+- name: "agent_backend | keycloak | Find the Keycloak server pod"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ claw_keycloak_namespace }}"
+    label_selectors: ["app=keycloak"]
+    field_selectors: ["status.phase=Running"]
+  register: _ab_kc_pod
+  failed_when: _ab_kc_pod.resources | default([]) | length == 0
+
+- name: "agent_backend | keycloak | Read the admin credentials"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ claw_keycloak_namespace }}"
+    name: "{{ claw_keycloak_admin_secret }}"
+  register: _ab_kc_admin
+  failed_when: _ab_kc_admin.resources | default([]) | length == 0
+  no_log: true
+
+- name: "agent_backend | keycloak | Run {{ _kc_script }}"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ claw_keycloak_namespace }}"
+    pod: "{{ _ab_kc_pod.resources[0].metadata.name }}"
+    command: >-
+      sh -c {{ lookup('ansible.builtin.file', _kc_script) | quote }} {{ _kc_script }}
+      {{ ([claw_keycloak_realm, _ab_kc_admin.resources[0].data.username | b64decode,
+           _ab_kc_admin.resources[0].data.password | b64decode] + _kc_args) | map('quote') | join(' ') }}
+  register: _ab_kc_out
+  changed_when: "'CREATED' in _ab_kc_out.stdout or 'DELETED' in _ab_kc_out.stdout"
+  no_log: true

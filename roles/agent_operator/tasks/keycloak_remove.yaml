@@ -1,0 +1,67 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Skipped quietly when Keycloak is not running.
+
+- name: "agent_operator | teardown | Find the Keycloak server pod"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ claw_keycloak_namespace }}"
+    label_selectors: ["app=keycloak"]
+    field_selectors: ["status.phase=Running"]
+  register: _td_ao_kc_pod
+
+- name: "agent_operator | teardown | Read the admin credentials"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ claw_keycloak_namespace }}"
+    name: "{{ claw_keycloak_admin_secret }}"
+  register: _td_ao_kc_admin
+  no_log: true
+
+- name: "agent_operator | teardown | Delete the operator client"
+  when:
+    - _td_ao_kc_pod.resources | default([]) | length > 0
+    - _td_ao_kc_admin.resources | default([]) | length > 0
+  vars:
+    _kc_pod: "{{ _td_ao_kc_pod.resources[0].metadata.name }}"
+    _kcadm: /opt/keycloak/bin/kcadm.sh
+    _kccfg: "--config /tmp/kcadm-{{ claw_keycloak_operator_client }}.config"
+  block:
+    - name: "agent_operator | teardown | Log in to Keycloak"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} config credentials {{ _kccfg }} --server http://localhost:8080 --realm master
+          --user {{ _td_ao_kc_admin.resources[0].data.username | b64decode }}
+          --password {{ _td_ao_kc_admin.resources[0].data.password | b64decode }}
+      changed_when: false
+      no_log: true
+
+    - name: "agent_operator | teardown | Look up the client"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} get clients {{ _kccfg }} -r {{ claw_keycloak_realm }}
+          -q clientId={{ claw_keycloak_operator_client }} --fields id --format csv --noquotes
+      register: _td_ao_kc_client
+      changed_when: false
+      failed_when: false
+
+    - name: "agent_operator | teardown | Delete the client"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: "{{ _kcadm }} delete clients/{{ _td_ao_kc_client.stdout | trim }} {{ _kccfg }} -r {{ claw_keycloak_realm }}"
+      when: (_td_ao_kc_client.stdout | default('') | trim) != ""
+
+  always:
+    - name: "agent_operator | teardown | Remove the admin session"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: "rm -f /tmp/kcadm-{{ claw_keycloak_operator_client }}.config"
+      changed_when: false
+      failed_when: false

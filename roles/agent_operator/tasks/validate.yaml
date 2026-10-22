@@ -1,0 +1,55 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Read-only.
+
+- name: "agent_operator | validate | Check the Agent CRD"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: agents.intel-stack.io
+  register: _val_ao_crd
+  failed_when: _val_ao_crd.resources | default([]) | length == 0
+
+- name: "agent_operator | validate | Check the operator is available"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: agent-operator
+    namespace: "{{ agent_operator_namespace }}"
+  register: _val_ao_deploy
+  failed_when: >-
+    _val_ao_deploy.resources | default([]) | length == 0 or
+    _val_ao_deploy.resources[0].status.conditions | default([]) |
+    selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length == 0
+
+- name: "agent_operator | validate | Check the image is pinned by digest"
+  ansible.builtin.assert:
+    that: "'@sha256:' in _val_ao_deploy.resources[0].spec.template.spec.containers[0].image"
+    fail_msg: "agent-operator image is not pinned by digest"
+    quiet: true
+
+- name: "agent_operator | validate | Check the Keycloak credentials Secret"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: "{{ claw_keycloak_credentials_secret }}"
+    namespace: "{{ agent_operator_namespace }}"
+  register: _val_ao_kc
+  failed_when: _val_ao_kc.resources | default([]) | length == 0
+  no_log: true
+
+- name: "agent_operator | validate | List Agents"
+  kubernetes.core.k8s_info:
+    api_version: intel-stack.io/v1alpha1
+    kind: Agent
+  register: _val_ao_agents
+
+- name: "agent_operator | validate | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "Operator: Available, image {{ _val_ao_deploy.resources[0].spec.template.spec.containers[0].image }}"
+      - >-
+        Agents: {{ _val_ao_agents.resources | default([])
+        | map(attribute='metadata.namespace') | zip(_val_ao_agents.resources | default([])
+        | map(attribute='metadata.name'), _val_ao_agents.resources | default([])
+        | map(attribute='status.phase', default='-')) | map('join', '/') | join(', ') or 'none' }}

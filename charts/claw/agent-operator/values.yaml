@@ -1,0 +1,119 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/agent-operator
+  # "<tag>@sha256:<digest>"; set by the installer after the build.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits: {cpu: 500m, memory: 512Mi}
+affinity: {}
+
+keycloak:
+  url: http://keycloak-service.keycloak.svc.cluster.local:8080
+  realm: agent-toolkit
+  # Existing Secret with keys client-id and client-secret (service account with manage-clients).
+  credentialsSecret: agent-operator-keycloak
+  mcpAudiences: mcp-memory,mcp-github,mcp-sandbox
+  # The realm's public issuer (https://keycloak.<domain>/realms/<realm>), for the gateway routes.
+  issuer: ""
+
+# Optional Secret with keys pgvector-dsn and model-api-key; missing keys are ignored.
+runtimeSecret: agent-operator-runtime
+
+autoSuspendIdleMinutes: 240
+# Each agent's dashboard at https://<hostname>/gw/<owner ns>/<name>/, behind the console's
+# sign-in client; empty hostname = no routes. trustedProxies: the gateway pods' addresses.
+gatewayRoute:
+  hostname: ""
+  gateway:
+    name: eg-gateway
+    namespace: envoy-gateway-system
+    sectionName: https
+  oidcClientId: agent-console
+  oidcSecret: agent-console-oidc
+  trustedProxies: ""
+
+# The API backend's ServiceAccount (same namespace), granted Secret access per agent namespace.
+backendServiceAccount: agent-backend
+memory:
+  embeddingDim: 768
+  retainOnDelete: false
+sandboxNamespace: agent-sandbox-system
+
+# Defaults for every agent; an Agent's spec.model overrides the model fields.
+agents:
+  openclaw:
+    image: ghcr.io/openclaw/openclaw
+    tag: "2026.7.1-1"
+    digest: sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf
+  timeoutSeconds: 900
+  model:
+    provider: ai-gateway
+    id: ""
+    name: ""
+    baseUrl: http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1
+    # The model's served max_model_len; 0 lets OpenClaw assume 200000.
+    contextWindow: 0
+    allowPrivateNetwork: true
+  compactionReserveTokens: 6144
+  # OpenClaw's built-in memory search; an empty baseUrl leaves it off.
+  embedding:
+    baseUrl: http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1
+    model: bge-base-en
+  controlUiAllowedOrigins: ""
+
+isolation:
+  meshAmbient: true
+  networkPolicy:
+    enabled: true
+    # [{namespace, ports, podSelector?}]; mesh pods are reached on HBONE port 15008.
+    egressAllow:
+      - namespace: envoy-gateway-system
+        podSelector: {gateway.envoyproxy.io/owning-gateway-name: ai-gateway}
+        ports: [15008]
+    # Ingress to agent pods from outside their namespace: the platform gateway, to the agent gateway.
+    ingressAllow:
+      - namespace: envoy-gateway-system
+        podSelector: {gateway.envoyproxy.io/owning-gateway-name: eg-gateway}
+        ports: [18789, 15008]
+    # Egress of the per-agent identity proxy: MCP servers and the Keycloak token endpoint.
+    identityEgressAllow:
+      - namespace: agent-operator-system
+        podSelector: {app.kubernetes.io/component: mcp-server}
+        ports: [15008]
+      - namespace: keycloak
+        podSelector: {app: keycloak}
+        ports: [15008]
+  resourceQuota:
+    enabled: true
+    hard:
+      requests.cpu: "4"
+      requests.memory: 8Gi
+      limits.cpu: "8"
+      limits.memory: 16Gi
+      pods: "10"
+      persistentvolumeclaims: "5"
+  limitRange:
+    enabled: true
+    defaultRequest: {cpu: 250m, memory: 256Mi}
+    default: {cpu: "1", memory: 1Gi}
+  podSecurity:
+    enabled: true
+    level: restricted
+  maxAgentsPerOwner: 0
+
+# Per-agent proxies; both run from the operator image.
+webFetchProxy:
+  enabled: false
+  port: 8888
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""
+
+identityProxy:
+  portBase: 8901
+  portSpan: 16

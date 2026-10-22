@@ -1,0 +1,8 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+galaxy_info:
+  role_name: agent_operator
+  description: Agent operator — Agent CRD and the controller that provisions isolated OpenClaw agents (claw)
+  min_ansible_version: "2.15"
+dependencies: []
