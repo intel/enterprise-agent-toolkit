@@ -1,0 +1,90 @@
+---
+# =============================================================================
+# NRI CPU Balloons — Teardown
+# =============================================================================
+
+- name: "nri_cpu_balloons | Check Helm release"
+  kubernetes.core.helm_info:
+    name: "{{ nri_cpu_balloons.helm.release_name }}"
+    release_namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _nri_release
+  failed_when: false
+
+- name: "nri_cpu_balloons | Not installed — nothing to tear down"
+  ansible.builtin.debug:
+    msg: >-
+      Helm release '{{ nri_cpu_balloons.helm.release_name }}' not found in
+      '{{ nri_cpu_balloons.namespace }}'.
+  when: _nri_release.status is not defined or _nri_release.status is none
+
+- name: "nri_cpu_balloons | Teardown"
+  when: _nri_release.status is defined and _nri_release.status is not none
+  block:
+    - name: "nri_cpu_balloons | List per-node BalloonsPolicy CRs"
+      kubernetes.core.k8s_info:
+        api_version: config.nri/v1alpha1
+        kind: BalloonsPolicy
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+      register: _nri_policies
+      failed_when: false
+
+    - name: "nri_cpu_balloons | Delete per-node BalloonsPolicy CRs (node.*)"
+      kubernetes.core.k8s:
+        state: absent
+        api_version: config.nri/v1alpha1
+        kind: BalloonsPolicy
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+        name: "{{ item.metadata.name }}"
+      loop: "{{ (_nri_policies.resources | default([])) | selectattr('metadata.name', 'match', '^node\\.') | list }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      failed_when: false
+
+    - name: "nri_cpu_balloons | Uninstall Helm release"
+      kubernetes.core.helm:
+        name: "{{ nri_cpu_balloons.helm.release_name }}"
+        release_namespace: "{{ nri_cpu_balloons.namespace }}"
+        state: absent
+        wait: "{{ helm_wait | default(true) }}"
+        timeout: "{{ nri_cpu_balloons.installation_timeout | default(300) }}s"
+      failed_when: false
+
+    - name: "nri_cpu_balloons | Delete policy ConfigMap"
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: ConfigMap
+        name: "nri-resource-policy-balloons-config"
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+        state: absent
+      failed_when: false
+
+    - name: "nri_cpu_balloons | Clean up tmp dir"
+      ansible.builtin.file:
+        path: "{{ nri_tmp_dir }}"
+        state: absent
+      failed_when: false
+
+# Strip NRI capability labels from every node, regardless of whether the
+# Helm release existed. Safe no-op when the labels aren't present.
+- name: "nri_cpu_balloons | List all nodes"
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: _nri_all_nodes
+  failed_when: false
+
+- name: "nri_cpu_balloons | Remove NRI capability labels"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.metadata.name }}"
+    definition:
+      metadata:
+        labels:
+          nri.intel.com/balloons-enabled: null
+          nri.intel.com/max-tp: null
+          nri.intel.com/numa-nodes: null
+          nri.intel.com/physical-cpus: null
+  loop: "{{ _nri_all_nodes.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  failed_when: false

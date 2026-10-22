@@ -1,0 +1,172 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# ---------------------------------------------------------------------------
+# Full per-model CPU/NUMA/TP/memory sizing pipeline, run fresh for every
+# model deployment (not once per playbook run) so later models in the same
+# run see resources already claimed by earlier ones, and so TP/memory are
+# derived from cluster-wide NRI node capability rather than a single
+# arbitrarily-sampled worker.
+#
+# Input (required):
+#   model_id             xeon_model_configs lookup key for this deployment
+#                         (a quoted model id string, or a variable such as
+#                         huggingface_model_id).
+#   model_friendly_name   short name used only for readable task/log output.
+#
+# Caller must gate the whole include, e.g.:
+#   when: cpu_playbook == 'true' and balloon_policy_cpu == 'enabled'
+#
+# Exports (consumed by the caller's helm install command):
+#   _model_effective_tp       pass as {% set _tp = _model_effective_tp | int %}
+#   _model_node_affinity      pass as --set-json 'affinity={{ _model_node_affinity | to_json }}'
+#   optimal_memory_gb         pass as --set memory="{{ optimal_memory_gb }}Gi"
+#   optimal_memory_limit_gb   --set memoryLimit
+# ---------------------------------------------------------------------------
+---
+- name: "Recompute CPU/NUMA allocation for {{ model_friendly_name }} (fresh per-model)"
+  ansible.builtin.include_role:
+    name: utils
+    tasks_from: get_optimal_cpu_allocation
+
+- name: "Determine desired tensor-parallel size for {{ model_friendly_name }} (from catalog)"
+  ansible.builtin.set_fact:
+    _model_desired_tp: "{{ xeon_model_configs.get(model_id, xeon_default_model_config).tensor_parallel_size | default(1) | int }}"
+
+- name: "Determine effective tensor-parallel size for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    _model_effective_tp: >-
+      {%- set _desired_tp_int = _model_desired_tp | int -%}
+      {%- if nri_available_tp_tiers -%}
+      {{ [ _desired_tp_int, nri_available_tp_tiers | max ] | min }}
+      {%- else -%}
+      {{ [ _desired_tp_int, optimal_balloon_config.tensor_parallel_size | default(99) | int ] | min }}
+      {%- endif -%}
+
+- name: "Determine required node affinity for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    _model_match_expressions: "{{ [{'key': 'ei-inference-eligible', 'operator': 'In', 'values': ['true']}] + ([{'key': 'nri.intel.com/max-tp', 'operator': 'In', 'values': (nri_available_tp_tiers | select('ge', _model_effective_tp | int) | list | map('string') | list)}] if nri_available_tp_tiers else []) }}"
+
+- name: "Determine preferred (exact-fit) node affinity for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    # Soft preference for a node whose own max-tp equals this workload's
+    # effective TP exactly, not just >= it. Without this, a low-TP model is
+    # equally happy on any qualifying node (required affinity doesn't rank
+    # them), so the scheduler's own tie-breaking (e.g. image locality) can
+    # pile small workloads onto a big node while a smaller, exact-fit node
+    # sits idle -- this keeps the big node's extra capacity available for
+    # workloads that actually need a higher TP.
+    _model_preferred_terms: "{{ [{'weight': 100, 'preference': {'matchExpressions': [{'key': 'nri.intel.com/max-tp', 'operator': 'In', 'values': [_model_effective_tp | string]}]}}] if nri_available_tp_tiers else [] }}"
+
+- name: "Build node affinity object for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    _model_node_affinity: "{{ {'nodeAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': {'nodeSelectorTerms': [{'matchExpressions': _model_match_expressions}]}, 'preferredDuringSchedulingIgnoredDuringExecution': _model_preferred_terms}} }}"
+
+# ---------------------------------------------------------------------------
+# Fail fast on an explicit optimal_cpu_cores that can't actually fit within
+# _model_effective_tp NUMA node(s) on any node this model could land on.
+# Without this, the ONLY place that catches it is the NRI balloons policy's
+# own balloon allocator refusing at container-creation time with a
+# confusing "scheduled but CreateContainerError: no suitable balloon
+# instance available" well after `helm upgrade --install` reports success.
+#
+# NUMA spillover itself (a tpN balloon growing into more than N NUMA nodes
+# to satisfy demand) is accepted -- it's not what this checks for. This only
+# catches the case where even spilling across EVERY NUMA node on a
+# qualifying node still isn't enough, which is unrecoverable no matter how
+# the balloon grows. Checked against the SMALLEST qualifying node (not the
+# biggest) so this is safe regardless of which qualifying node the
+# scheduler actually picks.
+# ---------------------------------------------------------------------------
+- name: "Determine this model's explicit optimal_cpu_cores, if any, for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    _model_explicit_cpu_cores: "{{ xeon_model_configs.get(model_id, xeon_default_model_config).optimal_cpu_cores | default(none) }}"
+
+- name: "Initialize NRI-qualifying whole-node CPU budgets for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    _model_qualifying_node_cpus: []
+  when: _model_explicit_cpu_cores is not none
+
+- name: "Collect NRI-qualifying nodes' whole-node workload CPU budget for {{ model_friendly_name }}"
+  # Whole-node, not per-NUMA: workload_cpus is already reserved-adjusted for
+  # ONE NUMA node, so multiplying by that node's own NUMA count gives the
+  # total this model could ever get on that node, spillover included.
+  ansible.builtin.set_fact:
+    _model_qualifying_node_cpus: >-
+      {{ _model_qualifying_node_cpus + [
+        (per_node_cpu_topology[item.name].workload_cpus | int)
+        * (per_node_cpu_topology[item.name].total_numa_nodes | int)
+      ] }}
+  loop: "{{ nri_node_capability }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - _model_explicit_cpu_cores is not none
+    - (item.max_tp | int) >= (_model_effective_tp | int)
+    - item.name in (per_node_cpu_topology | default({}))
+
+- name: "Fail fast if {{ model_friendly_name }}'s optimal_cpu_cores exceeds every qualifying node's total capacity"
+  ansible.builtin.assert:
+    that:
+      - (_model_explicit_cpu_cores | int) <= (_model_qualifying_node_cpus | min | int)
+    fail_msg: >-
+      {{ model_friendly_name }}: optimal_cpu_cores={{ _model_explicit_cpu_cores }} exceeds
+      the total workload CPU capacity ({{ _model_qualifying_node_cpus | min }} cores, across
+      all its NUMA nodes) of the smallest node this model could be scheduled on. Even letting
+      the tp{{ _model_effective_tp }} balloon spill across every NUMA node on that machine
+      isn't enough -- deploying anyway would fail at container-creation time (NRI: "no
+      suitable balloon instance available"). Lower optimal_cpu_cores in xeon-values.yaml,
+      or remove it to use the balloon-policy-derived fallback instead.
+  when:
+    - _model_explicit_cpu_cores is not none
+    - (_model_qualifying_node_cpus | length) > 0
+
+- name: "Initialize NRI-qualifying memory list for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    _model_qualifying_memory: []
+
+- name: "Collect NRI-qualifying nodes' available memory for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    _model_qualifying_memory: "{{ _model_qualifying_memory + [ item.available_memory_gb | int ] }}"
+  loop: "{{ nri_node_capability }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: (item.max_tp | int) >= (_model_effective_tp | int)
+
+- name: "Recompute memory sizing for {{ model_friendly_name }} (fresh per-model, no real ceiling known)"
+  ansible.builtin.include_role:
+    name: utils
+    tasks_from: get_optimal_memory
+  vars:
+    memory_tp_size: "{{ _model_effective_tp }}"
+  when: (_model_qualifying_memory | length == 0)
+
+- name: "Recompute memory sizing for {{ model_friendly_name }} (fresh per-model, capped to real headroom)"
+  ansible.builtin.include_role:
+    name: utils
+    tasks_from: get_optimal_memory
+  vars:
+    memory_tp_size: "{{ _model_effective_tp }}"
+    memory_ceiling_gb: "{{ _model_qualifying_memory | min }}"
+  when: (_model_qualifying_memory | length > 0)
+
+- name: "Set burstable memory limit for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    optimal_memory_limit_gb: "{{ (optimal_memory_gb | int) * 2 }}"
+  when: (_model_qualifying_memory | length == 0)
+
+- name: "Cap burstable memory limit to real headroom for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    optimal_memory_limit_gb: "{{ [ (optimal_memory_gb | int) * 2, (_model_qualifying_memory | min) ] | min }}"
+  when: (_model_qualifying_memory | length > 0)
+
+- name: "Fix TP=1 memory limit at 200Gi for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    optimal_memory_limit_gb: "{{ [ optimal_memory_limit_gb | int, 200 ] | min }}"
+    optimal_memory_gb: "{{ [ optimal_memory_gb | int, optimal_memory_limit_gb | int, 200 ] | min }}"
+  when: (_model_effective_tp | int) == 1
+
+- name: "Fix TP>=2 memory limit at 400Gi for {{ model_friendly_name }}"
+  ansible.builtin.set_fact:
+    optimal_memory_limit_gb: "{{ ([ 400 ] + _model_qualifying_memory) | min }}"
+    optimal_memory_gb: "{{ [ optimal_memory_gb | int, ([ 400 ] + _model_qualifying_memory) | min ] | min }}"
+  when: (_model_effective_tp | int) >= 2

@@ -3,9 +3,22 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: genai-gateway-config  
+  name: genai-gateway-config
   labels:
-    app: litellm  
+    app: litellm
 data:
+{{- if not .Values.policyPlane.enabled }}
   proxy_config.yaml: |-
     {{ .Values.config.proxy_config_yaml | nindent 4 }}
+{{- else }}
+  {{- /* policyPlane.enabled: override disable_error_logs + append the
+         policy callback, without hand-editing the raw values.yaml string.
+         Everything else in proxy_config_yaml passes through unchanged. */}}
+  proxy_config.yaml: |-
+    {{- $proxyConfig := .Values.config.proxy_config_yaml | fromYaml }}
+    {{- $_ := set $proxyConfig.general_settings "disable_error_logs" false }}
+    {{- if .Values.policyPlane.callbackRef }}
+    {{- $_ := set $proxyConfig.litellm_settings "callbacks" (append $proxyConfig.litellm_settings.callbacks .Values.policyPlane.callbackRef) }}
+    {{- end }}
+{{ $proxyConfig | toYaml | nindent 4 }}
+{{- end }}

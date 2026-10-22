@@ -18,6 +18,21 @@
 - `sudo` privileges on the deployment node.
 - Internet access from the node to pull Helm charts and container images.
 
+## Node Kernel Settings
+
+`fs.inotify.max_user_instances` is a per-UID limit shared by every container
+running as that UID. The kernel default of 128 is exhausted on nodes running
+many pods, after which file watchers fail with `too many open files` (e.g. the
+vLLM-SR router loses config hot-reload). Raise it on every node:
+
+```bash
+sudo tee /etc/sysctl.d/90-inotify.conf > /dev/null <<'EOF'
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches   = 1048576
+EOF
+sudo sysctl --system
+```
+
 ## SSH Key Setup
 
 Log in as a non-root user with `sudo` privileges. Using `root` or a password-based account may cause unexpected behavior during deployment.
@@ -69,9 +84,10 @@ Log in as a non-root user with `sudo` privileges. Using `root` or a password-bas
   | `api.example.com` | GenAI Gateway (LiteLLM) |
   | `trace-api.example.com` | Langfuse trace UI |
   | `coding-agent-api.example.com` | Coding Agent UI |
+  | `vllm-sr-api.example.com` | vLLM Semantic Router dashboard |
 
 
-  Request a **multi-SAN** or **wildcard** (`*.api.example.com`) certificate from your CA that includes all of the above.
+  Request a **multi-SAN** or **wildcard** (`*.example.com`) certificate from your CA that includes all of the above.
 - Set up automatic renewal or calendar reminders before certificates expire.
 - Ensure required firewall ports (e.g., port 80 for HTTP validation) are open during certificate issuance.
 
@@ -91,6 +107,7 @@ For local testing, `api.example.com` can be mapped to `localhost` or the node's 
    127.0.0.1 api.example.com
    127.0.0.1 trace-api.example.com
    127.0.0.1 coding-agent-api.example.com
+   127.0.0.1 vllm-sr-api.example.com
    EOF'
    ```
 
@@ -101,6 +118,7 @@ For local testing, `api.example.com` can be mapped to `localhost` or the node's 
    | `api.example.com` | GenAI Gateway (LiteLLM) |
    | `trace-api.example.com` | Langfuse trace UI |
    | `coding-agent-api.example.com` | Coding Agent UI |
+   | `vllm-sr-api.example.com` | vLLM Semantic Router dashboard |
 
 
 2. **Generate a self-signed SSL certificate** covering all subdomains:
@@ -112,7 +130,7 @@ For local testing, `api.example.com` can be mapped to `localhost` or the node's 
    mkdir -p ~/certs && cd ~/certs && \
    openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
      -subj "/CN=${DOMAIN}" \
-     -addext "subjectAltName = DNS:${DOMAIN}, DNS:trace-${DOMAIN}, DNS:coding-agent-${DOMAIN}"
+     -addext "subjectAltName = DNS:${DOMAIN}, DNS:trace-${DOMAIN}, DNS:coding-agent-${DOMAIN}, DNS:vllm-sr-${DOMAIN}"
    ```
 
    > **Note:** The `-addext` option requires OpenSSL ≥ 1.1.1. If you add more use cases later, regenerate the cert with the additional `DNS:` entries.
@@ -120,10 +138,3 @@ For local testing, `api.example.com` can be mapped to `localhost` or the node's 
    Files generated:
    - `cert.pem` — the self-signed certificate (contains SANs for all subdomains)
    - `key.pem` — the private key
-
-   Set these paths in `core/inventory/agentic-config.cfg`:
-
-   ```ini
-   cert_file=/home/<user>/certs/cert.pem
-   key_file=/home/<user>/certs/key.pem
-   ```

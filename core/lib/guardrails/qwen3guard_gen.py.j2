@@ -1,0 +1,184 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+"""
+Content-safety screening for the Qwen3Guard-Gen family, executed by LiteLLM's
+`custom_code` guardrail (docs.litellm.ai/docs/proxy/guardrails/custom_code_guardrail).
+
+This is an Ansible template, not an importable module: playbooks/deploy-guardrails.yml
+renders it and stores the result as the guardrail's `custom_code` in the GenAI
+Gateway DB, and the gateway compiles it with RestrictedPython and calls
+apply_guardrail() on every chat request (mode: pre_call). Everything that depends
+on the environment -- guard endpoint, model id, policy -- is substituted at deploy
+time, so pointing the guardrail at a different guard release, namespace, port or
+model never means editing this file.
+
+Sandbox rules. A violation is rejected at compile time, i.e. the deploy fails at
+the pre-flight /guardrails/test_custom_code call, so keep to them:
+  * no import, no class, no exec/eval, no file I/O, no comprehensions over
+    unpacked names -- see litellm/proxy/guardrails/guardrail_hooks/custom_code/
+  * no name may start with an underscore (RestrictedPython rejects those)
+  * allow(), block(), trim(), lower(), contains(), json_parse(),
+    json_stringify(), regex_find_all() and http_post() are globals injected by
+    the sandbox, which is why nothing here imports them
+  * no f-strings (unverified against the deployed RestrictedPython) -- build
+    messages with `+`
+
+Fail-closed: every path that cannot produce a "safe" verdict blocks -- an
+unreachable guard, a non-2xx reply, a prompt longer than the guard's context
+window, an unparseable verdict. An unparseable verdict is never treated as safe:
+a change in the model's output format has to break loudly instead of silently
+disabling moderation while everything still looks healthy.
+"""
+
+GUARD_URL = "{{ guard_service_url }}"
+GUARD_MODEL = "{{ guardrail_model }}"
+# A verdict is a couple of lines. The cap matters because this runs pre_call, so
+# every generated token is latency added to the request being screened.
+GUARD_MAX_TOKENS = {{ guard_max_tokens }}
+# http_post clamps this to 60s.
+GUARD_TIMEOUT = {{ guard_timeout }}
+# Qwen3Guard's third label. Off by default: "Controversial" is advisory, and
+# blocking it rejects a lot of legitimate traffic.
+BLOCK_ON_CONTROVERSIAL = {{ 'True' if guard_block_on_controversial | bool else 'False' }}
+BLOCK_PREFIX = "Blocked by the content-safety guardrail: "
+
+
+def message_text(message):
+    """Text of one chat message, whether content is a string or a parts list."""
+    content = message.get("content")
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            parts.append(str(part.get("text") or ""))
+    return "\n".join(parts)
+
+
+def last_user_text(inputs):
+    """The last user message -- the only text screened.
+
+    One guard call per request. The sandbox has no asyncio, so calls cannot be
+    issued concurrently: screening the whole conversation would add a full guard
+    round-trip per message to a hook that blocks the request.
+
+    Falls back to the last non-empty entry of `texts` for call types that carry
+    no structured_messages, so those are screened rather than silently skipped.
+    """
+    messages = inputs.get("structured_messages") or []
+    idx = len(messages) - 1
+    while idx >= 0:
+        message = messages[idx]
+        if message.get("role") == "user":
+            text = trim(message_text(message))
+            if text != "":
+                return text
+        idx = idx - 1
+    texts = inputs.get("texts") or []
+    idx = len(texts) - 1
+    while idx >= 0:
+        text = trim(str(texts[idx] or ""))
+        if text != "":
+            return text
+        idx = idx - 1
+    return ""
+
+
+def body_as_text(body):
+    if isinstance(body, str):
+        return body
+    return json_stringify(body)
+
+
+def is_context_length_error(response):
+    """True when a failed guard call means "prompt longer than my window".
+
+    Kept distinct from an unreachable guard: both block, but this one means the
+    guard is healthy and simply never saw the whole prompt -- an operator
+    problem (the guard's context window is smaller than the served LLM's), not a
+    broken backend. vLLM words it "maximum context length ... tokens" and tags
+    the field as input_tokens.
+    """
+    lowered = lower(body_as_text(response["body"]))
+    return contains(lowered, "maximum context length") or contains(lowered, "input_tokens")
+
+
+def guard_reply_text(body):
+    """The assistant text of an OpenAI-shaped reply; "" if it has none."""
+    parsed = body
+    if isinstance(body, str):
+        parsed = json_parse(body)
+    if not isinstance(parsed, dict):
+        return ""
+    choices = parsed.get("choices") or []
+    if len(choices) == 0:
+        return ""
+    message = choices[0].get("message") or {}
+    return trim(str(message.get("content") or ""))
+
+
+def verdict_label(raw):
+    """Safety line -> lowercased label; empty when the reply has no verdict."""
+    found = regex_find_all(raw, "(?i)Safety:\\s*(\\w+)")
+    if len(found) == 0:
+        return ""
+    return lower(trim(found[0]))
+
+
+def verdict_categories(raw):
+    """The "Categories:" line, or "None" when the model omitted it."""
+    found = regex_find_all(raw, "(?i)Categories:\\s*(.+)")
+    if len(found) == 0:
+        return "None"
+    return trim(found[0])
+
+
+async def apply_guardrail(inputs, request_data, input_type):
+    text = last_user_text(inputs)
+    if text == "":
+        return allow()
+
+    response = await http_post(
+        GUARD_URL,
+        body={
+            "model": GUARD_MODEL,
+            "messages": [{"role": "user", "content": text}],
+            "max_tokens": GUARD_MAX_TOKENS,
+            "temperature": 0,
+        },
+        headers={"Content-Type": "application/json"},
+        timeout=GUARD_TIMEOUT,
+    )
+
+    # http_post never raises: transport failures come back as success=False with
+    # body=None, and a non-2xx as success=False with the response body intact.
+    if not response["success"]:
+        if is_context_length_error(response):
+            return block(
+                BLOCK_PREFIX + "the prompt is longer than the guard model's context "
+                "window (" + GUARD_MODEL + "), so it could not be screened."
+            )
+        return block(
+            BLOCK_PREFIX + "the guard model backend is unreachable ("
+            + str(response["error"] or response["status_code"]) + ")."
+        )
+
+    raw = guard_reply_text(response["body"])
+    label = verdict_label(raw)
+    if label == "":
+        return block(
+            BLOCK_PREFIX + "the guard model's verdict could not be parsed ("
+            + GUARD_MODEL + ")."
+        )
+    if label == "unsafe":
+        return block(
+            BLOCK_PREFIX + "unsafe content (categories: " + verdict_categories(raw) + ")."
+        )
+    if BLOCK_ON_CONTROVERSIAL and label == "controversial":
+        return block(
+            BLOCK_PREFIX + "controversial content (categories: "
+            + verdict_categories(raw) + ")."
+        )
+    return allow()

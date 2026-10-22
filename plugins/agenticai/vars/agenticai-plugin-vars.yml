@@ -146,5 +146,6 @@ agenticai_inference_model: "cpu-qwen2-5-coder-14b"
 # Stack-deployed PostgreSQL 16 + pgvector (namespace: pgvector).
 # Exposed as FLOWISE_PGVECTOR_URL so Flowise RAG flows can reference it
 # in PostgreSQL vector store nodes using {{FLOWISE_PGVECTOR_URL}}.
+# Password comes from vault.yml (pgvector_password).
 ##############################################################################
-agenticai_pgvector_connection_url: "postgresql://agentuser:agentpass@pgvector.pgvector.svc.cluster.local:5432/agentdb"
+agenticai_pgvector_connection_url: "postgresql://agentuser:{{ pgvector_password }}@pgvector.pgvector.svc.cluster.local:5432/agentdb"

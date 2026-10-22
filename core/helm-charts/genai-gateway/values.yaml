@@ -58,15 +58,21 @@ probes:
     failureThreshold: 3
     timeoutSeconds: 10
 
+customRouter:
+  # Set to true to mount the custom hybrid router strategy into the LiteLLM container.
+  # When enabled, adds custom_hybrid_router.proxy_handler_instance to litellm callbacks
+  # and mounts all router_strategy Python files from the genai-gateway-router-code ConfigMap.
+  enabled: true
+
 ingress:
   host: ""
   secretname: ""
   eks: false
 route:
-  enabled: false  
-  host: ""        
+  enabled: false
+  host: ""
   tls:
-    termination: "edge"  
+    termination: "edge"
     insecureEdgeTerminationPolicy: "Redirect"
 env:
   LITELLM_MASTER_KEY: "<REPLACE_WITH_MASTER_KEY>"
@@ -89,12 +95,46 @@ config:
     litellm_settings:
       drop_params: true
       return_response_headers: false
-      callbacks: ["langfuse_otel"]
+      callbacks: ["langfuse_otel", "custom_hybrid_router.proxy_handler_instance"]
       turn_off_message_logging: false
       redact_user_api_key_info: false
     general_settings:
       disable_spend_logs: false
       disable_error_logs: true
+# policyPlane: opt-in governance-layer gate. Default is `false`, which keeps
+# rendered output byte-identical to before this flag existed -- most users
+# of this chart have no relationship to the (optional) downstream "Policy
+# Plane" governance layer and should see zero behavior change.
+#
+# When enabled: true, templates/configmap.yaml overrides two settings inside
+# the rendered config.proxy_config_yaml block:
+#   * general_settings.disable_error_logs -> false (error-level request logs
+#     are retained instead of suppressed, so the governance audit ledger has
+#     a complete record of every call).
+#   * litellm_settings.callbacks gains callbackRef appended (if non-empty),
+#     registering the policy-check callback so it actually fires on gateway
+#     traffic instead of being "registered nowhere".
+policyPlane:
+  enabled: false
+  # LiteLLM resolves custom callbacks of the form "<module>.<instance>" by
+  # loading <module>.py (relative to the mounted proxy config) and reading
+  # the <instance> attribute off it (see LiteLLM's proxy `get_instance_fn`,
+  # which falls back to `importlib.util.spec_from_file_location` + `getattr`
+  # when the module isn't plain-importable). This default names the AAIS
+  # pre-gateway callback shim and its module-level singleton, as documented
+  # in that shim's own docstring:
+  #   core/helm-charts/pre-gateway/src/enterprise_superclaw_callback_shim.py
+  #   (intel-sandbox/applications.ai.enterprise.agentic-ai-stack, module-
+  #   scope name `enterprise_superclaw_handler_instance`).
+  # NOTE: this only registers the *name* in the callbacks list. Actually
+  # delivering enterprise_superclaw_callback_shim.py into the
+  # genai-gateway/LiteLLM pod (ConfigMap/volume mount, or a custom image
+  # layer) is a separate, not-yet-built wiring step tracked on the AAIS
+  # side -- see that repo's core/lib/components/pre-gateway-controller.sh,
+  # which explicitly defers it ("Wiring genai-gateway's
+  # litellm_settings.callbacks to actually call this service is a
+  # separate, later ticket").
+  callbackRef: "enterprise_superclaw_callback_shim.enterprise_superclaw_handler_instance"
 postgresql:
   enabled: true
   architecture: standalone

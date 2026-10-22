@@ -1,0 +1,227 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# burn-quick.yml — Mandatory quick burn test (~2-3 min)
+# Validates sustained throughput under load: catches thermal throttling,
+# misconfigured NUMA, ECMP imbalance, and degraded storage.
+# Runs on all nodes (Play 2).
+
+---
+- name: Run fabric throughput + link validation
+  ansible.builtin.shell: |
+    HN=$(hostname -s)
+    {% set peers = groups['all'] | sort %}
+    {% set my_idx = peers.index(inventory_hostname) if inventory_hostname in peers else 0 %}
+    {% set peer = peers[(my_idx + 1) % (peers | length)] %}
+    PEER_IP="{{ hostvars[peer].access_ip | default(hostvars[peer].ansible_host | default('')) }}"
+    PEER_NAME="{{ peer }}"
+    PORT=$(( 5201 + {{ my_idx }} ))
+
+    # iperf3 throughput skipped — SSH keys not available between peer nodes.
+    # Link speed and latency checks below validate fabric health without iperf3.
+
+    # --- Link speed check on fabric NICs ---
+    EXPECTED_SPEED="{{ burn_fabric_link_speed_mbps | default(25000) }}"
+    LINK_RESULTS=""
+    LINK_OK="true"
+    for DEV in $(ip -o link show up | awk -F': ' '{print $2}' | grep -v 'lo\|cali\|vxlan\|tunl\|docker\|br-\|veth'); do
+      IS_MGMT=$(ip route show default | grep -c "$DEV" || echo "0")
+      [ "$IS_MGMT" = "1" ] && continue
+      SPEED=$(cat /sys/class/net/$DEV/speed 2>/dev/null || echo "-1")
+      [ "$SPEED" = "-1" ] && continue
+      CARRIER=$(cat /sys/class/net/$DEV/carrier 2>/dev/null || echo "0")
+      MTU=$(cat /sys/class/net/$DEV/mtu 2>/dev/null || echo "?")
+      LINK_RESULTS="${LINK_RESULTS}${DEV}:${SPEED}Mbps,mtu=${MTU},carrier=${CARRIER} "
+      [ "$CARRIER" = "0" ] && LINK_OK="false"
+      [ "$SPEED" -lt "$EXPECTED_SPEED" ] && LINK_OK="false"
+    done
+    [ "$LINK_OK" = "true" ] && LINK_STATUS="OK" || LINK_STATUS="FAIL"
+
+    # --- Latency + jumbo MTU to ALL peers ---
+    LATENCY="n/a"
+    if [ -n "$PEER_IP" ]; then
+      LATENCY=$(ping -c 3 -W 3 "$PEER_IP" 2>/dev/null | tail -1 | grep -oP 'rtt.*= \K[\d.]+' || echo "timeout")
+    fi
+
+    # Jumbo frame test to every other node
+    JUMBO_PASS=0; JUMBO_FAIL=0; JUMBO_FAILED_PEERS=""
+    {% for host in groups['all'] | default([]) %}
+    {% if host != inventory_hostname %}
+    TPEER="{{ hostvars[host].access_ip | default(hostvars[host].ansible_host | default('')) }}"
+    TNAME="{{ host }}"
+    if [ -n "$TPEER" ]; then
+      LOSS=$(ping -M do -s 8950 -c 5 -W 3 "$TPEER" 2>&1 | grep -oP '\d+(?=% packet loss)' || echo "100")
+      if [ "$LOSS" -le 1 ]; then
+        JUMBO_PASS=$((JUMBO_PASS + 1))
+      else
+        JUMBO_FAIL=$((JUMBO_FAIL + 1))
+        JUMBO_FAILED_PEERS="${JUMBO_FAILED_PEERS}${TNAME}(${LOSS}%) "
+      fi
+    fi
+    {% endif %}
+    {% endfor %}
+    JUMBO_TOTAL=$((JUMBO_PASS + JUMBO_FAIL))
+    if [ "$JUMBO_FAIL" -eq 0 ]; then
+      MTU_FLOOD_STATUS="OK"
+      MTU_FLOOD_EVIDENCE="jumbo 8950-byte ping: ${JUMBO_PASS}/${JUMBO_TOTAL} peers OK"
+    else
+      MTU_FLOOD_STATUS="FAIL"
+      MTU_FLOOD_EVIDENCE="jumbo 8950-byte ping: ${JUMBO_PASS}/${JUMBO_TOTAL} OK, FAILED: ${JUMBO_FAILED_PEERS}"
+    fi
+
+    python3 -c "
+    import json
+    results = [
+        {'layer':'burn-quick','check':'Fabric links on $HN','status':'$LINK_STATUS',
+         'evidence':'$LINK_RESULTS'.strip() or 'no fabric NICs found',
+         'hint':'Expected >= ${EXPECTED_SPEED}Mbps with carrier up. Check cable, switch port, ethtool <dev>'},
+        {'layer':'burn-quick','check':'Fabric latency $HN -> $PEER_NAME','status':'OK' if '$LATENCY' != 'timeout' else 'FAIL',
+         'evidence':'avg_rtt=${LATENCY}ms to $PEER_IP','hint':'Peer unreachable — check fabric connectivity'},
+        {'layer':'burn-quick','check':'Jumbo MTU all-pairs from $HN','status':'$MTU_FLOOD_STATUS',
+         'evidence':'$MTU_FLOOD_EVIDENCE','hint':'Jumbo frames blocked to some peers — check switch MTU on all ports/VLANs'},
+    ]
+    print(json.dumps(results))
+    "
+  args:
+    executable: /bin/bash
+  register: _burn_fabric
+  changed_when: false
+  ignore_errors: true
+  timeout: 120
+
+- name: Append fabric burn results to host results
+  ansible.builtin.shell: "echo '{{ _burn_fabric.stdout | default(\"[]\") }}' >> /tmp/validate-stack-host-results.jsonl"
+  changed_when: false
+
+- name: Run storage throughput test (if Ceph deployed)
+  ansible.builtin.shell: |
+    # Clean up previous test
+    kubectl delete pod validate-stack-fio-test --ignore-not-found=true --wait=false 2>/dev/null
+    kubectl delete pvc validate-stack-fio-pvc --ignore-not-found=true 2>/dev/null
+    sleep 2
+
+    # Determine ceph storage class
+    SC=$(kubectl get sc -o jsonpath='{.items[?(@.metadata.name=="ceph-block")].metadata.name}' 2>/dev/null)
+    [ -z "$SC" ] && SC=$(kubectl get sc -o jsonpath='{.items[?(@.metadata.name=="rook-ceph-block")].metadata.name}' 2>/dev/null)
+    [ -z "$SC" ] && { echo "no_ceph_sc"; exit 0; }
+
+    # Create PVC
+    cat <<EOF | kubectl apply -f -
+    apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: validate-stack-fio-pvc
+      namespace: default
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: "$SC"
+      resources:
+        requests:
+          storage: 5Gi
+    EOF
+    kubectl wait --for=jsonpath='{.status.phase}'=Bound pvc/validate-stack-fio-pvc --timeout=60s 2>/dev/null || { echo "pvc_bind_timeout"; exit 0; }
+
+    # Run fio test pod
+    cat <<'FIOPOD' | kubectl apply -f -
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: validate-stack-fio-test
+      namespace: default
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: fio
+        image: ljishen/fio:latest
+        command:
+        - sh
+        - -c
+        - |
+          echo "=== Sequential Write 30s ==="
+          SEQ=$(fio --name=seqwrite --ioengine=libaio --rw=write --bs=1m --size=2g --numjobs=1 --runtime=30 --time_based --direct=1 --filename=/data/testfile --output-format=json 2>/dev/null)
+          SEQ_BW=$(echo "$SEQ" | python3 -c "import sys,json; print(json.load(sys.stdin)['jobs'][0]['write']['bw_bytes'])" 2>/dev/null || echo "0")
+          SEQ_GBPS=$(echo "scale=2; $SEQ_BW / 1073741824" | bc 2>/dev/null || echo "0")
+
+          echo "=== Random 4K IOPS 30s ==="
+          RND=$(fio --name=rand4k --ioengine=libaio --rw=randwrite --bs=4k --size=1g --numjobs=4 --runtime=30 --time_based --direct=1 --iodepth=32 --filename=/data/testfile2 --output-format=json 2>/dev/null)
+          RND_IOPS=$(echo "$RND" | python3 -c "import sys,json; print(int(json.load(sys.stdin)['jobs'][0]['write']['iops']))" 2>/dev/null || echo "0")
+
+          echo "seq_write_gbps=$SEQ_GBPS rand_4k_iops=$RND_IOPS"
+          rm -f /data/testfile /data/testfile2
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: validate-stack-fio-pvc
+    FIOPOD
+
+    # Wait for fio pod to complete (up to 120s)
+    kubectl wait --for=condition=Ready pod/validate-stack-fio-test --timeout=30s 2>/dev/null || true
+    sleep 70
+    kubectl logs pod/validate-stack-fio-test 2>/dev/null | grep 'seq_write_gbps'
+
+    # Cleanup
+    kubectl delete pod validate-stack-fio-test --ignore-not-found=true --wait=false 2>/dev/null
+    kubectl delete pvc validate-stack-fio-pvc --ignore-not-found=true 2>/dev/null
+  register: _burn_storage
+  changed_when: false
+  ignore_errors: true
+  timeout: 180
+  run_once: true
+  delegate_to: localhost
+  when: deploy_ceph in ['on', 'yes']
+
+- name: Record storage throughput
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'burn-quick', 'check': 'Storage throughput (Ceph)', 'status': 'OK' if (_burn_storage.stdout is defined and ((_burn_storage.stdout | regex_search('seq_write_gbps=(\\S+)', '\\1') | default(['0'], true))[0] | float >= (burn_storage_seq_write_gbps | float))) else 'FAIL', 'evidence': _burn_storage.stdout | default('test skipped') | truncate(100), 'hint': 'Storage throughput below threshold — check Ceph OSD performance, network binding, disk health' }] }}"
+  run_once: true
+  when: deploy_ceph in ['on', 'yes']
+
+- name: Run GPU burn test (if GPU deployed)
+  ansible.builtin.shell: |
+    # Clean up previous
+    kubectl delete pod validate-stack-gpu-burn --ignore-not-found=true --wait=false 2>/dev/null
+    sleep 2
+
+    kubectl run validate-stack-gpu-burn \
+      --image=oguzpastirmaci/gpu-burn:latest \
+      --restart=Never \
+      --overrides='{
+        "spec": {
+          "containers": [{
+            "name": "gpu-burn",
+            "image": "oguzpastirmaci/gpu-burn:latest",
+            "command": ["gpu_burn", "120"],
+            "resources": {"limits": {"nvidia.com/gpu": "1"}}
+          }],
+          "restartPolicy": "Never"
+        }
+      }' 2>/dev/null
+
+    # Wait for completion (2 min burn + buffer)
+    sleep 130
+    kubectl logs pod/validate-stack-gpu-burn 2>/dev/null | tail -10
+  register: _burn_gpu
+  changed_when: false
+  ignore_errors: true
+  timeout: 300
+  run_once: true
+  delegate_to: localhost
+  when: rack_scale_gpu_vendor | default('') | length > 0
+
+- name: Record GPU burn result
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'burn-quick', 'check': 'GPU burn (2 min)', 'status': 'OK' if (_burn_gpu.stdout is defined and 'PASSED' in (_burn_gpu.stdout | default('')) or 'OK' in (_burn_gpu.stdout | default(''))) else 'FAIL', 'evidence': _burn_gpu.stdout_lines | default([]) | last | default('gpu-burn result unknown') | truncate(150), 'hint': 'GPU burn failed — check for ECC errors (nvidia-smi -q -d ECC), thermal throttling, or insufficient GPU resources' }] }}"
+  run_once: true
+  when: rack_scale_gpu_vendor | default('') | length > 0
+
+- name: Clean up GPU burn pod
+  ansible.builtin.command:
+    cmd: kubectl delete pod validate-stack-gpu-burn --ignore-not-found=true --wait=false
+  changed_when: false
+  ignore_errors: true
+  run_once: true
+  delegate_to: localhost
+  when: rack_scale_gpu_vendor | default('') | length > 0

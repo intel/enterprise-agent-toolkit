@@ -7,6 +7,9 @@ hugging_face_token=
 hugging_face_token_falcon3=
 models=cpu-qwen2-5-coder-7b
 compute_platform=cpu
+# GPU example (set compute_platform=g and uncomment to deploy B300 Llama-70B):
+# compute_platform=g
+# models=gpu-nvidia-b300-llama-70b
 deploy_kubernetes_fresh=on
 deploy_ingress_controller=on
 deploy_genai_gateway=on
@@ -20,13 +23,19 @@ deploy_redis=on
 deploy_pgvector=off
 deploy_kuberay=off
 deploy_agent_sandbox=off
+deploy_kata_containers=off
+kata_runtime=kata-fc
+rack_scale_mode=off
+# air_gapped=off
+deploy_guardrails=on
+deploy_vllm_sr=off
 deploy_openshell=off
 http_proxy=
 https_proxy=
 no_proxy=
 
 `````
-Make sure to update the values in the agentic-config.cfg file according to your requirements before running the Intel AI for Enterprise Agent Toolkit.
+Make sure to update the values in the agentic-config.cfg file according to your requirements before running the Intel® AI for Enterprise Agent Toolkit.
 
 
 >
@@ -44,6 +53,12 @@ Make sure to update the values in the agentic-config.cfg file according to your 
 > - If `deploy_pgvector` is set to `on`, PostgreSQL 16 with the pgvector extension will be deployed as a vector store and long-term memory backend.
 > - If `deploy_kuberay` is set to `on`, KubeRay will be deployed to provide Ray distributed computing inside the cluster. Tuning parameters (namespace, worker replicas, CPU/memory limits, Ray image) are configured separately in `core/inventory/kuberay-config.yaml` — see [docs/kuberay.md](./kuberay.md) for the full guide.
 > - If `deploy_agent_sandbox` is set to `on`, the Agent Sandbox controller will be deployed for isolated pod-based code execution.
+> - If `deploy_kata_containers` is set to `on`, Kata Containers is installed so sandboxes can run as microVMs with their own guest kernel, and `kata_runtime` selects the runtime (`kata-fc` for Firecracker, `kata-qemu` for QEMU, or `both`). This requires `deploy_agent_sandbox=on` — otherwise a warning is printed and Kata is skipped. Nodes need KVM (`/dev/kvm`), and `kata-fc` additionally needs containerd's devmapper snapshotter; missing prerequisites warn and skip instead of failing the run — see [agent-sandbox.md](./agent-sandbox.md#microvm-isolation-with-kata-containers-kata-fc--kata-qemu).
+> - To deploy on GPU instead of CPU, set `compute_platform=g` and select a GPU model in `models` (e.g. `gpu-nvidia-b300-llama-70b`), as shown in the commented GPU example above.
+> - If `rack_scale_mode` is set to `on`, the toolkit deploys using the rack-scale fabric topology (BGP, dual-homed nodes, Ceph-on-fabric) instead of the standard single/multi-node path — see [rack-scale-deployment.md](./rack-scale-deployment.md).
+> - If `air_gapped` is set to `on`, the internet connectivity precheck is skipped for isolated/local-mirror sites; leave it commented out (or `off`) when the cluster has internet access.
+> - `deploy_guardrails` (default: `on`) deploys the safety content-moderation guardrail in front of the main LLM — see [guardrails.md](./guardrails.md).
+> - If `deploy_vllm_sr` is set to `on`, vLLM Semantic Router is deployed to route requests across models by cost/latency/safety signals — see [vllm-semantic-router.md](./vllm-semantic-router.md).
 > - If `deploy_openshell` is set to `on`, NVIDIA OpenShell will be deployed for policy-enforced sandboxes on top of Agent Sandbox, with the GenAI Gateway registered as a provider. Requires `deploy_agent_sandbox=on` — see [docs/openshell.md](./openshell.md).
 
 ---

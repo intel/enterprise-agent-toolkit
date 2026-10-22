@@ -433,6 +433,10 @@
           persistence:
             enabled: true
             size: 10Gi
+          # See deploy-observability.yml: init-chown-data crash-loops on restart
+          # once Grafana has created its 0700 csv/pdf/png dirs.
+          initChownData:
+            enabled: false
           datasources:
             datasources.yaml:
               apiVersion: 1

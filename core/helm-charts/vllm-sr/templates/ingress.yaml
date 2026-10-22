@@ -1,0 +1,84 @@
+{{- /*
+Copyright (C) 2025-2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+*/}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: vllm-sr
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+        {{- with .Values.ingress.dashboardHost }}
+        - {{ . }}
+        {{- end }}
+      secretName: {{ .Values.ingress.secretname }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /v1/route
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-envoy
+                port:
+                  number: {{ .Values.service.envoyPort }}
+    {{- /* The dashboard (WASM, root-absolute paths) cannot live under a sub-path;
+           on the shared host its /login, /api, ... shadow LiteLLM's UI. */}}
+    {{- if .Values.ingress.dashboardHost }}
+    - host: {{ .Values.ingress.dashboardHost }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-dashboard
+                port:
+                  number: 8700
+    {{- else }}
+          {{- range $path := list "/router" "/builder" "/insights" "/playground" "/config" "/dashboard" "/topology" "/security" "/setup" "/status" "/logs" "/login" "/users" "/monitoring" "/tracing" "/taxonomy" "/evaluation" "/knowledge-bases" "/ml-setup" "/openclaw" "/clawos" "/fleet-sim" "/auth" }}
+          - path: {{ $path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Release.Name }}-dashboard
+                port:
+                  number: 8700
+          {{- end }}
+          {{- /* Dashboard static assets and API. The dashboard is a WASM app:
+                 without these the /router page loads but cannot fetch its
+                 JS/assets and renders blank. */}}
+          {{- range $path := list "/assets" "/embedded" "/api" }}
+          - path: {{ $path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Release.Name }}-dashboard
+                port:
+                  number: 8700
+          {{- end }}
+          {{- range $path := list "/wasm_exec.js" "/signal-compiler.wasm" "/manifest.json" "/vllm.png" "/amd-logo.png" "/openclaw.png" "/openclaw.svg" }}
+          - path: {{ $path }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $.Release.Name }}-dashboard
+                port:
+                  number: 8700
+          {{- end }}
+    {{- end }}
+{{- end }}

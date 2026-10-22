@@ -10,7 +10,7 @@ parse_arguments() {
             --key-file) key_file="$2"; shift ;;
             --hugging-face-token) hugging_face_token="$2"; shift ;;
             --models) models="$2"; shift ;;
-            --compute_platform) cpu="$2"; shift ;;
+            --compute_platform) compute_platform="$2"; shift ;;
             --deploy-nri-balloon-policy) deploy_nri_balloon_policy="$2"; shift ;;
             --skip-check) skip_check="true" ;;
             -h|--help) usage; exit 0 ;;
@@ -57,9 +57,13 @@ prompt_for_input() {
         # flag is not specified in agentic-config.cfg. Set
         # deploy_nri_balloon_policy=off in the config to opt out (e.g. to run
         # multiple models on one node without the single-model CPU reservation).
-        deploy_nri_balloon_policy="yes"
-        if [ "$balloon_policy_cpu" == "enabled" ]; then
-            echo "NRI CPU Balloon Policy automatically enabled for CPU deployment"
+        if [ "$compute_platform" == "c" ]; then
+            deploy_nri_balloon_policy="yes"
+            if [ "$balloon_policy_cpu" == "enabled" ]; then
+                echo "NRI CPU Balloon Policy automatically enabled for CPU deployment"
+            fi
+        else
+            deploy_nri_balloon_policy="no"
         fi
     else
         echo "Proceeding with the setup of NRI CPU Balloon Policy: $deploy_nri_balloon_policy"

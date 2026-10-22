@@ -546,6 +546,49 @@ models:
     resources:
       memory: "128g"
       shm_size: "16g"
+  "Qwen/Qwen3.6-35B-A3B":
+    served_name: "qwen3-6-35b-a3b"
+    environment:
+      VLLM_CPU_KVCACHE_SPACE: "50"
+      VLLM_RPC_TIMEOUT: "100000"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ENGINE_ITERATION_TIMEOUT_S: "120"
+      VLLM_CPU_NUM_OF_RESERVED_CPU: "0"
+      VLLM_CPU_SGL_KERNEL: "1"
+      HF_HUB_DISABLE_XET: "1"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TORCHINDUCTOR_CACHE_DIR: "/tmp/.torch_compile"
+      XDG_CACHE_HOME: "/tmp/.cache"
+      # ~70GB of weights — point at the persistent vllm-model-cache volume the
+      # compose generator mounts, not the container-local /tmp.
+      HF_HOME: "/root/.cache/huggingface"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      USER: "vllm"
+    command_args:
+      - "--block-size"
+      - "128"
+      - "--dtype"
+      - "bfloat16"
+      - "--trust-remote-code"
+      # Model default is 262144, far past what a CPU KV cache can hold.
+      - "--max-model-len"
+      - "32768"
+      - "--enforce-eager"
+      # Text-only. The vision tower's qkv projection feeds a 3D tensor to the
+      # AMX packed-linear kernel selected by VLLM_CPU_SGL_KERNEL, which only
+      # accepts 2D ("mat1 must be a 2D tensor" in qwen2_5_vl.py during the
+      # memory-profiling run). Zero mm limits skip encoder profiling and keep
+      # the fast kernel for text; drop this and set VLLM_CPU_SGL_KERNEL=0 if
+      # image/video input is needed, at a cost to throughput.
+      - "--limit-mm-per-prompt"
+      - '{"image": 0, "video": 0}'
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+    resources:
+      memory: "128g"
+      shm_size: "16g"
   "nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1":
     served_name: "llama-3-1-nemotron-nano-4b-v1-1"
     environment:

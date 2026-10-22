@@ -93,20 +93,25 @@ run_system_prerequisites_check() {
         echo -e "${GREEN}✓ curl found${NC}"
     fi
     
-    # Check internet connectivity (essential for Docker images, packages, repositories)
+    # Check internet connectivity on the bastion/management node (NOT the fabric NICs).
+    # Default: check runs; a warning (not a failure) is issued if unreachable.
+    # To suppress: set air_gapped=on in agentic-config.cfg (air-gapped / local-mirror sites).
     echo "Checking internet connectivity..."
-    if command -v curl &> /dev/null; then
+    if [[ "${AIR_GAPPED:-false}" == "true" ]]; then
+        warnings+=("Internet connectivity check skipped (air_gapped=on). Ensure a local registry/mirror is configured.")
+        echo -e "${YELLOW}  ! Internet check skipped — air_gapped=on${NC}"
+    elif command -v curl &> /dev/null; then
         # Test multiple reliable endpoints to ensure connectivity
         if curl -s --connect-timeout 10 --max-time 15 https://google.com > /dev/null 2>&1 || \
            curl -s --connect-timeout 10 --max-time 15 https://github.com > /dev/null 2>&1 || \
            curl -s --connect-timeout 10 --max-time 15 https://registry-1.docker.io > /dev/null 2>&1; then
             echo -e "${GREEN}✓ Internet connectivity confirmed${NC}"
         else
-            echo -e "${RED}✗ No internet connectivity detected${NC}"
-            missing_deps+=("internet-connectivity")
+            echo -e "${YELLOW}! No internet connectivity detected${NC}"
+            warnings+=("No internet connectivity — deployment requires local mirrors for container images, packages, and Git repos. Set air_gapped=on in agentic-config.cfg to suppress this warning.")
         fi
     else
-        # If curl is not available, we'll check this later after curl is installed
+        # curl not yet available; will be re-checked after install
         warnings+=("Internet connectivity check skipped - curl not available")
     fi
     
@@ -166,38 +171,18 @@ run_system_prerequisites_check() {
         done
         echo ""
         
-        # Separate Python/pip issues, internet connectivity, and installable dependencies
+        # Separate Python/pip issues and installable dependencies
         local python_issues=()
-        local connectivity_issues=()
         local installable_deps=()
-        
+
         for dep in "${missing_deps[@]}"; do
             if [[ "$dep" == "python3"* ]]; then
                 python_issues+=("$dep")
-            elif [[ "$dep" == "internet-connectivity" ]]; then
-                connectivity_issues+=("$dep")
             else
                 installable_deps+=("$dep")
             fi
         done
-        
-        # Handle internet connectivity issues first - EXIT IMMEDIATELY (cannot be auto-fixed)
-        if [ ${#connectivity_issues[@]} -gt 0 ]; then
-            echo -e "${RED}Critical connectivity requirements not met:${NC}"
-            echo -e "${RED}  - Internet connectivity is required for:${NC}"
-            echo -e "${RED}    * Pulling Docker images${NC}"
-            echo -e "${RED}    * Downloading packages and dependencies${NC}"
-            echo -e "${RED}    * Accessing container registries${NC}"
-            echo -e "${RED}    * Cloning Git repositories${NC}"
-            echo ""
-            echo -e "${YELLOW}Please ensure internet connectivity and try again.${NC}"
-            echo -e "${YELLOW}Common solutions:${NC}"
-            echo -e "${YELLOW}  - Check network configuration${NC}"
-            echo -e "${YELLOW}  - Verify firewall/proxy settings${NC}"
-            echo -e "${YELLOW}  - Test: curl -I https://google.com${NC}"
-            exit 1
-        fi
-        
+
         # Handle Python issues first - EXIT IMMEDIATELY (no user acknowledgment)
         if [ ${#python_issues[@]} -gt 0 ]; then
             echo -e "${RED}Critical Python requirements not met:${NC}"
@@ -205,7 +190,7 @@ run_system_prerequisites_check() {
                 echo -e "${RED}  - $issue${NC}"
             done
             echo ""
-            echo -e "${YELLOW}Python 3.10+ is required for Intel AI for Enterprise Agent Toolkit deployment.${NC}"
+            echo -e "${YELLOW}Python 3.10+ is required for Intel® AI for Enterprise Agent Toolkit deployment.${NC}"
             echo -e "${YELLOW}Please install/configure Python 3.10+ and set python3_interpreter, then try again.${NC}"
             echo -e "${YELLOW}RHEL: dnf install python3 python3-pip${NC}"
             echo -e "${YELLOW}Ubuntu: apt update && apt install python3 python3-pip${NC}"
@@ -322,6 +307,45 @@ run_system_prerequisites_check() {
         fi
     fi
     
-    echo -e "${GREEN}System prerequisites check completed successfully.${NC}"    
+    echo -e "${GREEN}System prerequisites check completed successfully.${NC}"
+    return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Docker fail-fast check (all nodes)
+# ──────────────────────────────────────────────────────────────────────────────
+# Runs playbooks/precheck-docker.yml against every node in the inventory and
+# aborts if Docker is found anywhere. Deliberately a detection-only check: it
+# never purges packages or touches iptables. See precheck-docker.yml for the
+# full rationale — in short, the Docker daemon sets the iptables FORWARD policy
+# to DROP, which silently blackholes pod and fabric traffic, and its containerd
+# can shadow the kubespray-managed one.
+#
+# Called before Kubernetes installation, so the operator finds out in seconds
+# rather than minutes into a run that fails inside etcd or Calico.
+run_docker_precheck() {
+    local _play="${HOMEDIR}/playbooks/precheck-docker.yml"
+    local _inv="${HOMEDIR}/inventory/hosts.yaml"
+
+    if [[ ! -f "${_play}" ]]; then
+        echo -e "${YELLOW}Docker precheck playbook not found at ${_play} — skipping.${NC}"
+        return 0
+    fi
+    if [[ ! -f "${_inv}" ]]; then
+        echo -e "${YELLOW}Inventory not found at ${_inv} — skipping Docker precheck.${NC}"
+        return 0
+    fi
+
+    echo "Checking all nodes for Docker (must not be installed alongside Kubernetes)..."
+    # any_errors_fatal so ONE dirty node stops the run — otherwise the failure is
+    # buried in a PLAY RECAP and the deployment carries on toward a broken cluster.
+    if ! ansible-playbook -i "${_inv}" "${_play}" -e any_errors_fatal=true; then
+        echo -e "${RED}----------------------------------------------------------------------------${NC}"
+        echo -e "${RED}|  Docker was found on one or more nodes.                                  |${NC}"
+        echo -e "${RED}|  Remove it manually (see the instructions above) and re-run.              |${NC}"
+        echo -e "${RED}----------------------------------------------------------------------------${NC}"
+        return 1
+    fi
+    echo -e "${GREEN}✓ No Docker found on any node.${NC}"
     return 0
 }

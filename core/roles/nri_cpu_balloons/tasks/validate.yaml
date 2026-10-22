@@ -1,0 +1,133 @@
+---
+# =============================================================================
+# NRI CPU Balloons — Validate
+# =============================================================================
+
+- name: "nri_cpu_balloons | Skip on non-CPU accelerator"
+  when: (kubernetes_accelerator | default('cpu')) != 'cpu'
+  block:
+    - name: "nri_cpu_balloons | Not CPU — nothing to validate"
+      ansible.builtin.debug:
+        msg: >-
+          kubernetes_accelerator='{{ kubernetes_accelerator | default('cpu') }}'
+          — skipping validation.
+
+    - name: "nri_cpu_balloons | End host"
+      ansible.builtin.meta: end_host
+
+- name: "nri_cpu_balloons | Check Helm release"
+  kubernetes.core.helm_info:
+    name: "{{ nri_cpu_balloons.helm.release_name }}"
+    release_namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _nri_release
+
+- name: "nri_cpu_balloons | Assert Helm release present"
+  ansible.builtin.assert:
+    that: _nri_release.status is defined and _nri_release.status is not none
+    fail_msg: >-
+      NRI balloons Helm release '{{ nri_cpu_balloons.helm.release_name }}'
+      not found in namespace '{{ nri_cpu_balloons.namespace }}'.
+    success_msg: "NRI balloons Helm release found."
+
+- name: "nri_cpu_balloons | Check policy ConfigMap"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    name: "nri-resource-policy-balloons-config"
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _nri_cm
+
+- name: "nri_cpu_balloons | Assert ConfigMap present"
+  ansible.builtin.assert:
+    that: _nri_cm.resources | length > 0
+    fail_msg: "Policy ConfigMap 'nri-resource-policy-balloons-config' is missing."
+
+- name: "nri_cpu_balloons | Check DaemonSet readiness"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: "{{ nri_cpu_balloons.helm.release_name }}"
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _nri_ds
+
+- name: "nri_cpu_balloons | Assert DaemonSet has ready pods"
+  ansible.builtin.assert:
+    that:
+      - _nri_ds.resources | length > 0
+      - (_nri_ds.resources[0].status.numberReady | default(0) | int) >= 1
+    fail_msg: "NRI balloons DaemonSet has no ready pods."
+    success_msg: >-
+      NRI balloons DaemonSet ready
+      ({{ _nri_ds.resources[0].status.numberReady | default(0) }} pods).
+
+- name: "nri_cpu_balloons | Gather node capability labels"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: _nri_nodes_info
+
+- name: "nri_cpu_balloons | Per-node NRI capability summary"
+  vars:
+    _rows: >-
+      {{
+        _nri_nodes_info.resources
+        | map(attribute='metadata')
+        | map('combine', {})
+        | list
+      }}
+  ansible.builtin.debug:
+    msg: |-
+      ============================================================
+      NRI balloons — per-node capability summary
+      ============================================================
+      {% set ns = namespace(labeled=0, unlabeled=0, best=0) %}
+      {% for n in _nri_nodes_info.resources %}
+      {% set lbl = (n.metadata.labels | default({})) %}
+      {% set enabled = lbl.get('nri.intel.com/balloons-enabled', '-') %}
+      {% set mtp = lbl.get('nri.intel.com/max-tp', '-') %}
+      {% set numa = lbl.get('nri.intel.com/numa-nodes', '-') %}
+      {% set pcpu = lbl.get('nri.intel.com/physical-cpus', '-') %}
+      {% if mtp != '-' %}{% set ns.labeled = ns.labeled + 1 %}{% if (mtp | int) > ns.best %}{% set ns.best = mtp | int %}{% endif %}{% else %}{% set ns.unlabeled = ns.unlabeled + 1 %}{% endif %}
+        - {{ '%-40s' | format(n.metadata.name) }}  enabled={{ enabled }}  max-tp={{ mtp }}  numa={{ numa }}  pcpus={{ pcpu }}
+      {% endfor %}
+      ------------------------------------------------------------
+      labeled nodes : {{ ns.labeled }}
+      unlabeled     : {{ ns.unlabeled }}
+      best max-tp   : {{ ns.best }}
+      ds ready pods : {{ _nri_ds.resources[0].status.numberReady | default(0) }} / {{ _nri_ds.resources[0].status.desiredNumberScheduled | default(0) }}
+      ============================================================
+
+- name: "nri_cpu_balloons | Count nodes with NRI max-tp label"
+  ansible.builtin.set_fact:
+    _nri_labeled_node_count: >-
+      {{
+        _nri_nodes_info.resources
+        | map(attribute='metadata.labels', default={})
+        | map('default', {}, true)
+        | map('dict2items') | map('selectattr', 'key', 'equalto', 'nri.intel.com/max-tp')
+        | map('list') | map('length') | sum
+      }}
+
+- name: "nri_cpu_balloons | Warn when no nodes carry NRI labels"
+  when: (_nri_labeled_node_count | int) == 0
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: no node carries 'nri.intel.com/max-tp'. The model_manager
+      pre-flight TP capability check will be skipped. Re-run the
+      nri_cpu_balloons role to populate node labels.
+
+- name: "nri_cpu_balloons | Pre-flight CPU validator (optional)"
+  when: (nri_target_models | default([])) | length > 0
+  ansible.builtin.command: >-
+    bash {{ role_path }}/files/validate-cpu-requirements.sh
+    "{{ nri_target_models | join(',') }}" c
+  environment:
+    NRI_MODEL_BENCHMARK_CONFIG: "{{ role_path }}/../../helm-charts/vllm/xeon-values.yaml"
+    NRI_RESERVED_CPU_CONFIG: "{{ role_path }}/files/reserved_cpu_config.yml"
+  register: _nri_validator
+  changed_when: false
+  failed_when: _nri_validator.rc != 0
+
+- name: "nri_cpu_balloons | Validation passed"
+  ansible.builtin.debug:
+    msg: "nri_cpu_balloons validation passed."

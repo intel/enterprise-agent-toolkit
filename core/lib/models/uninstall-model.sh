@@ -9,7 +9,9 @@ remove_inference_llm_models_playbook() {
     for model in $model_name_list; do
         tags+="uninstall-$model,"
     done
-    if [ -n "$hugging_face_model_remove_name" ] && [[ "$tags" != *"install-$hugging_face_model_remove_name"* ]]; then
+    # Dedupe on the tag actually being added; the old test used the "install-"
+    # prefix, which only matched by accident (as a substring of "uninstall-").
+    if [ -n "$hugging_face_model_remove_name" ] && [[ ",$tags" != *",uninstall-$hugging_face_model_remove_name,"* ]]; then
         tags+="uninstall-$hugging_face_model_remove_name,"
     fi
     tags=${tags%,}        

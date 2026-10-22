@@ -1,0 +1,141 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# layer-platform-health.yml — Cross-cutting platform checks (runs on all nodes)
+
+---
+- name: Run platform health checks
+  ansible.builtin.shell: |
+    HN=$(hostname -s)
+
+    # NTP check
+    ntp_status="FAIL"; ntp_evidence="NTP check failed"
+    if command -v chronyc &>/dev/null; then
+      OUT=$(chronyc tracking 2>/dev/null)
+      if echo "$OUT" | grep -q "Normal"; then
+        ntp_status="OK"; ntp_evidence=$(echo "$OUT" | grep -E 'Leap status|Last offset' | head -1)
+      fi
+    elif command -v timedatectl &>/dev/null; then
+      OUT=$(timedatectl status 2>/dev/null)
+      if echo "$OUT" | grep -qi "yes"; then
+        ntp_status="OK"; ntp_evidence=$(echo "$OUT" | grep -i 'synchronized' | head -1)
+      fi
+    fi
+
+    # Root disk
+    root_pct=$(df / --output=pcent 2>/dev/null | tail -1 | tr -d ' %' || echo "100")
+    root_free=$((100 - root_pct))
+    root_status="OK"; [ "$root_pct" -gt 90 ] && root_status="FAIL"
+
+    # Containerd disk
+    cdir="/var/lib/containerd"
+    if [ -d "$cdir" ]; then
+      ctd_pct=$(df "$cdir" --output=pcent 2>/dev/null | tail -1 | tr -d ' %' || echo "100")
+    else
+      ctd_pct=0
+    fi
+    ctd_free=$((100 - ctd_pct))
+    ctd_status="OK"; [ "$ctd_pct" -gt 90 ] && ctd_status="FAIL"
+
+    # Kernel/OS
+    kernel=$(uname -r)
+    os_name=$(grep '^NAME=' /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "?")
+    os_ver=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "?")
+
+    # Kubelet
+    kubelet_ver=$(kubelet --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+
+    # Swap
+    swap_total=$(free -m | awk '/Swap:/{print $2}')
+    swap_used=$(free -m | awk '/Swap:/{print $3}')
+    swap_status="OK"
+    [ "$swap_total" -ne 0 ] && [ "$swap_used" -ne 0 ] && swap_status="FAIL"
+
+    # CPU governor
+    gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unavailable")
+    freq_cur=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo "0")
+    freq_max=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo "0")
+    [ "$freq_cur" != "0" ] && freq_mhz=$((freq_cur / 1000)) || freq_mhz="?"
+    [ "$freq_max" != "0" ] && max_mhz=$((freq_max / 1000)) || max_mhz="?"
+    gov_status="OK"
+    [ "$gov" != "performance" ] && [ "$gov" != "unavailable" ] && gov_status="FAIL"
+
+    # NUMA
+    numa_nodes=$(lscpu 2>/dev/null | grep 'NUMA node(s)' | awk '{print $NF}' || echo "?")
+    cpus=$(nproc 2>/dev/null || echo "?")
+    sockets=$(lscpu 2>/dev/null | grep 'Socket(s)' | awk '{print $NF}' || echo "?")
+    mem_gb=$(free -g 2>/dev/null | awk '/Mem:/{print $2}' || echo "?")
+
+    # THP
+    thp_raw=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo "unknown")
+    thp_current=$(echo "$thp_raw" | grep -oP '\[\K[^\]]+' || echo "unknown")
+    thp_status="OK"
+    [ "$thp_current" = "always" ] && thp_status="FAIL"
+
+    python3 -c "
+    import json, sys
+    results = [
+        {'layer':'platform-health','check':'Time sync on $HN','status':'$ntp_status',
+         'evidence':sys.argv[1],'hint':'NTP not synced — check: chronyc sources or timedatectl'},
+        {'layer':'platform-health','check':'Root disk headroom on $HN','status':'$root_status',
+         'evidence':'${root_free}% free','hint':'Root partition >90% full — clean up: journalctl --vacuum-size=500M'},
+        {'layer':'platform-health','check':'Containerd disk headroom on $HN','status':'$ctd_status',
+         'evidence':'${ctd_free}% free on /var/lib/containerd','hint':'Containerd partition >90% full — ctr image prune'},
+        {'layer':'platform-health','check':'Kernel on $HN','status':'OK',
+         'evidence':'kernel=$kernel os=$os_name $os_ver','hint':'Kernel/OS mismatch across nodes'},
+        {'layer':'platform-health','check':'Kubelet on $HN','status':'OK',
+         'evidence':'kubelet=$kubelet_ver','hint':'Kubelet version mismatch — all nodes should match'},
+        {'layer':'platform-health','check':'Swap on $HN','status':'$swap_status',
+         'evidence':'swap_total=${swap_total}MB swap_used=${swap_used}MB','hint':'Swap active — swapoff -a'},
+        {'layer':'platform-health','check':'CPU governor on $HN','status':'$gov_status',
+         'evidence':'governor=$gov freq=${freq_mhz}MHz max=${max_mhz}MHz','hint':'Set performance: cpupower frequency-set -g performance'},
+        {'layer':'platform-health','check':'Hardware on $HN','status':'OK',
+         'evidence':'numa_nodes=$numa_nodes sockets=$sockets cpus=$cpus memory=${mem_gb}GB','hint':'Verify consistent hardware'},
+        {'layer':'platform-health','check':'THP on $HN','status':'$thp_status',
+         'evidence':'thp=$thp_current ($thp_raw)','hint':'THP=always causes latency spikes — echo madvise > /sys/kernel/mm/transparent_hugepage/enabled'},
+    ]
+    print(json.dumps(results))
+    " "$ntp_evidence"
+  args:
+    executable: /bin/bash
+  register: _platform_results
+  changed_when: false
+  ignore_errors: true
+
+- name: Append platform-health results to host results file
+  ansible.builtin.shell: "echo '{{ _platform_results.stdout | default(\"[]\") }}' >> /tmp/validate-stack-host-results.jsonl"
+  changed_when: false
+
+- name: Check no nodes reporting resource pressure (cluster-wide, run once)
+  ansible.builtin.shell: |
+    kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name} MemoryPressure={.status.conditions[?(@.type=="MemoryPressure")].status} DiskPressure={.status.conditions[?(@.type=="DiskPressure")].status}{"\n"}{end}' 2>/dev/null | grep 'True' || echo "NONE"
+  register: _platform_pressure
+  changed_when: false
+  ignore_errors: true
+  run_once: true
+  delegate_to: localhost
+
+- name: Record node pressure (cluster-level, not per-host)
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'platform-health', 'check': 'No node resource pressure', 'status': 'OK' if ('NONE' in (_platform_pressure.stdout | default('NONE'))) else 'FAIL', 'evidence': _platform_pressure.stdout | default('') | truncate(150), 'hint': 'Nodes under pressure — check: kubectl describe node <name>' }] }}"
+  run_once: true
+
+- name: Check HuggingFace token validity
+  ansible.builtin.uri:
+    url: "https://huggingface.co/api/whoami-v2"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ hugging_face_token | default('') }}"
+    return_content: true
+    timeout: 15
+  register: _platform_hf_token
+  ignore_errors: true
+  delegate_to: localhost
+  run_once: true
+  when: (hugging_face_token | default('')) | length > 0
+
+- name: Record HuggingFace token (cluster-level)
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'platform-health', 'check': 'HuggingFace token valid', 'status': 'OK' if (_platform_hf_token.status | default(0) == 200) else 'FAIL', 'evidence': 'token valid for user: ' + (_platform_hf_token.json.name | default('unknown')) if (_platform_hf_token.status | default(0) == 200) else 'HTTP ' + (_platform_hf_token.status | default(0) | string), 'hint': 'HuggingFace token revoked/expired — update in agentic-config.cfg' }] }}"
+  run_once: true
+  when: (hugging_face_token | default('')) | length > 0

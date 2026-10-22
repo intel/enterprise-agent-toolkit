@@ -98,6 +98,10 @@
         dest: "/tmp/sandbox_router.yaml"
         mode: '0644'
       run_once: true
+      register: router_download
+      retries: 5
+      delay: 30
+      until: router_download is not failed
 
     - name: Read sandbox_router.yaml content
       ansible.builtin.slurp:

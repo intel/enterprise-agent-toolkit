@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stack Health Report — {{ _report_ts | default(report_timestamp | default('unknown')) }}</title>
+<style>
+  :root {
+    --ok: #15803d;
+    --ok-bg: #f0fdf4;
+    --ok-border: #bbf7d0;
+    --pending: #a16207;
+    --pending-bg: #fefce8;
+    --pending-border: #fef08a;
+    --fail: #b91c1c;
+    --fail-bg: #fef2f2;
+    --fail-border: #fecaca;
+    --skip-bg: #f9fafb;
+    --skip-border: #e5e7eb;
+    --text: #1f2937;
+    --text-secondary: #6b7280;
+    --surface: #ffffff;
+    --border: #e5e7eb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--text);
+    background: #f3f4f6;
+    padding: 2rem;
+    line-height: 1.5;
+  }
+  .report {
+    max-width: 960px;
+    margin: 0 auto;
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+    overflow: hidden;
+  }
+  .header {
+    background: #0068b5;
+    color: #fff;
+    padding: 1.5rem 2rem;
+  }
+  .header h1 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+  .header .ts {
+    font-size: 0.85rem;
+    opacity: 0.85;
+  }
+  .summary-bar {
+    display: flex;
+    gap: 1.5rem;
+    padding: 1.25rem 2rem;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .summary-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+  .summary-stat .num {
+    font-size: 1.75rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .summary-stat .label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .num-ok { color: var(--ok); }
+  .num-pending { color: var(--pending); }
+  .num-fail { color: var(--fail); }
+  .num-skip { color: var(--text-secondary); }
+  .layers { padding: 0.5rem 0; }
+  .layer {
+    border-bottom: 1px solid var(--border);
+  }
+  .layer:last-child { border-bottom: none; }
+  .layer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.875rem 2rem;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .layer-header:hover { background: #f9fafb; }
+  .layer-name {
+    font-size: 0.95rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .layer-name .arrow {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    transition: transform 0.2s;
+    display: inline-block;
+    width: 1em;
+  }
+  .layer.open .layer-name .arrow { transform: rotate(90deg); }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.65rem;
+    border-radius: 9999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .badge-ok { background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok-border); }
+  .badge-pending { background: var(--pending-bg); color: var(--pending); border: 1px solid var(--pending-border); }
+  .badge-fail { background: var(--fail-bg); color: var(--fail); border: 1px solid var(--fail-border); }
+  .badge-skip { background: var(--skip-bg); color: var(--text-secondary); border: 1px solid var(--skip-border); }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot-ok { background: var(--ok); }
+  .dot-pending { background: var(--pending); }
+  .dot-fail { background: var(--fail); }
+  .checks {
+    display: none;
+    padding: 0 2rem 1rem 3.25rem;
+  }
+  .layer.open .checks { display: block; }
+  .check-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px dashed #f0f0f0;
+    font-size: 0.875rem;
+  }
+  .check-row:last-child { border-bottom: none; }
+  .check-name { flex: 1; min-width: 0; }
+  .check-evidence {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    margin-top: 0.2rem;
+    font-family: "SF Mono", SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    word-break: break-word;
+  }
+  .check-hint {
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+    padding: 0.35rem 0.6rem;
+    border-radius: 4px;
+  }
+  .hint-fail {
+    background: var(--fail-bg);
+    color: var(--fail);
+    border-left: 3px solid var(--fail);
+  }
+  .hint-pending {
+    background: var(--pending-bg);
+    color: var(--pending);
+    border-left: 3px solid var(--pending);
+  }
+  .check-status { flex-shrink: 0; }
+  .footer {
+    padding: 1rem 2rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .report { box-shadow: none; }
+    .layer.open .checks { display: block; }
+    .layer-header:hover { background: transparent; }
+  }
+</style>
+</head>
+<body>
+<div class="report">
+  <div class="header">
+    <h1>Intel AI for Enterprise &mdash; Stack Health Report</h1>
+    <div class="ts">Generated: {{ _report_ts | default(report_timestamp | default('unknown')) }}{% if cluster_url | default('') %} &middot; Cluster: {{ cluster_url }}{% endif %}</div>
+  </div>
+
+{# ── Compute aggregates ── #}
+{% set ns = namespace(ok=0, pending=0, fail=0, layers_seen=[], layer_status={}) %}
+
+{% set layer_order = [
+  'e2e-inference', 'fabric', 'network', 'proxy', 'kubernetes',
+  'storage', 'ai-stack', 'wiring', 'gpu', 'kuberay',
+  'sandbox', 'flowise', 'platform-health', 'burn-quick', 'burn-extended'
+] %}
+
+{% set layer_names = {
+  'e2e-inference': 'End-to-end inference',
+  'fabric': 'Fabric verified',
+  'network': 'Network connectivity',
+  'proxy': 'Proxy configuration',
+  'kubernetes': 'Kubernetes cluster',
+  'storage': 'Storage (Ceph)',
+  'ai-stack': 'AI Stack services',
+  'wiring': 'Inter-component wiring',
+  'gpu': 'GPU readiness',
+  'kuberay': 'KubeRay',
+  'sandbox': 'Agent Sandbox',
+  'flowise': 'Agentic AI Plugin',
+  'platform-health': 'Platform health',
+  'burn-quick': 'Quick burn (infra)',
+  'burn-extended': 'Extended burn'
+} %}
+
+{# Group checks by layer #}
+{% set layer_checks = {} %}
+{% for r in all_results %}
+  {% set l = r.layer | default('unknown') %}
+  {% if l not in layer_checks %}
+    {% set _ = layer_checks.update({l: []}) %}
+  {% endif %}
+  {% set _ = layer_checks[l].append(r) %}
+{% endfor %}
+
+{# Compute worst status per layer using selectattr (avoids scoping issues) #}
+{% macro compute_layers(order) %}
+{% for l in order %}
+  {% if l in layer_checks %}
+    {% set has_fail = layer_checks[l] | selectattr('status', 'equalto', 'FAIL') | list | length > 0 %}
+    {% set has_pending = layer_checks[l] | selectattr('status', 'equalto', 'PENDING') | list | length > 0 %}
+    {% if has_fail %}
+      {% set ns.fail = ns.fail + 1 %}
+      {% set _ = ns.layer_status.update({l: 'FAIL'}) %}
+    {% elif has_pending %}
+      {% set ns.pending = ns.pending + 1 %}
+      {% set _ = ns.layer_status.update({l: 'PENDING'}) %}
+    {% else %}
+      {% set ns.ok = ns.ok + 1 %}
+      {% set _ = ns.layer_status.update({l: 'OK'}) %}
+    {% endif %}
+    {% set _ = ns.layers_seen.append(l) %}
+  {% endif %}
+{% endfor %}
+{% endmacro %}
+
+{# Process predefined layers in order, then any extras #}
+{{ compute_layers(layer_order) }}
+{% set extra_layers = layer_checks.keys() | sort | reject('in', layer_order) | list %}
+{{ compute_layers(extra_layers) }}
+
+{% set total = ns.ok + ns.pending + ns.fail %}
+
+  <div class="summary-bar">
+    <div class="summary-stat">
+      <span class="num num-ok">{{ ns.ok }}</span>
+      <span class="label">Passed</span>
+    </div>
+    {% if ns.pending > 0 %}
+    <div class="summary-stat">
+      <span class="num num-pending">{{ ns.pending }}</span>
+      <span class="label">Pending</span>
+    </div>
+    {% endif %}
+    {% if ns.fail > 0 %}
+    <div class="summary-stat">
+      <span class="num num-fail">{{ ns.fail }}</span>
+      <span class="label">Failed</span>
+    </div>
+    {% endif %}
+    <div class="summary-stat" style="margin-left:auto;">
+      <span class="num" style="font-size:1rem; color:var(--text-secondary);">{{ total }}</span>
+      <span class="label">layers checked</span>
+    </div>
+  </div>
+
+{# ── Macro: render a list of layers ── #}
+{% macro render_layers(layer_list) %}
+  {% for l in layer_list %}
+    {% set worst = ns.layer_status[l] %}
+    {% set worst_lower = worst | lower %}
+    {% set is_previous = (_current_layers is defined and l not in _current_layers) %}
+    <div class="layer{% if worst != 'OK' %} open{% endif %}">
+      <div class="layer-header" onclick="this.parentElement.classList.toggle('open')">
+        <span class="layer-name">
+          <span class="arrow">&#9654;</span>
+          {{ layer_names.get(l, l) }}
+          {% if is_previous and layer_checks[l] | map(attribute='checked_at') | select('defined') | first is defined %}
+          <span style="font-size: 0.75rem; color: var(--text-secondary); margin-left: 0.5rem;">checked: {{ layer_checks[l] | map(attribute='checked_at') | select('defined') | first }}</span>
+          {% endif %}
+        </span>
+        <span class="badge badge-{{ worst_lower }}">
+          <span class="dot dot-{{ worst_lower }}"></span>
+          {{ worst }}
+        </span>
+      </div>
+      <div class="checks">
+      {% for c in layer_checks[l] %}
+        {% set s = c.status | default('OK') %}
+        {% set s_lower = s | lower %}
+        <div class="check-row">
+          <div class="check-name">
+            {{ c.check | default('unnamed check') | e }}
+            {% if c.evidence | default('') %}
+            <div class="check-evidence">{{ c.evidence | e }}</div>
+            {% endif %}
+            {% if s == 'FAIL' and c.hint | default('') %}
+            <div class="check-hint hint-fail">{{ c.hint | e }}</div>
+            {% elif s == 'PENDING' and c.hint | default('') %}
+            <div class="check-hint hint-pending">{{ c.hint | e }}</div>
+            {% endif %}
+          </div>
+          <span class="badge badge-{{ s_lower }} check-status">
+            <span class="dot dot-{{ s_lower }}"></span>
+            {{ s }}
+          </span>
+        </div>
+      {% endfor %}
+      </div>
+    </div>
+  {% endfor %}
+{% endmacro %}
+
+{# Split layers into current run vs previous results #}
+{% set current_run_layers = [] %}
+{% set previous_run_layers = [] %}
+{% for l in ns.layers_seen %}
+  {% if _current_layers is not defined or l in _current_layers %}
+    {% set _ = current_run_layers.append(l) %}
+  {% else %}
+    {% set _ = previous_run_layers.append(l) %}
+  {% endif %}
+{% endfor %}
+
+  <div class="layers">
+  {% if current_run_layers | length > 0 %}
+    <div style="padding: 0.5rem 2rem 0.25rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); font-weight: 600;">Current Run &mdash; {{ _check_iso | default(_report_ts | default('')) }}</div>
+    {{ render_layers(current_run_layers) }}
+  {% endif %}
+
+  {% if previous_run_layers | length > 0 %}
+    <div style="padding: 1rem 2rem 0.25rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); font-weight: 600; border-top: 2px dashed var(--border);">Previous Results</div>
+    <div style="opacity: 0.7;">
+    {{ render_layers(previous_run_layers) }}
+    </div>
+  {% endif %}
+  </div>
+
+{% if _endpoints is defined and _endpoints.cluster_url | default('') | length > 0 %}
+  <div style="border-top: 1px solid var(--border); padding: 1.5rem 2rem;">
+    <h2 style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: var(--text);">Quick Start &mdash; Endpoints &amp; Commands</h2>
+    <table style="font-size: 0.875rem; border-collapse: collapse; width: 100%;">
+    {% if _endpoints.cluster_url %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Cluster URL</td><td style="padding: 0.3rem 0;"><a href="https://{{ _endpoints.cluster_url | e }}" style="color: #0068b5;">https://{{ _endpoints.cluster_url | e }}</a></td></tr>
+    {% endif %}
+    {% if configured_models | default('') | length > 0 %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Model</td><td style="padding: 0.3rem 0; font-weight: 500;">{{ configured_models | e }}</td></tr>
+    {% endif %}
+    {% if _endpoints.inference_api %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Inference API</td><td style="padding: 0.3rem 0;"><a href="{{ _endpoints.inference_api | e }}" style="color: #0068b5;">{{ _endpoints.inference_api | e }}</a></td></tr>
+    {% endif %}
+    {% if _endpoints.models_api %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Models API</td><td style="padding: 0.3rem 0;"><a href="{{ _endpoints.models_api | e }}" style="color: #0068b5;">{{ _endpoints.models_api | e }}</a></td></tr>
+    {% endif %}
+    {% if _endpoints.langfuse_ui %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Langfuse (traces)</td><td style="padding: 0.3rem 0;"><a href="{{ _endpoints.langfuse_ui | e }}" style="color: #0068b5;">{{ _endpoints.langfuse_ui | e }}</a></td></tr>
+    {% endif %}
+    {% if _endpoints.grafana_ui %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Grafana (metrics)</td><td style="padding: 0.3rem 0;"><a href="{{ _endpoints.grafana_ui | e }}" style="color: #0068b5;">{{ _endpoints.grafana_ui | e }}</a></td></tr>
+    {% endif %}
+    {% if _endpoints.flowise_ui %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Flowise (agents)</td><td style="padding: 0.3rem 0;"><a href="{{ _endpoints.flowise_ui | e }}" style="color: #0068b5;">{{ _endpoints.flowise_ui | e }}</a></td></tr>
+    {% endif %}
+    {% if _endpoints.ray_dashboard %}
+      <tr><td style="padding: 0.3rem 1rem 0.3rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Ray dashboard</td><td style="padding: 0.3rem 0;"><a href="{{ _endpoints.ray_dashboard | e }}" style="color: #0068b5;">{{ _endpoints.ray_dashboard | e }}</a></td></tr>
+    {% endif %}
+    </table>
+
+    {% if _endpoints.inference_api and configured_models | default('') | length > 0 %}
+    <div style="margin-top: 1rem;">
+      <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.4rem;">Test inference:</div>
+      <pre style="background: #1f2937; color: #e5e7eb; padding: 0.75rem 1rem; border-radius: 6px; font-size: 0.8rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">curl -sk {{ _endpoints.inference_api | e }} \
+  -H "Authorization: Bearer &lt;LITELLM_API_KEY&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"{{ configured_models | e }}","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'</pre>
+    </div>
+    {% endif %}
+
+    {% if _internal_services is defined %}
+    <h3 style="font-size: 0.9rem; font-weight: 600; margin-top: 1.25rem; margin-bottom: 0.5rem; color: var(--text);">In-cluster Services</h3>
+    <table style="font-size: 0.8rem; border-collapse: collapse; width: 100%;">
+    {% if _internal_services.litellm_internal | default('') | length > 0 %}
+      <tr><td style="padding: 0.25rem 1rem 0.25rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">LiteLLM</td><td style="padding: 0.25rem 0; font-family: monospace; font-size: 0.78rem;">{{ _internal_services.litellm_internal | e }}</td></tr>
+    {% endif %}
+    {% if _internal_services.redis | default('') | length > 0 %}
+      <tr><td style="padding: 0.25rem 1rem 0.25rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Redis</td><td style="padding: 0.25rem 0; font-family: monospace; font-size: 0.78rem;">{{ _internal_services.redis | e }}</td></tr>
+    {% endif %}
+    {% if _internal_services.pgvector | default('') | length > 0 %}
+      <tr><td style="padding: 0.25rem 1rem 0.25rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">pgvector</td><td style="padding: 0.25rem 0; font-family: monospace; font-size: 0.78rem;">{{ _internal_services.pgvector | e }}</td></tr>
+    {% endif %}
+    {% if _internal_services.ray_client | default('') | length > 0 %}
+      <tr><td style="padding: 0.25rem 1rem 0.25rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Ray client</td><td style="padding: 0.25rem 0; font-family: monospace; font-size: 0.78rem;">{{ _internal_services.ray_client | e }}</td></tr>
+      <tr><td style="padding: 0.25rem 1rem 0.25rem 0; color: var(--text-secondary); white-space: nowrap; vertical-align: top;">Ray dashboard</td><td style="padding: 0.25rem 0; font-family: monospace; font-size: 0.78rem;">{{ _internal_services.ray_dashboard_internal | e }}</td></tr>
+    {% endif %}
+    </table>
+    {% endif %}
+  </div>
+{% endif %}
+
+  <div class="footer">
+    <span>Intel AI for Enterprise &mdash; validate-stack.yml</span>
+    <span>{{ _report_ts | default(report_timestamp | default('unknown')) }}</span>
+  </div>
+</div>
+</body>
+</html>

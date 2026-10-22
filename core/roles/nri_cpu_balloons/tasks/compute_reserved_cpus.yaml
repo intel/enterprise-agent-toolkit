@@ -1,0 +1,221 @@
+---
+# =============================================================================
+# NRI CPU Balloons — compute reserved CPU list (profile-based)
+# =============================================================================
+# Runs `files/compute_reserved_cpus.sh` on the Ansible controller with
+# topology INJECTED via NRI_TOPO_* environment variables that were collected
+# from each node's /sys tree by the unprivileged busybox probe in
+# generate_balloon_types.yaml (stored in _nri_per_node_topology).
+#
+# Sizing is driven by `nri_deployment_profile`:
+#   siblings      = ALL sibling (HT) vCPUs (half the node's logical CPUs)
+#   minimal       =  8 logical CPUs (core services only)
+#   standard      = 12 logical CPUs (core + auth)
+#   observability = 16 logical CPUs (standard + monitoring)
+#   full          = 20 logical CPUs (all components)
+#
+# The script spreads the chosen total evenly across the node's NUMA domains
+# and balances physical / hyperthread siblings.
+#
+# ORDER MATTERS. The script is invoked once PER NODE (with that node's own
+# topology); the cluster default is then DERIVED from those results by taking
+# the SMALLEST per-node reservation.
+#
+# Rationale: the cluster default feeds the helm-rendered `default`
+# BalloonsPolicy CR, which is what every node runs with until its own
+# `node.<NAME>` CR is applied — plus any node this role never discovered. In
+# `count` mode (always used on heterogeneous fleets) the plugin must find that
+# many free CPUs locally; a default sized from the most-capable node is
+# unsatisfiable on a smaller one and the plugin exits at startup with
+# "not enough free CPUs", i.e. CrashLoopBackOff that no restart can clear.
+# The smallest per-node reservation is satisfiable on every node by
+# construction; more-capable nodes merely under-reserve for the few seconds
+# until their `node.<NAME>` CR (carrying the optimal cpuset) lands.
+#
+# On a homogeneous cluster every node yields the same reservation, so the
+# derived default is byte-identical to the per-node values.
+#
+# Operators can bypass this entire path by setting `nri_reserved_cpu_list`
+# explicitly — install.yaml then skips this task file.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Per-node invocation: run the script on the controller once per discovered
+# node, injecting that node's own topology, so each node's BalloonsPolicy CR
+# carries a reserved cpuset tailored to its NUMA and HT layout.
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | Compute reserved CPUs per node (controller, injected topology)"
+  ansible.builtin.command:
+    cmd: >-
+      bash {{ role_path }}/files/compute_reserved_cpus.sh
+      --profile {{ nri_deployment_profile }}
+      --strategy balanced
+      --ht-strategy balanced
+  environment:
+    NRI_TOPO_NUMA: "{{ item.value.numa | string }}"
+    NRI_TOPO_TPC: "{{ item.value.threads_per_core | string }}"
+    NRI_TOPO_LOGICAL: "{{ item.value.logical_cpus | string }}"
+    NRI_TOPO_SIBLINGS: "{{ item.value.siblings | default('') }}"
+    NRI_TOPO_NODECPUS: "{{ item.value.nodecpus_str }}"
+  delegate_to: localhost
+  changed_when: false
+  register: _compute_reserved_per_node
+  failed_when: _compute_reserved_per_node.rc != 0
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} (profile={{ nri_deployment_profile }})"
+
+- name: "nri_cpu_balloons | Per-node reservation exceeds 25% of total CPUs"
+  vars:
+    _warn_lines: "{{ item.stderr_lines | select('search', 'WARNING') | list }}"
+  ansible.builtin.debug:
+    msg:
+      - "[WARNING] Node '{{ item.item.key }}' — profile '{{ nri_deployment_profile }}' reserves more than 25% of total vCPUs."
+      - "{{ _warn_lines | join(' ') }}"
+      - "Remaining CPUs for inference may be limited. Proceeding with deployment."
+  when: (item.stderr | default('')) is search('WARNING')
+  changed_when: (item.stderr | default('')) is search('WARNING')
+  loop: "{{ _compute_reserved_per_node.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: "nri_cpu_balloons | Merge per-node reserved into topology fact"
+  vars:
+    _merged_res: >-
+      {%- set out = {} -%}
+      {%- for r in _compute_reserved_per_node.results -%}
+        {%- set node = r.item.key -%}
+        {%- set base = _nri_per_node_topology[node] -%}
+        {%- set cpuset = (r.stdout | regex_findall('NRI_RESERVED_CPU_LIST=(.+)') | first | default('') | trim) -%}
+        {%- set ns = namespace(total=0) -%}
+        {%- if cpuset -%}
+          {%- for part in cpuset.split(',') -%}
+            {%- if '-' in part -%}
+              {%- set lo, hi = part.split('-') -%}
+              {%- set ns.total = ns.total + (hi | int) - (lo | int) + 1 -%}
+            {%- else -%}
+              {%- set ns.total = ns.total + 1 -%}
+            {%- endif -%}
+          {%- endfor -%}
+        {%- endif -%}
+        {%- set _ = out.update({node: base | combine({'reserved_cpu_list': cpuset, 'reserved_count': ns.total})}) -%}
+      {%- endfor -%}
+      {{ out }}
+  ansible.builtin.set_fact:
+    _nri_per_node_topology: "{{ _merged_res }}"
+
+# Every per-node cpuset lands verbatim in a `node.<NAME>` BalloonsPolicy CR
+# (balloon-policy-node.yaml.j2). Validate them here, where the node name is
+# still in scope, rather than letting an empty/garbled list reach the API
+# server as `cpu: "cpuset:"`.
+- name: "nri_cpu_balloons | Validate per-node reserved cpusets"
+  ansible.builtin.assert:
+    that:
+      - (item.value.reserved_cpu_list | default('') | length) > 0
+      - (item.value.reserved_cpu_list | default('') | regex_search('^[0-9]+([,-][0-9]+)*$')) is not none
+      - (item.value.reserved_count | default(0) | int) > 0
+    fail_msg: >-
+      compute_reserved_cpus.sh returned an invalid cpuset for node
+      '{{ item.key }}': '{{ item.value.reserved_cpu_list | default('') }}'
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# -----------------------------------------------------------------------------
+# Cluster-default derivation (feeds the helm-rendered "default" BalloonsPolicy
+# CR that backs up any node we haven't discovered yet, and that every node runs
+# with until its own `node.<NAME>` CR is applied).
+#
+# Take the node with the SMALLEST reservation — see the header for why this must
+# not be the most-capable node. Ties broken alphabetically so repeated runs on
+# an unchanged cluster render an identical values file (no spurious helm diff).
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | Derive cluster-default reservation from least-capable node"
+  vars:
+    _min_count: >-
+      {{ _nri_per_node_topology.values() | map(attribute='reserved_count')
+         | map('int') | list | min }}
+    _min_node_name: >-
+      {%- set ns = namespace(found='') -%}
+      {%- for node, meta in (_nri_per_node_topology | dictsort) -%}
+        {%- if not ns.found and (meta.reserved_count | int) == (_min_count | int) -%}
+          {%- set ns.found = node -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.found }}
+  ansible.builtin.set_fact:
+    _nri_default_reserved_node: "{{ _min_node_name | trim }}"
+    _nri_reserved_cpu_list: "{{ _nri_per_node_topology[_min_node_name | trim].reserved_cpu_list }}"
+    _nri_actual_reserved_count: "{{ _min_count | int }}"
+
+- name: "nri_cpu_balloons | Validate reserved CPU list"
+  ansible.builtin.assert:
+    that:
+      - _nri_reserved_cpu_list is defined
+      - (_nri_reserved_cpu_list | length) > 0
+      - (_nri_reserved_cpu_list | regex_search('^[0-9]+([,-][0-9]+)*$')) is not none
+    fail_msg: >-
+      Failed to derive a cluster-default reserved cpuset from the per-node
+      results: '{{ _nri_reserved_cpu_list | default('') }}'
+
+# Fail before the helm install (not at pod startup): the cluster default is
+# broadcast to every node in `count` mode, so enforce the script's 16-CPU
+# workload floor against the smallest node — the only place the whole fleet is
+# in scope to catch a cross-node mismatch.
+- name: "nri_cpu_balloons | Assert cluster-default reservation is satisfiable on the smallest node"
+  vars:
+    _nri_min_workload_cpus: 16
+    _smallest_logical: >-
+      {{ _nri_per_node_topology.values() | map(attribute='logical_cpus')
+         | map('int') | list | min }}
+    _smallest_node: >-
+      {%- set ns = namespace(found='', minv=None) -%}
+      {%- for node, meta in (_nri_per_node_topology | dictsort) -%}
+        {%- set lc = meta.logical_cpus | int -%}
+        {%- if ns.minv is none or lc < ns.minv -%}
+          {%- set ns.minv = lc -%}
+          {%- set ns.found = node -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.found }}
+  ansible.builtin.assert:
+    that:
+      - (_smallest_logical | int) - (_nri_actual_reserved_count | int) >= (_nri_min_workload_cpus | int)
+    fail_msg: >-
+      Cluster-default reserved count ({{ _nri_actual_reserved_count }}) would leave
+      only {{ (_smallest_logical | int) - (_nri_actual_reserved_count | int) }}
+      workload CPUs on the smallest node '{{ _smallest_node | trim }}'
+      ({{ _smallest_logical }} logical) — below the {{ _nri_min_workload_cpus }}-CPU
+      floor. The NRI balloons plugin would CrashLoopBackOff on that node at startup.
+      Lower `nri_deployment_profile`, set an explicit `nri_reserved_cpu_list`, or
+      remove the undersized node from the inference pool.
+    success_msg: >-
+      Cluster-default reservation ({{ _nri_actual_reserved_count }} CPUs) leaves
+      >= {{ _nri_min_workload_cpus }} workload CPUs on every node
+      (smallest: '{{ _smallest_node | trim }}', {{ _smallest_logical }} logical).
+
+- name: "nri_cpu_balloons | Display cluster-default reserved CPU plan"
+  vars:
+    _min_node_logical: "{{ _nri_per_node_topology[_nri_default_reserved_node].logical_cpus }}"
+  ansible.builtin.debug:
+    msg:
+      - "Profile:                   {{ nri_deployment_profile }}"
+      - "Sized from node:           {{ _nri_default_reserved_node }} (smallest reservation in the fleet)"
+      - "Reserved cpuset:           {{ _nri_reserved_cpu_list }}"
+      - "Reserved CPUs (count):     {{ _nri_actual_reserved_count }}"
+      - "Workload CPUs on that node: {{ (_min_node_logical | int) - (_nri_actual_reserved_count | int) }} of {{ _min_node_logical }} logical"
+      - "Note: this is the fleet-wide fallback. Each node also gets a"
+      - "      node.<NAME> CR with a cpuset sized to its own topology."
+
+- name: "nri_cpu_balloons | Per-node reserved summary"
+  ansible.builtin.debug:
+    msg: >-
+      node={{ item.key }}
+      numa={{ item.value.numa }}
+      threads_per_core={{ item.value.threads_per_core }}
+      profile={{ nri_deployment_profile }}
+      reserved_count={{ item.value.reserved_count }}
+      cpuset={{ item.value.reserved_cpu_list }}
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

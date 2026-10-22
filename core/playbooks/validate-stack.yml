@@ -1,0 +1,511 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# validate-stack.yml
+#
+# Post-deploy health check — validates every deployed layer of the Intel AI
+# for Enterprise stack and prints a consolidated traffic-light report.
+#
+# Three states: GREEN (OK) — verified working with evidence
+#               AMBER (PENDING) — expected transitional state (e.g. model loading)
+#               RED (FAIL) — unexpected failure, needs attention
+#
+# Topology-aware: reads rack-scale-flags.env to gate checks. Layers for
+# components that are not deployed are skipped cleanly, not reported as failures.
+#
+# Run standalone:
+#   ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml
+#
+# Run a single layer:
+#   ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml --tags kubernetes
+#
+# Run with extended burn (opt-in):
+#   ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml --tags all,extended-burn
+#
+# Exit code: 0 if no RED (AMBER counts as pass), non-zero on any RED.
+
+---
+# ═══════════════════════════════════════════════════════════════════════════════
+# Play 1 — Cluster-level checks (kubectl / curl / API based)
+# ═══════════════════════════════════════════════════════════════════════════════
+- name: "Validate Stack — Cluster-level checks"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    homedir: "{{ playbook_dir | dirname }}"
+    inventory_meta_dir: "{{ homedir }}/inventory/metadata"
+    flags_file: "{{ inventory_meta_dir }}/rack-scale-flags.env"
+    config_file: "{{ homedir }}/inventory/agentic-config.cfg"
+    report_timestamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    health_results: []
+    # Overridable thresholds
+    burn_fabric_floor_gbps: 20
+    burn_pod_net_floor_pct: 70
+    burn_storage_seq_write_gbps: 1
+    burn_storage_iops_floor: 20000
+    burn_gpu_temp_ceil: 85
+    burn_gpu_util_floor: 95
+    burn_duration: "2m"
+
+  pre_tasks:
+    - name: Load vault secrets (litellm_master_key, redis_password, etc.)
+      ansible.builtin.include_vars:
+        file: "{{ inventory_meta_dir }}/vault.yml"
+      no_log: true
+      ignore_errors: true
+
+    - name: Load rack-scale-flags.env
+      ansible.builtin.slurp:
+        src: "{{ flags_file }}"
+      register: _flags_raw
+      ignore_errors: true
+
+    - name: Parse rack-scale flags into vars
+      ansible.builtin.set_fact:
+        rack_scale_mode: "{{ (_flags_raw.content | default('') | b64decode | regex_search('rack_scale_mode=(\\S+)', '\\1') | default(['no'], true))[0] | default('no') }}"
+        rack_scale_topology: "{{ (_flags_raw.content | default('') | b64decode | regex_search('rack_scale_topology=(\\S+)', '\\1') | default(['star'], true))[0] | default('star') }}"
+        rack_scale_gpu_vendor: "{{ (_flags_raw.content | default('') | b64decode | regex_search('rack_scale_gpu_vendor=(\\S+)', '\\1') | default([''], true))[0] | default('') }}"
+        rack_scale_gpu_model: "{{ (_flags_raw.content | default('') | b64decode | regex_search('rack_scale_gpu_model=(\\S+)', '\\1') | default([''], true))[0] | default('') }}"
+      when: _flags_raw is succeeded
+
+    - name: Set defaults when flags file is absent
+      ansible.builtin.set_fact:
+        rack_scale_mode: "no"
+        rack_scale_topology: "star"
+        rack_scale_gpu_vendor: ""
+        rack_scale_gpu_model: ""
+      when: _flags_raw is failed
+
+    - name: Load agentic-config.cfg
+      ansible.builtin.slurp:
+        src: "{{ config_file }}"
+      register: _config_raw
+      ignore_errors: true
+
+    - name: Fallback rack_scale_mode from agentic-config if not in flags.env
+      ansible.builtin.set_fact:
+        rack_scale_mode: "{{ (_config_raw.content | default('') | b64decode | regex_search('rack_scale_mode=(\\S+)', '\\1') | default([rack_scale_mode], true))[0] | default(rack_scale_mode) }}"
+      when: _config_raw is succeeded and rack_scale_mode | default('no') == 'no'
+
+    - name: Parse agentic-config flags
+      ansible.builtin.set_fact:
+        deploy_ceph: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_ceph=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_kuberay: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_kuberay=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_agent_sandbox: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_agent_sandbox=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_agenticai_plugin: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_agenticai_plugin=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_observability: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_observability=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_istio: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_istio=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_genai_gateway: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_genai_gateway=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_redis: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_redis=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        deploy_pgvector: "{{ (_config_raw.content | default('') | b64decode | regex_search('deploy_pgvector=(\\S+)', '\\1') | default(['off'], true))[0] | default('off') }}"
+        configured_models: "{{ (_config_raw.content | default('') | b64decode | regex_search('models=(\\S+)', '\\1') | default([''], true))[0] | default('') }}"
+        cluster_url: "{{ (_config_raw.content | default('') | b64decode | regex_search('cluster_url=(\\S+)', '\\1') | default([''], true))[0] | default('') }}"
+        hugging_face_token: "{{ (_config_raw.content | default('') | b64decode | regex_search('hugging_face_token=(\\S+)', '\\1') | default([''], true))[0] | default('') }}"
+      when: _config_raw is succeeded
+
+    - name: Set config defaults when config file is absent
+      ansible.builtin.set_fact:
+        deploy_ceph: "off"
+        deploy_kuberay: "off"
+        deploy_agent_sandbox: "off"
+        deploy_agenticai_plugin: "off"
+        deploy_observability: "off"
+        deploy_istio: "off"
+        deploy_genai_gateway: "off"
+        deploy_redis: "off"
+        deploy_pgvector: "off"
+        configured_models: ""
+        cluster_url: ""
+        hugging_face_token: ""
+      when: _config_raw is failed
+
+  tasks:
+    - name: "Layer: End-to-end inference"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-e2e-inference.yml
+        apply:
+          tags: [e2e]
+      when: deploy_genai_gateway | default('off') in ['on', 'yes']
+      tags: [e2e]
+
+    - name: "Layer: Kubernetes"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-kubernetes.yml
+        apply:
+          tags: [kubernetes]
+      tags: [kubernetes]
+
+    - name: "Layer: Storage"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-storage.yml
+        apply:
+          tags: [storage]
+      when: deploy_ceph in ['on', 'yes']
+      tags: [storage]
+
+    - name: "Layer: AI Stack services"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-ai-stack.yml
+        apply:
+          tags: [ai-stack]
+      when: deploy_genai_gateway | default('off') in ['on', 'yes']
+      tags: [ai-stack]
+
+    - name: "Layer: Inter-component wiring"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-wiring.yml
+        apply:
+          tags: [wiring]
+      when: deploy_genai_gateway | default('off') in ['on', 'yes']
+      tags: [wiring]
+
+    - name: "Layer: GPU"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-gpu.yml
+        apply:
+          tags: [gpu]
+      when: rack_scale_gpu_vendor | length > 0
+      tags: [gpu]
+
+    - name: "Layer: KubeRay"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-kuberay.yml
+        apply:
+          tags: [kuberay]
+      when: deploy_kuberay in ['on', 'yes']
+      tags: [kuberay]
+
+    - name: "Layer: Agent Sandbox"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-sandbox.yml
+        apply:
+          tags: [sandbox]
+      when: deploy_agent_sandbox in ['on', 'yes']
+      tags: [sandbox]
+
+    - name: "Layer: Flowise / Agentic AI Plugin"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-flowise.yml
+        apply:
+          tags: [flowise]
+      when: deploy_agenticai_plugin in ['on', 'yes']
+      tags: [flowise]
+
+    - name: Write cluster-level results for Play 3 aggregation
+      ansible.builtin.copy:
+        content: "{{ health_results | to_json }}"
+        dest: /tmp/validate-stack-cluster-results.json
+        mode: "0644"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Play 2 — Host-level checks (run ON each node)
+# ═══════════════════════════════════════════════════════════════════════════════
+- name: "Validate Stack — Host-level checks"
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    homedir: "{{ playbook_dir | dirname }}"
+    inventory_meta_dir: "{{ homedir }}/inventory/metadata"
+    flags_file: "{{ inventory_meta_dir }}/rack-scale-flags.env"
+    config_file: "{{ homedir }}/inventory/agentic-config.cfg"
+
+  pre_tasks:
+    - name: Import vars from Play 1 (materialized, not lazy)
+      ansible.builtin.set_fact:
+        health_results: "{{ hostvars['localhost']['health_results'] | default([]) }}"
+        rack_scale_mode: "{{ hostvars['localhost']['rack_scale_mode'] | default('no') }}"
+        rack_scale_topology: "{{ hostvars['localhost']['rack_scale_topology'] | default('star') }}"
+        rack_scale_gpu_vendor: "{{ hostvars['localhost']['rack_scale_gpu_vendor'] | default('') }}"
+        deploy_ceph: "{{ hostvars['localhost']['deploy_ceph'] | default('off') }}"
+        burn_fabric_floor_gbps: "{{ hostvars['localhost']['burn_fabric_floor_gbps'] | default(20) }}"
+        burn_pod_net_floor_pct: "{{ hostvars['localhost']['burn_pod_net_floor_pct'] | default(70) }}"
+        burn_storage_seq_write_gbps: "{{ hostvars['localhost']['burn_storage_seq_write_gbps'] | default(1) }}"
+        burn_storage_iops_floor: "{{ hostvars['localhost']['burn_storage_iops_floor'] | default(20000) }}"
+        burn_gpu_temp_ceil: "{{ hostvars['localhost']['burn_gpu_temp_ceil'] | default(85) }}"
+        burn_gpu_util_floor: "{{ hostvars['localhost']['burn_gpu_util_floor'] | default(95) }}"
+        burn_duration: "{{ hostvars['localhost']['burn_duration'] | default('2m') }}"
+
+  tasks:
+    - name: Initialize per-host results
+      ansible.builtin.set_fact:
+        host_health_results: []
+        _my_hostname: "{{ ansible_hostname | default(inventory_hostname) }}"
+
+    - name: Clean previous host results file
+      ansible.builtin.file:
+        path: /tmp/validate-stack-host-results.jsonl
+        state: absent
+
+    - name: "Layer: Fabric"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-fabric.yml
+        apply:
+          tags: [fabric]
+      when: rack_scale_mode in ['on', 'yes']
+      tags: [fabric]
+
+    - name: "Layer: Network connectivity"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-network.yml
+        apply:
+          tags: [network]
+      tags: [network]
+
+    - name: "Layer: Proxy configuration"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-proxy.yml
+        apply:
+          tags: [proxy]
+      tags: [proxy]
+
+    - name: "Layer: Platform health"
+      ansible.builtin.include_tasks:
+        file: validate-stack/layer-platform-health.yml
+        apply:
+          tags: [platform]
+      tags: [platform]
+
+    - name: "Layer: Quick burn (mandatory)"
+      ansible.builtin.include_tasks:
+        file: validate-stack/burn-quick.yml
+        apply:
+          tags: [burn]
+      tags: [burn]
+
+    - name: "Layer: Extended burn (opt-in)"
+      ansible.builtin.include_tasks:
+        file: validate-stack/burn-extended.yml
+        apply:
+          tags: [extended-burn]
+      tags: [never, extended-burn]
+
+    - name: Fetch per-host results to controller
+      ansible.builtin.fetch:
+        src: /tmp/validate-stack-host-results.jsonl
+        dest: "/tmp/validate-stack-results-{{ inventory_hostname }}.jsonl"
+        flat: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Play 3 — Report rendering
+# ═══════════════════════════════════════════════════════════════════════════════
+- name: "Validate Stack — Report"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    homedir: "{{ playbook_dir | dirname }}"
+    inventory_meta_dir: "{{ homedir }}/inventory/metadata"
+
+  tasks:
+    - name: Pin report timestamp
+      ansible.builtin.set_fact:
+        _report_ts: "{{ hostvars['localhost']['report_timestamp'] | default(lookup('pipe', 'date +%Y%m%d-%H%M%S')) }}"
+        _check_iso: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Set report file paths
+      ansible.builtin.set_fact:
+        report_file: "{{ inventory_meta_dir }}/health-report-{{ _report_ts }}.json"
+        report_html: "{{ inventory_meta_dir }}/health-report-{{ _report_ts }}.html"
+        report_latest: "{{ inventory_meta_dir }}/health-report-latest.json"
+        report_latest_html: "{{ inventory_meta_dir }}/health-report-latest.html"
+
+    - name: Aggregate results from per-host files + cluster-level
+      ansible.builtin.shell: |
+        python3 << 'PYAGG'
+        import json, glob
+
+        # Read cluster-level results (written by Play 1 to a known location)
+        cluster_file = "/tmp/validate-stack-cluster-results.json"
+        try:
+            with open(cluster_file) as f:
+                cluster_results = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            import sys
+            print("WARNING: could not load cluster results: %s" % exc, file=sys.stderr)
+            cluster_results = []
+
+        # Read per-host result files (JSONL format — one JSON array per line per layer)
+        host_results = []
+        for f in sorted(glob.glob("/tmp/validate-stack-results-*.jsonl")):
+            with open(f) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        host_results.extend(json.loads(line))
+
+        all_results = cluster_results + host_results
+
+        # Stamp with check time
+        check_iso = "{{ _check_iso }}"
+        for r in all_results:
+            r["checked_at"] = check_iso
+
+        with open("/tmp/validate-stack-aggregated.json", "w") as f:
+            json.dump(all_results, f)
+        print(len(all_results))
+        PYAGG
+      register: _agg_count
+      changed_when: false
+
+    - name: Read aggregated results
+      ansible.builtin.slurp:
+        src: /tmp/validate-stack-aggregated.json
+      register: _agg_slurp
+
+    - name: Set current results
+      ansible.builtin.set_fact:
+        _current_results: "{{ _agg_slurp.content | b64decode | from_json }}"
+
+    - name: Get layers checked in this run
+      ansible.builtin.set_fact:
+        _current_layers: "{{ _current_results | map(attribute='layer') | unique | list }}"
+
+    - name: Read existing latest report for merge
+      ansible.builtin.slurp:
+        src: "{{ report_latest }}"
+      register: _existing_report_raw
+      ignore_errors: true
+
+    - name: Parse existing report
+      ansible.builtin.set_fact:
+        _existing_report: "{{ (_existing_report_raw.content | b64decode | from_json) if _existing_report_raw is succeeded else {} }}"
+
+    - name: Merge results (current run replaces its layers, preserves others)
+      ansible.builtin.set_fact:
+        all_results: >-
+          {{ _current_results
+             + (_existing_report.get('results', []) | rejectattr('layer', 'in', _current_layers) | list) }}
+
+    - name: Discover endpoints from ingress rules
+      ansible.builtin.shell: |
+        kubectl get ingress -A -o json 2>/dev/null | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        endpoints = {}
+        for item in data.get('items', []):
+            ns = item['metadata']['namespace']
+            name = item['metadata']['name']
+            host = item.get('spec', {}).get('rules', [{}])[0].get('host', '')
+            paths = [p.get('path', '/') for r in item.get('spec', {}).get('rules', []) for p in r.get('http', {}).get('paths', [])]
+            path = paths[0] if paths else '/'
+            tls = bool(item.get('spec', {}).get('tls'))
+            scheme = 'https' if tls or host else 'http'
+            url = f'{scheme}://{host}{path.rstrip(\"(/|$)(.*)\").rstrip(\"/\")}'
+            if 'genai-gateway' in ns and 'trace' not in name:
+                endpoints['gateway_url'] = url
+                endpoints['inference_api'] = f'{scheme}://{host}/v1/chat/completions'
+                endpoints['models_api'] = f'{scheme}://{host}/v1/models'
+            elif 'trace' in name or ('genai-gateway' in ns and 'trace' in name):
+                endpoints['langfuse_ui'] = url
+            elif 'grafana' in name or 'observability' in name:
+                endpoints['grafana_ui'] = url
+            elif 'flowise' in ns:
+                endpoints['flowise_ui'] = url
+            elif 'ray' in name.lower() or 'kuberay' in ns:
+                endpoints['ray_dashboard'] = url
+        for k, v in sorted(endpoints.items()):
+            print(f'{k}={v}')
+        " 2>/dev/null || echo ""
+      register: _ingress_discovery
+      changed_when: false
+      ignore_errors: true
+
+    - name: Build endpoint info from ingress discovery
+      ansible.builtin.set_fact:
+        _endpoints:
+          cluster_url: "{{ cluster_url | default('') }}"
+          configured_models: "{{ configured_models | default('') }}"
+          gateway_url: "{{ (_ingress_discovery.stdout | default('') | regex_search('gateway_url=(\\S+)', '\\1') | default([''], true))[0] }}"
+          inference_api: "{{ (_ingress_discovery.stdout | default('') | regex_search('inference_api=(\\S+)', '\\1') | default([''], true))[0] }}"
+          models_api: "{{ (_ingress_discovery.stdout | default('') | regex_search('models_api=(\\S+)', '\\1') | default([''], true))[0] }}"
+          langfuse_ui: "{{ (_ingress_discovery.stdout | default('') | regex_search('langfuse_ui=(\\S+)', '\\1') | default([''], true))[0] }}"
+          grafana_ui: "{{ (_ingress_discovery.stdout | default('') | regex_search('grafana_ui=(\\S+)', '\\1') | default([''], true))[0] }}"
+          flowise_ui: "{{ (_ingress_discovery.stdout | default('') | regex_search('flowise_ui=(\\S+)', '\\1') | default([''], true))[0] }}"
+          ray_dashboard: "{{ (_ingress_discovery.stdout | default('') | regex_search('ray_dashboard=(\\S+)', '\\1') | default([''], true))[0] }}"
+
+    - name: Build report JSON content
+      ansible.builtin.set_fact:
+        _report_content: "{{ {'timestamp': _report_ts, 'checked_at': _check_iso, 'cluster_url': cluster_url | default(''), 'configured_models': configured_models | default(''), 'endpoints': _endpoints, 'current_layers': _current_layers, 'results': all_results} }}"
+
+    - name: Write JSON report (timestamped archive)
+      ansible.builtin.copy:
+        content: "{{ _report_content | to_nice_json }}"
+        dest: "{{ report_file }}"
+        mode: "0644"
+
+    - name: Write JSON report (latest — cumulative)
+      ansible.builtin.copy:
+        content: "{{ _report_content | to_nice_json }}"
+        dest: "{{ report_latest }}"
+        mode: "0644"
+
+    - name: Render HTML reports from JSON (bypasses Ansible re-templating)
+      ansible.builtin.script:
+        cmd: "validate-stack/render-html.py {{ report_latest }} {{ report_html }} {{ report_latest_html }}"
+      changed_when: false
+
+    - name: Render traffic-light report
+      ansible.builtin.script:
+        cmd: "validate-stack/report-renderer.sh {{ report_latest }}"
+      register: _report_output
+
+    - name: Display report
+      ansible.builtin.debug:
+        msg: "{{ _report_output.stdout_lines }}"
+
+    - name: Show report locations
+      ansible.builtin.debug:
+        msg: |
+          Reports saved:
+            Latest (cumulative): {{ report_latest_html }}
+            This run (archive):  {{ report_html }}
+
+    - name: Display quick start info
+      ansible.builtin.debug:
+        msg: |
+          =====================================================
+            Quick Start — Endpoints & Commands
+          =====================================================
+          {% if _endpoints.gateway_url | default('') | length > 0 %}
+          GenAI Gateway (LiteLLM):  {{ _endpoints.gateway_url }}
+          {% endif %}
+          {% if configured_models | default('') | length > 0 %}
+          Model:                    {{ configured_models }}
+          {% endif %}
+          {% if _endpoints.inference_api | default('') | length > 0 %}
+
+          Test inference:
+            curl -sk {{ _endpoints.inference_api }} \
+              -H "Authorization: Bearer <LITELLM_API_KEY>" \
+              -H "Content-Type: application/json" \
+              -d '{"model":"{{ configured_models }}","messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
+
+          List models:
+            curl -sk {{ _endpoints.models_api }} \
+              -H "Authorization: Bearer <LITELLM_API_KEY>"
+          {% endif %}
+          {% if _endpoints.langfuse_ui | default('') | length > 0 %}
+
+          Langfuse (traces):  {{ _endpoints.langfuse_ui }}
+          {% endif %}
+          {% if _endpoints.grafana_ui | default('') | length > 0 %}
+          Grafana (metrics):  {{ _endpoints.grafana_ui }}
+          {% endif %}
+          {% if _endpoints.flowise_ui | default('') | length > 0 %}
+          Flowise (agents):   {{ _endpoints.flowise_ui }}
+          {% endif %}
+          {% if _endpoints.ray_dashboard | default('') | length > 0 %}
+          Ray dashboard:      {{ _endpoints.ray_dashboard }}
+          {% endif %}
+          =====================================================
+
+    - name: Determine overall result
+      ansible.builtin.set_fact:
+        _has_failures: "{{ all_results | selectattr('status', 'equalto', 'FAIL') | list | length > 0 }}"
+
+    - name: Fail if any RED results
+      ansible.builtin.fail:
+        msg: "Stack validation found failures. Review the report above."
+      when: _has_failures | bool

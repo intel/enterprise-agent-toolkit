@@ -1,0 +1,114 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# ---------------------------------------------------------------------------
+# Derive a vLLM deployment's memory request/limit from the memory the node
+# actually has, instead of a literal in a values file.
+#
+# Requires get_optimized_cpu_topology to have run first: the socket-0 figure
+# is the MINIMUM usable_memory_gb across per_node_cpu_topology (every node's
+# own lscpu/meminfo probe, see probe_node_cpu_topology.yaml) -- not just one
+# arbitrarily-sampled node -- so it's safe regardless of which node in a
+# heterogeneous fleet a model actually lands on. Falls back to the single
+# sampled node's cpu_topology_config.usable_memory_per_socket if the per-node
+# table is empty.
+#
+# Callers:
+#   playbooks/deploy-inference-models.yml  served LLMs, node's detected TP
+#   playbooks/deploy-guardrails.yml        guard vLLM, passes memory_tp_size
+#
+# Input (optional):
+#   memory_tp_size    tensor parallelism the deployment will ACTUALLY run with.
+#                     Defaults to the node's detected TP, which is not always
+#                     the same thing: the guard vLLM is pinned to TP=1 for
+#                     single-NUMA locality, so on a 4-NUMA node the detected
+#                     value would pick the tp >= 4 branch below and demand
+#                     256 GB for a single-worker process.
+#   memory_ceiling_gb real headroom (e.g. the smallest available_memory_gb
+#                     among the nodes a model's node affinity actually allows
+#                     it to land on -- see get_optimal_cpu_allocation.yaml's
+#                     nri_node_capability). When set, caps the result so it
+#                     never exceeds what's truly free, even under the TP floor
+#                     branch below -- closing the same "which node will this
+#                     really land on" gap that node-affinity closes for TP.
+#                     Left unset, behavior is unchanged (256Gi cap regardless
+#                     of TP; the memoryLimit is separately 2x this request,
+#                     see get_model_sizing.yaml).
+#
+# Exports:
+#   optimal_memory_gb  pass as --set memory="{{ optimal_memory_gb }}Gi"
+#   socket0_memory_gb / min_memory_for_tp / memory_tp_effective  intermediates
+# ---------------------------------------------------------------------------
+---
+- name: Extract sockets memory
+  ansible.builtin.set_fact:
+    usable_mem_var: "{{ cpu_topology_config.usable_memory_per_socket | default({}) }}"
+    socket0_memory_gb: 0
+    memory_tp_effective: "{{ memory_tp_size | default(optimal_balloon_config.tensor_parallel_size | default(1)) | int }}"
+
+- name: Extract socket0 memory (single sampled node -- fallback only)
+  ansible.builtin.set_fact:
+    socket0_memory_gb: "{{ usable_mem_var[0] | int }}"
+  when: usable_mem_var is mapping and socket0_memory_gb | int == 0 and 0 in usable_mem_var
+  ignore_errors: true
+
+- name: Fallback to parsing from string if dictionary access failed
+  ansible.builtin.set_fact:
+    socket0_memory_gb: "{{ usable_mem_var | string | regex_search('0: (\\d+)') | default(['0', '0']) | last | int }}"
+  when: usable_mem_var is string and socket0_memory_gb | int == 0
+  ignore_errors: true
+
+- name: Use the minimum usable memory across every probed node, when available
+  # Same "safe minimum across the whole fleet" principle as workload_cpus in
+  # get_optimal_cpu_allocation.yaml -- a heterogeneous cluster means one
+  # node's memory figure isn't representative of every node a model could
+  # land on.
+  ansible.builtin.set_fact:
+    socket0_memory_gb: "{{ _per_node_usable | min }}"
+  vars:
+    _per_node_usable: "{{ (per_node_cpu_topology | default({})).values() | map(attribute='usable_memory_gb') | list }}"
+  when: (per_node_cpu_topology | default({})).values() | map(attribute='usable_memory_gb') | list | length > 0
+
+- name: Calculate minimum memory based on tensor parallel size
+  ansible.builtin.set_fact:
+    min_memory_for_tp: >-
+      {%- set tp = memory_tp_effective | int -%}
+      {%- if tp >= 4 -%}
+      256
+      {%- elif tp >= 2 -%}
+      128
+      {%- else -%}
+      128
+      {%- endif -%}
+
+- name: Set optimal memory based on TP requirements and available memory
+  ansible.builtin.set_fact:
+    optimal_memory_gb: >-
+      {%- set available = socket0_memory_gb | int -%}
+      {%- set min_required = min_memory_for_tp | int -%}
+      {%- set max_limit = 256 -%}
+      {%- set uncapped = min_required if available < min_required else (max_limit if available > max_limit else available) -%}
+      {%- if memory_ceiling_gb is defined and memory_ceiling_gb is not none -%}
+      {{ [ uncapped, memory_ceiling_gb | int ] | min }}
+      {%- else -%}
+      {{ uncapped }}
+      {%- endif -%}
+
+- name: Warn when TP memory floor exceeds real available headroom
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: this deployment's minimum memory floor for TP={{ memory_tp_effective }}
+      is {{ min_memory_for_tp }}Gi, but only {{ memory_ceiling_gb }}Gi is actually free
+      on the smallest node it's allowed to schedule onto. Falling back to
+      {{ optimal_memory_gb }}Gi -- this deployment may be under-provisioned or fail to
+      schedule/OOM.
+  when: memory_ceiling_gb is defined and memory_ceiling_gb is not none and (memory_ceiling_gb | int) < (min_memory_for_tp | int)
+
+- name: Final memory calculation
+  ansible.builtin.debug:
+    msg: |
+      === Memory Calculation Summary ===
+      Tensor Parallel Size: {{ memory_tp_effective }}
+      Minimum memory required for TP: {{ min_memory_for_tp }} GB
+      Socket 0 memory available: {{ socket0_memory_gb }} GB
+      Final memory for deployment: {{ optimal_memory_gb }} GB
+      Memory allocation: {{ 'Using minimum required' if (socket0_memory_gb | int) < (min_memory_for_tp | int) else 'Using available memory' if (socket0_memory_gb | int) <= 256 else 'Capped at max limit' }}

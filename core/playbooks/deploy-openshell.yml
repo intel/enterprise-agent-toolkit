@@ -106,6 +106,21 @@
       changed_when: "'configured' in tls_copy.stdout or 'created' in tls_copy.stdout"
       run_once: true
 
+    # Kubespray's NodeLocal DNSCache is the pods' resolver (link-local, 169.254.25.10 by default),
+    # which the kube-dns pod selector below does not match. Absent DaemonSet = no extra rule.
+    - name: Detect NodeLocal DNSCache address
+      shell: |
+        set -o pipefail
+        kubectl get ds nodelocaldns -n kube-system -o jsonpath='{.spec.template.spec.containers[0].args}' \
+          | jq -r '.[index("-localip") + 1]'
+      args:
+        executable: /bin/bash
+      register: nodelocaldns
+      changed_when: false
+      failed_when: false
+      when: openshell_sandbox_network_policy | bool
+      run_once: true
+
     # Selects only pods without openshell.ai/boundary-role, so split-pod charts keep their
     # own (stricter) policies: NetworkPolicy allows are additive.
     - name: Apply sandbox pod NetworkPolicy
@@ -116,6 +131,11 @@
         # Proxy hostnames behind GSLB resolve to varying IPs: allow the proxy port on
         # openshell_upstream_proxy_cidrs (default: private ranges) instead of pinning /32s.
         proxy_cidrs: "{{ openshell_upstream_proxy_cidrs if openshell_upstream_proxy | length > 0 else [] }}"
+        # -localip may list several comma-separated addresses (nodelocaldns secondary mode).
+        nodelocaldns_cidrs: >-
+          {{ (nodelocaldns.stdout | default('')) | trim | split(',') | select
+             | map('regex_replace', '$', '/32') | list }}
+        dns_cidrs: "{{ openshell_sandbox_dns_cidrs if openshell_sandbox_dns_cidrs | length > 0 else nodelocaldns_cidrs }}"
         sandbox_np: |
           apiVersion: networking.k8s.io/v1
           kind: NetworkPolicy
@@ -140,6 +160,13 @@
                 podSelector:
                   matchLabels: {k8s-app: kube-dns}
               ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+          {% if dns_cidrs | length > 0 %}
+            - to:
+          {% for cidr in dns_cidrs %}
+              - ipBlock: {cidr: {{ cidr }}}
+          {% endfor %}
+              ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+          {% endif %}
             - to:
               - namespaceSelector:
                   matchLabels: {kubernetes.io/metadata.name: {{ openshell_namespace }}}
@@ -350,25 +377,8 @@
           when: openshell_cli_path is defined
 
     # ========================================================================
-    # Task Group 4: Record completion and summary
+    # Task Group 4: Summary
     # ========================================================================
-    # Written last, so resume mode (deploy-agentic-stack.sh) re-runs a partial deployment.
-    - name: Record deployment fingerprint
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: ConfigMap
-          metadata:
-            name: openshell-deploy-state
-            namespace: "{{ openshell_namespace }}"
-            labels:
-              app.kubernetes.io/managed-by: agentic-ai-stack
-          data:
-            fingerprint: "{{ openshell_deploy_fingerprint }}"
-      when: openshell_deploy_fingerprint | length > 0
-      run_once: true
-
     - name: Deployment summary
       debug:
         msg:

@@ -1,0 +1,69 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# ---------------------------------------------------------------------------
+# Register the guardrail with the GenAI Gateway (LiteLLM) via its runtime API
+# instead of hardcoding it in the gateway config. The guardrail is a
+# `custom_code` one: the screening logic itself is the payload (rendered from
+# core/lib/guardrails/*.py.j2 by the caller), so there is no service to point at.
+#
+# Upsert, not create-if-absent: a re-run has to replace the stored code, or a
+# changed guard model, a changed endpoint or an edit to the template never
+# reaches the gateway -- it would keep screening every request with the code
+# registered the first time. PUT also re-initializes the in-memory guardrail, so
+# the gateway is not restarted.
+#
+# The work happens in templates/register-guardrail.py.j2, piped into the gateway
+# pod: the payload carries a multi-line Python program and picking guardrail_id
+# out of the list response needs real JSON parsing, neither of which survives a
+# `sh -c` heredoc in a curl Job (the pattern used by
+# register-model-genai-gateway.yml). Running it inside the pod also lets it read
+# LITELLM_MASTER_KEY from the pod's own env instead of persisting the key.
+#
+# Expected vars (set by the caller via `vars:` on import_tasks):
+#   reg_guardrail_name  LiteLLM guardrail name (e.g. content_safety)
+#   reg_custom_code     rendered sandbox code implementing apply_guardrail()
+#   reg_description     guardrail_info.description shown in the gateway UI
+#   litellm_master_key  admin key fallback (global, from inventory/metadata/vault.yml)
+# ---------------------------------------------------------------------------
+---
+- name: Build the guardrail registration payload
+  ansible.builtin.set_fact:
+    reg_payload:
+      guardrail:
+        guardrail_name: "{{ reg_guardrail_name }}"
+        litellm_params:
+          guardrail: custom_code
+          mode: pre_call
+          default_on: true
+          custom_code: "{{ reg_custom_code }}"
+        guardrail_info:
+          description: "{{ reg_description }}"
+    # Where the script runs, and the URL it uses once it is in there (its own
+    # container, hence loopback). Overridable, but never in a normal deploy.
+    reg_gateway_ns: "{{ reg_gateway_ns | default('genai-gateway') }}"
+    reg_gateway_deployment: "{{ reg_gateway_deployment | default('genai-gateway-deployment') }}"
+    reg_gateway_container: "{{ reg_gateway_container | default('litellm-container') }}"
+    reg_gateway_url: "{{ reg_gateway_url | default('http://127.0.0.1:4000') }}"
+  run_once: true
+  tags: always
+
+- name: Register the guardrail with the GenAI Gateway
+  ansible.builtin.command:
+    cmd: >-
+      kubectl exec -i -n {{ reg_gateway_ns }} deploy/{{ reg_gateway_deployment }}
+      -c {{ reg_gateway_container }} -- python -
+    stdin: "{{ lookup('template', 'templates/register-guardrail.py.j2') }}"
+  vars:
+    reg_payload_b64: "{{ reg_payload | to_json | b64encode }}"
+  register: guardrail_registration
+  changed_when: "'registered' in guardrail_registration.stdout or 'updated' in guardrail_registration.stdout"
+  # The script carries the master key fallback, so keep it out of the log.
+  no_log: true
+  run_once: true
+  tags: always
+
+- name: Display guardrail registration result
+  ansible.builtin.debug:
+    msg: "{{ guardrail_registration.stdout_lines + guardrail_registration.stderr_lines }}"
+  run_once: true
+  tags: always

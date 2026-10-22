@@ -1,0 +1,177 @@
+{{- /*
+Copyright (C) 2025-2026 Intel Corporation
+SPDX-License-Identifier: Apache-2.0
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: vllm-sr
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  router-config.yaml: |
+    version: "0.3"
+
+    listeners:
+      - name: main
+        address: 0.0.0.0
+        port: {{ .Values.service.envoyPort }}
+
+    providers:
+      defaults:
+        {{- /* routing.defaultModel is set by deploy-vllm-sr.yml; fall back to the
+               first discovered backend when it is empty. `index` is evaluated
+               eagerly even when the left operand of `default` is non-empty, so
+               the fallback must be computed conditionally - otherwise `helm lint`
+               and `helm template` fail outright on an empty backends list. */}}
+        {{- $fallbackModel := "" }}
+        {{- if .Values.backends }}
+        {{- $fallbackModel = (index .Values.backends 0).name }}
+        {{- end }}
+        {{- /* Emit default_model only when there is something for it to name. The
+               router rejects a default_model absent from routing.modelCards, so a
+               placeholder here would produce a CrashLooping pod rather than a
+               clear error. */}}
+        {{- $default := .Values.routing.defaultModel | default $fallbackModel }}
+        {{- if $default }}
+        default_model: {{ $default | quote }}
+        {{- end }}
+        reasoning_families:
+          qwen3:
+            type: chat_template_kwargs
+            parameter: enable_thinking
+      models:
+        {{- range .Values.backends }}
+        - name: {{ .name | quote }}
+          provider_model_id: {{ .model | quote }}
+          backend_refs:
+            - name: {{ printf "%s-endpoint" .name | quote }}
+              endpoint: {{ .baseUrl | trimPrefix "http://" | trimSuffix "/v1" | quote }}
+              protocol: http
+              {{- /* Emit only for non-default paths (e.g. OVMS /v3): in v0.3.0 any
+                     chat_path turns the ref into a provider_profile that needs
+                     base_url, failing every request with "has no base_url". */}}
+              {{- if and .chatPath (ne .chatPath "/v1/chat/completions") }}
+              chat_path: {{ .chatPath | quote }}
+              {{- end }}
+        {{- end }}
+
+    routing:
+      modelCards:
+        {{- range .Values.backends }}
+        - name: {{ .name | quote }}
+          modality: text
+          capabilities: ["chat", "code", "reasoning"]
+        {{- end }}
+
+      signals:
+        embeddings:
+          - name: coding_tasks
+            threshold: 0.72
+            candidates:
+              - "write code"
+              - "implement function"
+              - "debug this"
+              - "fix the bug"
+              - "refactor"
+              - "code review"
+              - "programming"
+              - "software development"
+              - "create a class"
+              - "write a script"
+              - "API endpoint"
+              - "unit test"
+          - name: reasoning_tasks
+            threshold: 0.70
+            candidates:
+              - "explain why"
+              - "analyze this"
+              - "think step by step"
+              - "solve this problem"
+              - "what are the tradeoffs"
+              - "compare and contrast"
+          - name: simple_tasks
+            threshold: 0.75
+            candidates:
+              - "hello"
+              - "hi"
+              - "what time is it"
+              - "translate this word"
+              - "summarize in one sentence"
+
+      decisions:
+        - name: coding-route
+          description: "Route coding tasks to coder model"
+          priority: 10
+          rules:
+            operator: AND
+            conditions:
+              - type: embedding
+                name: coding_tasks
+          modelRefs:
+            {{- range .Values.backends }}
+            {{- if or (contains "coder" .name) (contains "Coder" .model) }}
+            - model: {{ .name | quote }}
+              use_reasoning: false
+            {{- end }}
+            {{- end }}
+
+        - name: reasoning-route
+          description: "Route reasoning tasks"
+          priority: 50
+          rules:
+            operator: AND
+            conditions:
+              - type: embedding
+                name: reasoning_tasks
+          modelRefs:
+            {{- range .Values.backends }}
+            - model: {{ .name | quote }}
+              use_reasoning: true
+            {{- end }}
+
+        - name: default-route
+          description: "Catch-all route"
+          priority: 100
+          rules:
+            operator: AND
+            conditions: []
+          modelRefs:
+            {{- range .Values.backends }}
+            - model: {{ .name | quote }}
+              use_reasoning: false
+            {{- end }}
+
+    global:
+      router:
+        auto_model_name: auto
+        include_config_models_in_list: true
+      stores:
+        semantic_cache:
+          enabled: {{ .Values.routing.enableSemanticCache }}
+          backend_type: {{ .Values.cache.backend }}
+          similarity_threshold: {{ .Values.routing.cacheThreshold | default 0.92 }}
+          max_entries: 5000
+          ttl_seconds: 3600
+      services:
+        router_replay:
+          enabled: {{ .Values.replay.enabled }}
+          store_backend: {{ .Values.replay.storeBackend }}
+        {{- if .Values.observability.enabled }}
+        observability:
+          tracing:
+            enabled: true
+            provider: opentelemetry
+            exporter:
+              type: otlp
+              endpoint: 127.0.0.1:4317
+              insecure: true
+            sampling:
+              type: always_on
+            resource:
+              service_name: vllm-semantic-router
+              service_version: v0.3.0
+              deployment_environment: production
+        {{- end }}

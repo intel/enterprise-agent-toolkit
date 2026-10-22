@@ -38,7 +38,7 @@
       set_fact:
         os_supported: >-
           {{
-            (ansible_distribution == "Ubuntu" and (ansible_distribution_version == "22.04" or ansible_distribution_version == "24.04")) or
+            (ansible_distribution == "Ubuntu" and (ansible_distribution_version == "22.04" or ansible_distribution_version == "24.04" or ansible_distribution_version == "26.04")) or
             (ansible_distribution == "RedHat" and ansible_distribution_major_version == "9")
           }}
     
@@ -53,6 +53,7 @@
           Officially supported operating systems:
           - Ubuntu 22.04
           - Ubuntu 24.04
+          - Ubuntu 26.04 LTS
           - RHEL 9
           
           Current system: {{ ansible_distribution }} {{ ansible_distribution_version }}
@@ -65,39 +66,46 @@
           
           You are running on: {{ ansible_distribution }} {{ ansible_distribution_version }}
           
-          This OS version has not been officially tested or validated for Intel AI Enterprise Inference.
+          This OS version has not been officially tested or validated for Intel® AI Enterprise Inference.
           Proceeding may result in:
           - Installation failures
           - Runtime issues
           - Performance degradation
           - Unexpected behavior
           
-          Officially supported platforms:
+          Officially supported platforms for Intel® AI Enterprise Inference:
           - Ubuntu 22.04
           - Ubuntu 24.04
+          - Ubuntu 26.04 LTS
           - RHEL 9
           
           Do you want to proceed anyway at your own risk? (yes/no)
       register: user_ack_unsupported
-      when: not os_supported
+      # Skip the interactive pause when the caller already pre-acknowledged via
+      # acknowledge_unsupported_os (e.g. unattended runs where stdin isn't a tty).
+      when:
+        - not os_supported
+        - acknowledge_unsupported_os | lower not in ['yes', 'y', 'true']
     
     - name: Validate user acknowledgment
       fail:
         msg: |
           Deployment cancelled by user choice.
-          Please install on a supported OS version or contact support for guidance.
-      when: 
+          Please install on a supported OS version, set acknowledge_unsupported_os=on
+          in agentic-config.cfg to proceed unattended, or contact support for guidance for Intel® AI Enterprise Inference.
+      when:
         - not os_supported
-        - user_ack_unsupported.user_input | lower not in ['yes', 'y']
+        - acknowledge_unsupported_os | lower not in ['yes', 'y', 'true']
+        - user_ack_unsupported.user_input | default('') | lower not in ['yes', 'y']
     
     - name: Log user acknowledgment for unsupported OS
       debug:
         msg: |
-          User acknowledged proceeding on unsupported OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Proceeding on unsupported OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
           This deployment is not officially supported and may encounter issues.
-      when: 
+      when:
         - not os_supported
-        - user_ack_unsupported.user_input | lower in ['yes', 'y']
+        - (acknowledge_unsupported_os | lower in ['yes', 'y', 'true']) or (user_ack_unsupported.user_input | default('') | lower in ['yes', 'y'])
     
     - name: Display OS information
       debug:

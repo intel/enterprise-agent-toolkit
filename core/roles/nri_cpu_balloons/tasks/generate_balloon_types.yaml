@@ -1,0 +1,407 @@
+---
+# =============================================================================
+# NRI CPU Balloons — Advanced: generate per-TP balloon types
+# =============================================================================
+# Discovers each node's NUMA/HT topology and generates vLLM per-TP balloon
+# types (vllm-balloon-tp{1,2,4,8}, auto-capped by NUMA count).
+#
+# SECURITY / FOOTPRINT (revised approach, replaces the old ubuntu:22.04 +
+# root + apt-get optimizer):
+#   - The probe DaemonSet runs a MINIMAL image (busybox) as an UNPRIVILEGED,
+#     non-root user with a read-only root filesystem and all capabilities
+#     dropped. It needs nothing but a shell and read access to /sys — no
+#     package installs, no network/proxy, no kubectl cp of interpreters.
+#   - Topology is collected with `files/probe-node-topology.sh` (POSIX sh,
+#     reads only /sys + /proc) via k8s_exec.
+#   - `files/gen-balloon-types.py` runs LOCALLY on the Ansible controller with
+#     the discovered per-node package->NUMA map passed in via the PKG_NODE env
+#     var. It never runs inside the pod.
+#
+# Exports:
+#   _nri_generated_balloon_types    (cluster-MAX_TP balloon types)
+#   _nri_detected_numa_nodes        (cluster max)
+#   _nri_detected_total_cpus        (cluster max physical cores)
+#   _nri_max_tp_size                (auto-capped by NUMA count)
+#   _nri_per_node_topology          (per-node numa/cpus/tp/pkgnode/siblings/...)
+#   _nri_topology_heterogeneous     (bool)
+# =============================================================================
+
+- name: "nri_cpu_balloons | advanced | Ensure topology-probe DaemonSet (minimal, non-root)"
+  kubernetes.core.k8s:
+    state: present
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+    definition:
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: node-topology-optimizer
+        namespace: "{{ nri_cpu_balloons.namespace }}"
+        labels:
+          app: node-topology-optimizer
+          app.kubernetes.io/managed-by: nri_cpu_balloons-role
+      spec:
+        selector:
+          matchLabels:
+            app: node-topology-optimizer
+        template:
+          metadata:
+            labels:
+              app: node-topology-optimizer
+          spec:
+            # NOTE: deliberately NO `tolerations: [operator: Exists]`.
+            # The DaemonSet controller auto-adds tolerations for
+            # not-ready / unreachable / disk-pressure / memory-pressure /
+            # pid-pressure / unschedulable so the pod survives disruptions,
+            # but it does NOT auto-add tolerations for
+            # `node-role.kubernetes.io/control-plane:NoSchedule`.
+            # Effect:
+            #   - dedicated control-plane node (taint intact) -> NO probe
+            #     pod here -> node is not labeled, no `node.<NAME>` CR is
+            #     created, and any pre-existing stale `node.<NAME>` CR is
+            #     pruned on this run. The default BalloonsPolicy still
+            #     covers it as a safety net.
+            #   - single-node cluster (master taint removed) or hybrid
+            #     cluster where master also runs workloads -> pod schedules
+            #     normally and the node is treated like any other worker.
+            #
+            # Pod-level hardening: non-root, no privilege escalation, seccomp.
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65534
+              runAsGroup: 65534
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: probe
+                # Minimal (~5 MB) image: only a shell + coreutils are needed to
+                # read /sys. No apt-get, no python, no proxy. Pin by digest in
+                # air-gapped/regulated environments if required.
+                image: "{{ nri_cpu_balloons.probe_image | default('busybox:1.36') }}"
+                command: ["sh", "-c", "sleep infinity"]
+                # /sys and /proc are already visible in the container's own
+                # namespaces; no hostPath mount or privilege is required to read
+                # CPU/NUMA topology.
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  runAsNonRoot: true
+                  runAsUser: 65534
+                  capabilities:
+                    drop: ["ALL"]
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 16Mi
+                  limits:
+                    cpu: 100m
+                    memory: 32Mi
+            restartPolicy: Always
+
+- name: "nri_cpu_balloons | advanced | Wait for probe DaemonSet fully rolled out"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: DaemonSet
+    name: node-topology-optimizer
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+  register: _optimizer_ds
+  until:
+    - _optimizer_ds.resources | length > 0
+    - (_optimizer_ds.resources[0].status.desiredNumberScheduled | default(0) | int) > 0
+    - (_optimizer_ds.resources[0].status.numberReady | default(0) | int) >= (_optimizer_ds.resources[0].status.desiredNumberScheduled | int)
+  retries: 30
+  delay: 5
+
+# The DaemonSet-level check above (numberReady >= desiredNumberScheduled) can
+# pass a moment before a fresh k8s_info query of individual Pods reflects the
+# same state -- especially right after a node joins the cluster, where the
+# DaemonSet controller is still scheduling that node's pod. Taking a single
+# unretried snapshot here silently drops any node whose pod hasn't shown up
+# as Running YET, and the drop isn't a failure -- generate_balloon_types.yaml
+# later treats a missing node as "no longer in topology" and STRIPS its NRI
+# labels, so a model desiring tp=N on that node clamps to tp=1 with no error
+# anywhere. Retry the same Running-pod count check the DaemonSet wait already
+# uses, against the SAME desiredNumberScheduled target, so this step doesn't
+# proceed until every node that's supposed to have a pod actually shows one.
+- name: "nri_cpu_balloons | advanced | Collect all Running probe pods (retry until every expected node reports in)"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ nri_cpu_balloons.namespace }}"
+    label_selectors:
+      - app=node-topology-optimizer
+  register: _optimizer_pods
+  until: >-
+    (_optimizer_pods.resources
+      | selectattr('status.phase', 'equalto', 'Running')
+      | rejectattr('metadata.deletionTimestamp', 'defined')
+      | list | length) >= (_optimizer_ds.resources[0].status.desiredNumberScheduled | int)
+  retries: 12
+  delay: 5
+
+- name: "nri_cpu_balloons | advanced | Filter Running probe pods (one per node)"
+  ansible.builtin.set_fact:
+    _optimizer_running: >-
+      {{ (_optimizer_pods.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | rejectattr('metadata.deletionTimestamp', 'defined')
+          | list) }}
+
+- name: "nri_cpu_balloons | advanced | Warn if probe coverage is still incomplete after retrying"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: only {{ _optimizer_running | length }} of
+      {{ _optimizer_ds.resources[0].status.desiredNumberScheduled }} expected
+      node-topology-optimizer pods are Running after retrying. Proceeding with
+      partial coverage -- any node missing here will have its NRI capability
+      labels stripped as "no longer in topology", clamping tp-N models on that
+      node down to whatever smaller tier remains labelled.
+  when: (_optimizer_running | length) < (_optimizer_ds.resources[0].status.desiredNumberScheduled | int)
+
+- name: "nri_cpu_balloons | advanced | Assert at least one probe pod ready"
+  ansible.builtin.assert:
+    that:
+      - (_optimizer_running | length) > 0
+    fail_msg: >-
+      No Running node-topology-optimizer pods after wait. Cannot probe topology.
+
+- name: "nri_cpu_balloons | advanced | Pick a pod for cluster-wide tasks (first Running)"
+  ansible.builtin.set_fact:
+    _optimizer_pod: "{{ _optimizer_running | map(attribute='metadata.name') | first }}"
+
+# -----------------------------------------------------------------------------
+# Per-node topology discovery.
+# Stream the POSIX-sh probe into each pod over stdin (no kubectl cp, no writable
+# fs) and parse its KEY=VALUE output. We collect (numa, logical, threads,
+# physical, pkgnode, siblings, per-NUMA cpulists, max_tp) per node so that a
+# heterogeneous fleet renders balloon types covering the LARGEST node while
+# each node is still labelled with its own capability.
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | advanced | Load probe script"
+  ansible.builtin.set_fact:
+    _nri_probe_script: "{{ lookup('file', role_path ~ '/files/probe-node-topology.sh') }}"
+
+# Stream the probe script into the pod over stdin (`kubectl exec -i ... sh -s`)
+# so nothing is copied to the pod's (read-only) filesystem. The script body is
+# passed via the module's `stdin`, which preserves newlines exactly — do NOT
+# inline it into a folded `cmd:` scalar (YAML folding would flatten the shell
+# into one line and corrupt awk/for blocks).
+- name: "nri_cpu_balloons | advanced | Probe topology on every node (/sys, unprivileged)"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - "-n"
+      - "{{ nri_cpu_balloons.namespace }}"
+      - "-i"
+      - "{{ item.metadata.name }}"
+      - "--"
+      - sh
+      - "-s"
+    stdin: "{{ _nri_probe_script }}"
+  register: _probe_per_node
+  changed_when: false
+  failed_when: _probe_per_node.rc != 0 or (_probe_per_node.stdout | length) == 0
+  loop: "{{ _optimizer_running }}"
+  loop_control:
+    label: "{{ item.spec.nodeName }}"
+
+# Parse each node's KEY=VALUE probe output into a structured per-node map.
+# Regex helpers pull single scalars; per-NUMA cpulists are gathered into a dict
+# keyed by NUMA index, and PKG_NODE is preserved verbatim for gen-balloon-types.
+- name: "nri_cpu_balloons | advanced | Build per-node topology map"
+  vars:
+    _node_entries: >-
+      {%- set out = {} -%}
+      {%- for r in _probe_per_node.results -%}
+        {%- set node = r.item.spec.nodeName -%}
+        {%- set text = r.stdout -%}
+        {%- set numa = (text | regex_findall('(?m)^NRI_NUMA=(\\d+)')       | first | int) -%}
+        {%- set lcpu = (text | regex_findall('(?m)^NRI_LOGICAL=(\\d+)')    | first | int) -%}
+        {%- set tpc  = (text | regex_findall('(?m)^NRI_TPC=(\\d+)')        | first | int) -%}
+        {%- set pcpu = (text | regex_findall('(?m)^NRI_PHYSICAL=(\\d+)')   | first | int) -%}
+        {%- set pkgnode = (text | regex_findall('(?m)^NRI_PKGNODE=(.+)$')  | first | trim) -%}
+        {%- set siblings = (text | regex_findall('(?m)^NRI_SIBLINGS=(.*)$') | first | default('') | trim) -%}
+        {%- set nodecpus = {} -%}
+        {%- set nodecpus_parts = [] -%}
+        {%- for pair in (text | regex_findall('(?m)^NRI_NODECPUS_(\\d+)=(.+)$')) -%}
+          {%- set _ = nodecpus.update({pair[0] | int: pair[1] | trim}) -%}
+        {%- endfor -%}
+        {%- for k, v in (nodecpus | dictsort) -%}
+          {%- set _ = nodecpus_parts.append(k ~ ':' ~ v) -%}
+        {%- endfor -%}
+        {%- set req = nri_max_tp_size | int -%}
+        {%- set max_tp = (8 if (numa >= 8 and req >= 8) else (4 if (numa >= 4 and req >= 4) else (2 if (numa >= 2 and req >= 2) else 1))) -%}
+        {%- set _ = out.update({node: {
+              'numa': numa, 'logical_cpus': lcpu, 'threads_per_core': tpc,
+              'physical_cpus': pcpu, 'pkgnode': pkgnode, 'siblings': siblings,
+              'node_cpus': nodecpus, 'nodecpus_str': (nodecpus_parts | join(';')),
+              'max_tp': max_tp}}) -%}
+      {%- endfor -%}
+      {{ out }}
+  ansible.builtin.set_fact:
+    _nri_per_node_topology: "{{ _node_entries }}"
+
+- name: "nri_cpu_balloons | advanced | Validate probe results"
+  ansible.builtin.assert:
+    that:
+      - item.value.numa | int > 0
+      - item.value.logical_cpus | int > 0
+      - item.value.threads_per_core | int > 0
+      - (item.value.pkgnode | regex_search('^\\{.*\\}$')) is not none
+    fail_msg: >-
+      Topology probe on node '{{ item.key }}' returned invalid data:
+      numa={{ item.value.numa }} logical={{ item.value.logical_cpus }}
+      tpc={{ item.value.threads_per_core }} pkgnode='{{ item.value.pkgnode }}'
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: "nri_cpu_balloons | advanced | Derive cluster-wide topology facts"
+  vars:
+    _nodes_meta: "{{ _nri_per_node_topology.values() | list }}"
+    _numas: "{{ _nodes_meta | map(attribute='numa') | map('int') | list }}"
+    _pcpus: "{{ _nodes_meta | map(attribute='physical_cpus') | map('int') | list }}"
+    _tps:   "{{ _nodes_meta | map(attribute='max_tp') | map('int') | list }}"
+    _signatures: >-
+      {{ _nodes_meta
+         | map('dict2items')
+         | map('selectattr', 'key', 'in', ['numa', 'physical_cpus', 'threads_per_core'])
+         | map('list') | map('to_json') | list | unique | list }}
+  ansible.builtin.set_fact:
+    # Cluster-wide MAX drives balloon-type generation (union of capabilities).
+    _nri_detected_numa_nodes: "{{ _numas | max }}"
+    _nri_detected_total_cpus: "{{ _pcpus | max }}"
+    _nri_max_tp_size: "{{ _tps | max }}"
+    # Cluster-wide MIN reported for visibility / capacity planning.
+    _nri_cluster_min_numa: "{{ _numas | min }}"
+    _nri_cluster_min_cpus: "{{ _pcpus | min }}"
+    _nri_cluster_min_tp:   "{{ _tps | min }}"
+    # Heterogeneous when not all nodes share the same (numa, pcpu, tpc) tuple.
+    _nri_topology_heterogeneous: "{{ (_signatures | length) > 1 }}"
+    _nri_node_count: "{{ _nodes_meta | length }}"
+
+- name: "nri_cpu_balloons | advanced | Per-node topology summary"
+  ansible.builtin.debug:
+    msg: >-
+      node={{ item.key }} numa={{ item.value.numa }}
+      physical_cpus={{ item.value.physical_cpus }}
+      threads_per_core={{ item.value.threads_per_core }}
+      max_tp={{ item.value.max_tp }} pkgnode={{ item.value.pkgnode }}
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: "nri_cpu_balloons | advanced | Cluster topology banner"
+  ansible.builtin.debug:
+    msg:
+      - "================================================================="
+      - "Cluster topology ({{ _nri_node_count }} node(s))"
+      - "================================================================="
+      - "NUMA nodes:        min={{ _nri_cluster_min_numa }}  max={{ _nri_detected_numa_nodes }}"
+      - "Physical CPUs:     min={{ _nri_cluster_min_cpus }}  max={{ _nri_detected_total_cpus }}"
+      - "Max TP supported:  min={{ _nri_cluster_min_tp }}    max={{ _nri_max_tp_size }}"
+      - "Heterogeneous:     {{ _nri_topology_heterogeneous }}"
+      - "================================================================="
+
+- name: "nri_cpu_balloons | advanced | Warn on heterogeneous topology"
+  when: _nri_topology_heterogeneous | bool
+  ansible.builtin.debug:
+    msg: >-
+      Heterogeneous NUMA topology detected. Balloon types will be generated
+      for the LARGEST node (max_tp={{ _nri_max_tp_size }}). Smaller nodes can
+      only host balloons up to their own max_tp; use the per-node label
+      `nri.intel.com/max-tp` (added later in this play) plus a pod
+      `nodeSelector` to keep TP=N pods off nodes with max_tp<N. The
+      model-manager pre-flight check will refuse such deployments.
+
+# -----------------------------------------------------------------------------
+# Generate balloon types ONCE on the CONTROLLER using the cluster-wide MAX_TP
+# and the most-capable node's package->NUMA map. gen-balloon-types.py is pure
+# Python stdlib; PKG_NODE lets it build topology without reading /sys locally.
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | advanced | Pick PKG_NODE of the most-capable node"
+  vars:
+    _max_node: >-
+      {{ (_nri_per_node_topology | dict2items
+          | sort(attribute='value.numa') | last) }}
+  ansible.builtin.set_fact:
+    _nri_cluster_pkgnode: "{{ _max_node.value.pkgnode }}"
+
+- name: "nri_cpu_balloons | advanced | Run gen-balloon-types.py on controller (cluster MAX_TP)"
+  ansible.builtin.command:
+    cmd: "python3 {{ role_path }}/files/gen-balloon-types.py"
+  environment:
+    INDENT: "2"
+    MAX_TP: "{{ _nri_max_tp_size }}"
+    PKG_NODE: "{{ _nri_cluster_pkgnode }}"
+  delegate_to: localhost
+  changed_when: false
+  register: _gen_balloons
+  failed_when: _gen_balloons.rc != 0 or (_gen_balloons.stdout | length) == 0
+
+- name: "nri_cpu_balloons | advanced | Validate generated output"
+  ansible.builtin.assert:
+    that:
+      - "'vllm-balloon-tp1' in _gen_balloons.stdout"
+    fail_msg: >-
+      gen-balloon-types.py did not emit a vllm-balloon-tp1 entry. Output:
+      {{ _gen_balloons.stdout[:400] }}
+
+- name: "nri_cpu_balloons | advanced | Export balloon types fact"
+  ansible.builtin.set_fact:
+    _nri_generated_balloon_types: "{{ _gen_balloons.stdout }}"
+
+# -----------------------------------------------------------------------------
+# Per-node balloon-type generation. Re-run gen-balloon-types.py on the
+# controller once per node with that node's own MAX_TP and PKG_NODE so smaller
+# nodes do NOT advertise tpN balloons they cannot satisfy. Results merge into
+# _nri_per_node_topology; each per-node BalloonsPolicy CR uses these.
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | advanced | Run gen-balloon-types.py per node (controller)"
+  ansible.builtin.command:
+    cmd: "python3 {{ role_path }}/files/gen-balloon-types.py"
+  environment:
+    INDENT: "2"
+    MAX_TP: "{{ item.value.max_tp }}"
+    PKG_NODE: "{{ item.value.pkgnode }}"
+  delegate_to: localhost
+  changed_when: false
+  register: _gen_balloons_per_node
+  failed_when: _gen_balloons_per_node.rc != 0 or (_gen_balloons_per_node.stdout | length) == 0
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} (max_tp={{ item.value.max_tp }})"
+
+- name: "nri_cpu_balloons | advanced | Merge per-node balloon types into topology fact"
+  vars:
+    _merged: >-
+      {%- set out = {} -%}
+      {%- for r in _gen_balloons_per_node.results -%}
+        {%- set node = r.item.key -%}
+        {%- set base = _nri_per_node_topology[node] -%}
+        {%- set _ = out.update({node: base | combine({'balloon_types': r.stdout})}) -%}
+      {%- endfor -%}
+      {{ out }}
+  ansible.builtin.set_fact:
+    _nri_per_node_topology: "{{ _merged }}"
+
+# -----------------------------------------------------------------------------
+# Label every probed node with its NRI balloon capability so K8s scheduling
+# (nodeSelector / affinity) and the model-manager pre-flight check can keep
+# TP=N workloads off nodes with max_tp<N. Labels are namespaced under
+# `nri.intel.com/` for clear ownership and are removed by teardown.yaml.
+# -----------------------------------------------------------------------------
+- name: "nri_cpu_balloons | advanced | Label nodes with NRI capability"
+  kubernetes.core.k8s:
+    state: patched
+    kind: Node
+    name: "{{ item.key }}"
+    definition:
+      metadata:
+        labels:
+          nri.intel.com/balloons-enabled: "true"
+          nri.intel.com/max-tp: "{{ item.value.max_tp | string }}"
+          nri.intel.com/numa-nodes: "{{ item.value.numa | string }}"
+          nri.intel.com/physical-cpus: "{{ item.value.physical_cpus | string }}"
+  loop: "{{ _nri_per_node_topology | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} (max_tp={{ item.value.max_tp }})"

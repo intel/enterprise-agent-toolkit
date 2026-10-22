@@ -1,0 +1,43 @@
+# Per-node NRI BalloonsPolicy CR.
+# Rendered once per worker node by install_advanced.yaml.
+# Plugin precedence: node.<NAME> > group.<NAME> > default.
+# Each node carries reservedResources + balloonTypes sized to its own topology
+# (capped at this node's NUMA count via gen-balloon-types.py MAX_TP).
+apiVersion: config.nri/v1alpha1
+kind: BalloonsPolicy
+metadata:
+  name: "node.{{ node_name }}"
+  namespace: "{{ nri_cpu_balloons.namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: nri_cpu_balloons-role
+    nri.intel.com/node: "{{ node_name }}"
+    nri.intel.com/max-tp: "{{ node_meta.max_tp | string }}"
+spec:
+  agent:
+    nodeResourceTopology: true
+    podResourceAPI: false
+  allocatorTopologyBalancing: true
+  control:
+    rdt:
+      enable: false
+  pinCPU: true
+  pinMemory: false
+  # Per-node CR pins reserved to the exact cpuset computed for THIS node
+  # by `compute_reserved_cpus_advanced.sh` from `nri_deployment_profile`.
+  # cpuset form forces NRI to honour the NUMA spread instead of greedily
+  # picking N contiguous CPUs from one NUMA.
+  reservedResources:
+    cpu: "cpuset:{{ node_meta.reserved_cpu_list }}"
+  # Route every pod without an explicit balloon annotation to the reserved
+  # CPU pool. Annotation-bound model pods still go to their vllm-balloon-tpN.
+  reservedPoolNamespaces:
+    - "*"
+    - kube-system
+  balloonTypes:
+{{ node_meta.balloon_types | indent(4, first=True) }}
+  log:
+    source: true
+    debug:
+      - policy
+    klog:
+      skip_headers: true

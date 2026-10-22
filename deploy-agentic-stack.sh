@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 # =============================================================================
-# INTEL AI FOR ENTERPRISE AGENT TOOLKIT — UNIFIED DEPLOYMENT SCRIPT
+# INTEL® AI FOR ENTERPRISE AGENT TOOLKIT — UNIFIED DEPLOYMENT SCRIPT
 #
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
@@ -192,6 +192,8 @@ detect_system() {
 CLUSTER_DOMAIN="${CLUSTER_DOMAIN:-api.example.com}"
 HUGGINGFACE_TOKEN="${HUGGINGFACE_TOKEN:-}"          # REQUIRED
 MODELS="${MODELS:-cpu-qwen2-5-coder-14b}"
+DEPLOY_GUARDRAILS="${DEPLOY_GUARDRAILS:-on}"        # on|off — gates the content-safety guardrail step
+GUARDRAIL_MODEL="${GUARDRAIL_MODEL:-Qwen/Qwen3Guard-Gen-0.6B}"  # active guard model
 ANSIBLE_USER="${ANSIBLE_USER:-}"
 CERT_DIR="${HOME}/certs"
 AGENTIC_DIR="${REPO_DIR}"                           # The repo itself
@@ -235,6 +237,13 @@ _model_display_name() {
         27|cpu-llama-8b)            echo "meta-llama/Llama-3.1-8B-Instruct" ;;
         28|cpu-llama-8b-specdec)    echo "meta-llama/Llama-3.1-8B-Instruct-Specdec" ;;
         29|cpu-qwen3-coder-30b-specdec) echo "Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec" ;;
+        30|cpu-qwen3-6-35b-a3b)      echo "Qwen/Qwen3.6-35B-A3B" ;;
+        31|xpu-qwen3-coder-30b)     echo "Qwen/Qwen3-Coder-30B-A3B-Instruct (XPU)" ;;
+        32|xpu-qwen2-5-coder-14b)   echo "Qwen/Qwen2.5-Coder-14B-Instruct (XPU)" ;;
+        33|xpu-llama-8b)            echo "meta-llama/Llama-3.1-8B-Instruct (XPU)" ;;
+        34|xpu-qwen3-coder-next)    echo "Qwen/Qwen3-Coder-Next (XPU)" ;;
+        35|xpu-gemma4-31b)          echo "google/gemma-4-31B-it (XPU)" ;;
+        36|xpu-qwen36-27b)          echo "Qwen/Qwen3.6-27B (XPU)" ;;
         *) echo "${1:-unknown}" ;;
     esac
 }
@@ -426,8 +435,11 @@ write_hosts_yaml() {
     local _hosts_yaml="${CORE_DIR}/inventory/hosts.yaml"
     if [[ -f "${_hosts_yaml}" ]]; then
         # Count distinct hosts — more than one means a multi-node inventory
+        # (grep -c always prints a count but exits 1 on no match, so capture
+        #  it separately instead of `|| echo 0`, which would double the output)
         local _host_count
-        _host_count=$(grep -c 'ansible_host:' "${_hosts_yaml}" 2>/dev/null || echo 0)
+        _host_count=$(grep -c 'ansible_host:' "${_hosts_yaml}" 2>/dev/null || true)
+        _host_count="${_host_count:-0}"
         if [[ "${_host_count}" -gt 1 ]]; then
             info "Multi-node hosts.yaml detected (${_host_count} hosts) — skipping overwrite."
             return 0
@@ -460,6 +472,25 @@ all:
       hosts: {}
 EOF
     success "hosts.yaml written"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Append "key=value" to the config file being written by write_config() (relies
+# on that function's local ${_cfg} via bash dynamic scoping) unless already set
+# ──────────────────────────────────────────────────────────────────────────────
+# Append a line to the config, first ensuring the file ends with a newline.
+# A hand-edited file with no trailing newline would otherwise splice the new
+# key onto the last line (e.g. "deploy_vllm_sr=onhttp_proxy=").
+_cfg_append() {
+    [[ -s "${_cfg}" && "$(tail -c1 "${_cfg}" | wc -l)" -eq 0 ]] && echo >> "${_cfg}"
+    echo "$1" >> "${_cfg}"
+}
+
+_cfg_set_default() {
+    local _key="$1" _val="$2"
+    if ! grep -qE "^${_key}=" "${_cfg}" 2>/dev/null; then
+        _cfg_append "${_key}=${_val}"
+    fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -503,6 +534,9 @@ deploy_agenticai_plugin=off
 deploy_redis=on
 deploy_kuberay=off
 deploy_agent_sandbox=off
+deploy_kata_containers=off
+kata_runtime=kata-fc
+deploy_vllm_sr=off
 deploy_openshell=off
 http_proxy=${_http_proxy}
 https_proxy=${_https_proxy}
@@ -510,6 +544,36 @@ no_proxy=${_no_proxy}
 EOF
         success "agentic-config.cfg created with defaults"
     else
+        # ── File already exists: only fill in any keys that are missing ─────
+        warn "agentic-config.cfg already exists — preserving all existing values"
+        info "Adding any missing config keys with defaults…"
+
+        _cfg_set_default "cluster_url"              "${CLUSTER_DOMAIN}"
+        _cfg_set_default "cert_file"                "${CERT_DIR}/cert.pem"
+        _cfg_set_default "key_file"                 "${CERT_DIR}/key.pem"
+        _cfg_set_default "hugging_face_token"        "${HUGGINGFACE_TOKEN}"
+        _cfg_set_default "models"                   "cpu-qwen2-5-coder-14b"
+        _cfg_set_default "deploy_kubernetes_fresh"  "on"
+        _cfg_set_default "deploy_ingress_controller" "on"
+        _cfg_set_default "deploy_genai_gateway"     "on"
+        _cfg_set_default "deploy_observability"     "on"
+        _cfg_set_default "deploy_llm_models"        "on"
+        _cfg_set_default "deploy_agenticai_plugin"  "off"
+        _cfg_set_default "deploy_redis"             "on"
+        _cfg_set_default "deploy_kuberay"            "off"
+        _cfg_set_default "deploy_agent_sandbox"     "off"
+        _cfg_set_default "deploy_kata_containers"   "off"
+        _cfg_set_default "kata_runtime"             "kata-fc"
+        _cfg_set_default "deploy_vllm_sr"           "off"
+        _cfg_set_default "deploy_openshell"         "off"
+        _cfg_set_default "http_proxy"               "${_http_proxy}"
+        _cfg_set_default "https_proxy"              "${_https_proxy}"
+        # no_proxy gets k8s suffixes injected only when the key is absent
+        if ! grep -qE "^no_proxy=" "${_cfg}" 2>/dev/null; then
+            _cfg_append "no_proxy=${_no_proxy}"
+        fi
+
+        success "agentic-config.cfg verified — all existing values preserved"
         info "agentic-config.cfg already exists — skipping config write"
     fi
 
@@ -602,6 +666,8 @@ _source_core_libs() {
     source "${CORE_DIR}/lib/cluster/deployment/cluster-purge.sh"
     source "${CORE_DIR}/lib/cluster/nodes/add-node.sh"
     source "${CORE_DIR}/lib/cluster/nodes/remove-node.sh"
+    source "${CORE_DIR}/lib/cluster/nodes/ecmp-sysctl.sh"
+    source "${CORE_DIR}/lib/cluster/nodes/bgp-peers.sh"
 
     source "${CORE_DIR}/lib/components/kubernetes-setup.sh"
     source "${CORE_DIR}/lib/components/ingress-controller.sh"
@@ -614,6 +680,11 @@ _source_core_libs() {
     source "${CORE_DIR}/lib/components/kuberay-controller.sh"
     source "${CORE_DIR}/lib/components/pgvector-controller.sh"
     source "${CORE_DIR}/lib/components/agent-sandbox-controller.sh"
+    source "${CORE_DIR}/lib/components/kata-containers-controller.sh"
+    source "${CORE_DIR}/lib/components/gpu-operator.sh"
+    source "${CORE_DIR}/lib/components/intel-gpu-plugin.sh"
+    source "${CORE_DIR}/lib/components/guardrails-controller.sh"
+    source "${CORE_DIR}/lib/components/vllm-sr-controller.sh"
     source "${CORE_DIR}/lib/components/openshell-controller.sh"
 
     source "${CORE_DIR}/lib/models/model-selection.sh"
@@ -652,7 +723,7 @@ _show_main_menu() {
     parse_arguments "${_filtered_args[@]+"${_filtered_args[@]}"}"
 
     echo -e "${BLUE}----------------------------------------------------------${NC}"
-    echo -e "${BLUE}|  Intel AI for Enterprise Agent Toolkit                                |${NC}"
+    echo -e "${BLUE}|  Intel® AI for Enterprise Agent Toolkit                                |${NC}"
     echo -e "${BLUE}|---------------------------------------------------------|${NC}"
     echo -e "| ${CYAN}1)${NC} Provision Base stack Infrastructure                  |"
     echo -e "| ${CYAN}2)${NC} Decommission Existing Cluster                        |"
@@ -676,131 +747,17 @@ _show_main_menu() {
 # cluster and turn the corresponding config flags to 'off' so they are skipped.
 # This makes re-runs safe and resumable after a partial failure.
 # ──────────────────────────────────────────────────────────────────────────────
-_auto_skip_deployed_components() {
-    local _cfg="${CORE_DIR}/inventory/agentic-config.cfg"
-    [[ ! -f "${_cfg}" ]] && return
-
-    # Only auto-skip when kubectl is available and the cluster is reachable
-    if ! command -v kubectl &>/dev/null || ! kubectl get nodes &>/dev/null 2>&1; then
-        info "Cluster not reachable yet — all components will be installed fresh"
-        return
-    fi
-
-    banner "Checking Already-Deployed Components (Resume Mode)"
-
-    # Helper: set a key to 'off' in the config file
-    _cfg_turn_off() {
-        local _key="$1"
-        sed -i "s|^${_key}=.*|${_key}=off|" "${_cfg}" 2>/dev/null || true
-    }
-
-    # Kubernetes — skip only if every node in hosts.yaml is already in the cluster.
-    # If hosts.yaml has more nodes than the cluster (e.g. a new worker was added),
-    # keep deploy_kubernetes_fresh=on so kubespray runs cluster.yml to join them.
-    if kubectl get nodes --no-headers 2>/dev/null | grep -q "Ready"; then
-        local _hosts_yaml="${CORE_DIR}/inventory/hosts.yaml"
-        local _inventory_host_count=0
-        local _cluster_node_count
-        _cluster_node_count=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
-        if [[ -f "${_hosts_yaml}" ]]; then
-            _inventory_host_count=$(grep -c 'ansible_host:' "${_hosts_yaml}" 2>/dev/null || echo 0)
-        fi
-        if [[ "${_cluster_node_count}" -ge "${_inventory_host_count}" ]]; then
-            _cfg_turn_off "deploy_kubernetes_fresh"
-            success "Kubernetes: already running (${_cluster_node_count}/${_inventory_host_count} nodes) — skipping"
-        else
-            warn "Kubernetes: cluster has ${_cluster_node_count} node(s) but hosts.yaml defines ${_inventory_host_count} — running kubespray to join missing nodes"
-        fi
-    fi
-
-    # Ingress NGINX controller
-    if kubectl get namespace ingress-nginx &>/dev/null 2>&1; then
-        _cfg_turn_off "deploy_ingress_controller"
-        success "Ingress NGINX: already deployed — skipping"
-    fi
-
-    # GenAI Gateway (LiteLLM + Langfuse)
-    if kubectl get namespace genai-gateway &>/dev/null 2>&1; then
-        _cfg_turn_off "deploy_genai_gateway"
-        success "GenAI Gateway: already deployed — skipping"
-    fi
-
-    # Observability (Prometheus/Grafana/Langfuse trace stack)
-    if kubectl get namespace observability &>/dev/null 2>&1; then
-        _cfg_turn_off "deploy_observability"
-        success "Observability: already deployed — skipping"
-    fi
-
-    # LLM Models — only skip if the SPECIFIC requested model's helm release is already deployed.
-    # If a different model is running, allow deployment of the new one.
-    local _model_helm_release=""
-    case "${MODELS}" in
-        21|cpu-qwen3-coder-30b)   _model_helm_release="vllm-qwen3-coder-30b-cpu" ;;
-        22|cpu-qwen2-5-coder-14b) _model_helm_release="vllm-qwen-2-5-coder-14b-cpu" ;;
-        23|cpu-bge-base-en)               _model_helm_release="vllm-tei-cpu" ;;
-        24|cpu-bge-reranker-base)            _model_helm_release="vllm-rerank-cpu" ;;
-        25|cpu-qwen3-30b-a3b)      _model_helm_release="vllm-qwen3-30b-a3b-cpu" ;;
-        26|cpu-gemma4-26b-a4b)    _model_helm_release="vllm-gemma4-26b-a4b-cpu" ;;
-        27|cpu-llama-8b)          _model_helm_release="vllm-llama-8b-cpu" ;;
-        28|cpu-llama-8b-specdec)  _model_helm_release="vllm-llama-8b-specdec-cpu" ;;
-        29|cpu-qwen3-coder-30b-specdec) _model_helm_release="vllm-qwen3-coder-30b-specdec-cpu" ;;
-    esac
-    if [[ -n "${_model_helm_release}" ]] && \
-       helm list -n default --short 2>/dev/null | grep -q "^${_model_helm_release}$"; then
-        _cfg_turn_off "deploy_llm_models"
-        success "LLM Models: ${_model_helm_release} already deployed — skipping"
-    else
-        info "LLM Models: ${_model_helm_release:-unknown} not yet deployed — will install"
-    fi
-
-    # Redis
-    if kubectl get namespace redis &>/dev/null 2>&1; then
-        _cfg_turn_off "deploy_redis"
-        success "Redis: already deployed — skipping"
-    fi
-
-    # Agent Sandbox (CRD controller + sandbox-router)
-    if kubectl get namespace agent-sandbox &>/dev/null 2>&1; then
-        _cfg_turn_off "deploy_agent_sandbox"
-        success "Agent Sandbox: already deployed — skipping"
-    fi
-
-    # OpenShell (policy-enforced sandboxes on Agent Sandbox) — skip only a completed run of
-    # the current pins and settings; the playbook is idempotent, so anything else re-applies.
-    local _openshell_pins _openshell_fp _openshell_ns _openshell_rel
-    _openshell_pins="$(source "${CORE_DIR}/inventory/metadata/agentic-metadata.cfg" 2>/dev/null \
-        && echo "${openshell_chart_version} ${openshell_image_tag} ${openshell_release_tag}")"
-    # shellcheck disable=SC2086  # pins are three space-separated words
-    _openshell_fp="$(openshell_deploy_fingerprint "${CORE_DIR}" ${_openshell_pins})"
-    _openshell_ns="$(openshell_setting "${CORE_DIR}" openshell_namespace)"
-    _openshell_rel="$(openshell_setting "${CORE_DIR}" openshell_release_name)"
-    if helm status "${_openshell_rel}" -n "${_openshell_ns}" 2>/dev/null | grep -q '^STATUS: deployed$' && \
-       [[ "$(kubectl get configmap openshell-deploy-state -n "${_openshell_ns}" \
-             -o jsonpath='{.data.fingerprint}' 2>/dev/null)" == "${_openshell_fp}" ]]; then
-        _cfg_turn_off "deploy_openshell"
-        success "OpenShell: already deployed — skipping"
-    elif helm status "${_openshell_rel}" -n "${_openshell_ns}" &>/dev/null; then
-        info "OpenShell: incomplete deployment or changed settings — will re-apply"
-    fi
-
-    info "Resume check complete — only pending components will be installed"
-}
-
-# ──────────────────────────────────────────────────────────────────────────────
 # RUN THE MAIN DEPLOYMENT (one-click base stack)
 # Sources the core lib files and calls fresh_installation directly.
 # "yes" is fed automatically to the confirmation prompt.
 # ──────────────────────────────────────────────────────────────────────────────
 run_deployment() {
-    banner "Running Intel AI for Enterprise Agent Toolkit Deployment"
+    banner "Running Intel® AI for Enterprise Agent Toolkit Deployment"
     info "This will take 20-40 minutes for a fresh install…"
     info "Log: ${DEPLOY_LOG}"
 
     set +u
     _source_core_libs
-
-    # Check what's already in the cluster and skip those components
-    _auto_skip_deployed_components
 
     # Pass deployment parameters through the lib's argument parser
     parse_arguments \
@@ -808,8 +765,7 @@ run_deployment() {
         --cert-file               "${CERT_DIR}/cert.pem" \
         --key-file                "${CERT_DIR}/key.pem" \
         --hugging-face-token      "${HUGGINGFACE_TOKEN}" \
-        --models                  "${MODELS}" \
-        --compute_platform        "cpu"
+        --models                  "${MODELS}"
 
     # ansible-playbook uses relative paths; lib functions must run with CWD=core/
     pushd "${CORE_DIR}" > /dev/null
@@ -817,8 +773,12 @@ run_deployment() {
     # Feed "yes" automatically to the "Do you wish to continue?" prompt inside
     # fresh_installation so the one-click flow requires no manual interaction.
     fresh_installation < <(echo "yes") 2>&1 | tee "${DEPLOY_LOG}"
+    local _rc=${PIPESTATUS[0]}
 
     popd > /dev/null
+    if [[ "${_rc}" -ne 0 ]]; then
+        return "${_rc}"
+    fi
     success "Base stack deployment complete"
 }
 
@@ -855,10 +815,20 @@ print_summary() {
     _openshell_sbx_ns="$(openshell_setting "${CORE_DIR}" openshell_sandbox_namespace)"
     local _pgvector_status="not deployed"
     local _kuberay_status="not deployed"
+    local _kata_runtime_class=""
     local _kuberay_ns="ray-system"
     if command -v kubectl &>/dev/null && kubectl get nodes &>/dev/null 2>&1; then
-        kubectl get namespace agent-sandbox  &>/dev/null 2>&1 && _sandbox_status="deployed"
+        # Upstream manifests install into agent-sandbox-system; older runs used agent-sandbox
+        kubectl get namespace agent-sandbox-system &>/dev/null 2>&1 \
+            || kubectl get namespace agent-sandbox &>/dev/null 2>&1 \
+            && _sandbox_status="deployed"
         helm status "${_openshell_rel}" -n "${_openshell_ns}" &>/dev/null 2>&1 && _openshell_status="deployed"
+        # Kata is optional on top of the sandbox — report whichever class exists
+        local _rc
+        for _rc in kata-fc kata-qemu; do
+            kubectl get runtimeclass "${_rc}" &>/dev/null 2>&1 \
+                && _kata_runtime_class="${_kata_runtime_class:+${_kata_runtime_class}, }${_rc}"
+        done
         kubectl get namespace pgvector       &>/dev/null 2>&1 && _pgvector_status="deployed"
         # Detect kuberay namespace from kuberay-config.yaml if present
         local _krc="${CORE_DIR}/inventory/kuberay-config.yaml"
@@ -951,6 +921,12 @@ except Exception:
                 _m_test_label="Qwen3-Coder-30B-Specdec via LiteLLM"
                 _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"openai/Qwen/Qwen3-Coder-30B-A3B-Instruct-Specdec\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
                 ;;
+            30|cpu-qwen3-6-35b-a3b)
+                _m_label="Qwen3.6-35B-A3B"
+                _m_release="vllm-qwen3-6-35b-a3b-cpu"
+                _m_test_label="Qwen3.6-35B-A3B via LiteLLM"
+                _m_test_body="  curl -k https://${CLUSTER_DOMAIN}/v1/chat/completions \\\n    -H \"Content-Type: application/json\" \\\n    -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" \\\n    -d '{\n      \"model\": \"Qwen/Qwen3.6-35B-A3B\",\n      \"messages\": [{\"role\":\"user\",\"content\":\"Write a Python function to reverse a string\"}],\n      \"max_tokens\": 200\n    }'"
+                ;;
             *)
                 _m_label="${_m_display}"
                 _m_release="vllm-${_m}-cpu"
@@ -972,11 +948,32 @@ except Exception:
     echo -e "  Service type    : ClusterIP (in-cluster only, password required)"
     echo -e "  URL secret      : kubectl get secret redis-stack-server-credentials -n redis -o jsonpath='{.data.REDIS_URL}' | base64 -d"
 
+    # ── vLLM SEMANTIC ROUTER ─────────────────────────────────────────────────
+    local _vllm_sr_status="not deployed"
+    if command -v kubectl &>/dev/null && kubectl get nodes &>/dev/null 2>&1; then
+        kubectl get namespace vllm-sr &>/dev/null 2>&1 && _vllm_sr_status="deployed"
+    fi
+    echo ""
+    echo -e "${YELLOW}── vLLM SEMANTIC ROUTER (${_vllm_sr_status}) ────────────────────────────────────${NC}"
+    if [[ "${_vllm_sr_status}" == "deployed" ]]; then
+        echo -e "  Dashboard UI    : ${GREEN}https://vllm-sr-${CLUSTER_DOMAIN}/router${NC}"
+        echo -e "  Routed Inference: ${GREEN}https://${CLUSTER_DOMAIN}/v1/chat/completions${NC}  (via LiteLLM)"
+        echo -e "  Use model='vllm-sr/auto' for intelligent routing"
+    else
+        echo -e "  Not deployed — enable with: ${CYAN}deploy_vllm_sr=on${NC} in agentic-config.cfg"
+    fi
+
     # ── AGENT SANDBOX ─────────────────────────────────────────────────────────
     echo ""
     echo -e "${YELLOW}── AGENT SANDBOX (${_sandbox_status}) ─────────────────────────────────────────${NC}"
     if [[ "${_sandbox_status}" == "deployed" ]]; then
         echo -e "  Router (in-cluster) : http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080"
+        echo -e "  Template            : python-sandbox-template (runc)"
+        if [[ -n "${_kata_runtime_class}" ]]; then
+            echo -e "  microVM isolation   : ${GREEN}${_kata_runtime_class}${NC} — template kata-sandbox-template"
+        else
+            echo -e "  microVM isolation   : not deployed — enable with: ${CYAN}deploy_kata_containers=on${NC} in agentic-config.cfg"
+        fi
     else
         echo -e "  Not deployed — enable with: deploy_agent_sandbox=on in agentic-config.cfg"
     fi
@@ -1134,19 +1131,28 @@ main() {
         local _existing_models
         _existing_models=$(grep -E '^models=' "${_base_cfg}" | cut -d= -f2- | xargs || true)
         [[ -n "${_existing_models}" ]] && MODELS="${_existing_models}"
+
+        # guardrails: load the on/off flag and the guard model from config so the
+        # deploy_guardrails=off switch is honored and guardrail_models drives the model.
+        local _existing_gr_flag _existing_gr_models
+        _existing_gr_flag=$(grep -E '^deploy_guardrails=' "${_base_cfg}" | cut -d= -f2- | xargs || true)
+        _existing_gr_models=$(grep -E '^guardrail_models=' "${_base_cfg}" | cut -d= -f2- | xargs || true)
+        [[ -n "${_existing_gr_flag}" ]] && DEPLOY_GUARDRAILS="${_existing_gr_flag}"
+        # first comma-separated entry is the active guard model (single-model support)
+        [[ -n "${_existing_gr_models}" ]] && GUARDRAIL_MODEL="$(echo "${_existing_gr_models}" | cut -d',' -f1 | xargs)"
     fi
 
     # ── Interactive menu mode ─────────────────────────────────────────────────
     if [[ "${SHOW_MENU}" == "true" ]]; then
-        banner "Intel AI for Enterprise Agent Toolkit — Interactive Cluster Management"
+        banner "Intel® AI for Enterprise Agent Toolkit — Interactive Cluster Management"
         _show_main_menu "$@"
         return
     fi
 
-    # ── One-click base stack deployment (Step 1) ──────────────────────────────
-    banner "Intel AI for Enterprise Agent Toolkit — One-Click Deployment (Step 1: Base Stack)"
+    # ── One-click base stack deployment ──────────────────────────────
+    banner "Intel® AI for Enterprise Agent Toolkit — One-Click Deployment"
     info "Domain  : ${CLUSTER_DOMAIN}"
-    info "Model   : $(_model_display_list "${MODELS}") (vLLM CPU)"
+    info "Model   : $(_model_display_list "${MODELS}")"
     info "OS      : ${OS_ID} (${OS_FAMILY}) | Arch: ${ARCH} | User: ${ANSIBLE_USER}"
     echo ""
     read -rp $'\e[0;36mDo you want to continue with the deployment? [yes/no]: \e[0m' _confirm
@@ -1167,7 +1173,15 @@ main() {
     write_hosts_yaml
     write_config
 
-    run_deployment
+    run_deployment || _DEPLOY_FAILED=true
+    if [[ "${_DEPLOY_FAILED:-false}" == "true" ]]; then
+        echo ""
+        echo -e "${RED}══════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${RED}  DEPLOYMENT FAILED — partial results below${NC}"
+        echo -e "${RED}══════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${YELLOW}  Full log: ${DEPLOY_LOG}${NC}"
+        echo ""
+    fi
     print_summary
 }
 

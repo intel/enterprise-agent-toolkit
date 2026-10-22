@@ -31,6 +31,7 @@
 - [Validated Orchestration Frameworks](#validated-orchestration-frameworks)
 - [Example Business Use Cases](#example-business-use-cases-not-pre-bundled)
 - [Deployment Model](#deployment-model)
+- [Rack-Scale AI Fabric Mode](#rack-scale-ai-fabric-mode)
 - [Build vs. Build-from-Scratch](#build-vs-build-from-scratch)
 - [Frequently Asked Questions](#frequently-asked-questions)
 - [Repository Structure](#repository-structure)
@@ -97,6 +98,8 @@ Automatically dispatches LLM inference workloads to the optimal compute target b
 
 **Default provider:** LiteLLM Semantic Router · Intel Native Inferencing Service (vLLM, SGLang)
 
+The **[Hybrid Router](docs/hybrid-router.md)** extends this with cost- and latency-aware model selection: clients call a single virtual model (`hybrid-router`), which classifies each request by complexity and routes it to the smallest capable model per tier, while an online multi-armed bandit learns which candidate is most efficient. It plugs into the LiteLLM GenAI Gateway with no image rebuild — toggle it with `customRouter.enabled` in the `genai-gateway` Helm chart. See the **[Hybrid Router Guide](docs/hybrid-router.md)**.
+
 ---
 
 ### Actions & Tools
@@ -107,11 +110,11 @@ Gives agents the ability to take actions in the world — call APIs, run code, q
 ---
 
 ### Code Execution & Sandbox
-Enables agents to safely execute code and run arbitrary actions in isolated environments, preventing runaway agents from affecting production systems. Each sandbox is a fully self-contained ephemeral Kubernetes pod with its own filesystem and process tree. Policy controls limit the blast radius of any single agent action.
+Enables agents to safely execute code and run arbitrary actions in isolated environments, preventing runaway agents from affecting production systems. Each sandbox is a fully self-contained ephemeral Kubernetes pod with its own filesystem and process tree. Policy controls limit the blast radius of any single agent action. For untrusted code, microVM-level isolation is available as an opt-in — set `deploy_kata_containers=on` to run sandboxes on Kata Containers with Firecracker (`kata-fc`) or QEMU (`kata-qemu`), giving each sandbox its own guest kernel instead of sharing the host's.
 
 **Default provider:** `kubernetes-sigs/agent-sandbox`
 
-**Optional policy layer:** [NVIDIA OpenShell](docs/openshell.md) — policy-enforced sandboxes on top of Agent Sandbox (egress default-deny, L7 rules, Landlock where the kernel supports it, GenAI Gateway key kept out of the sandbox). Off by default; enable with `deploy_openshell=on`.
+**Optional provider:** [NVIDIA OpenShell](docs/openshell.md) — policy-enforced sandboxes on top of Agent Sandbox (egress default-deny, L7 rules, Landlock, credential isolation with GenAI Gateway keys). Enable with `deploy_openshell=on`.
 
 ---
 
@@ -182,6 +185,7 @@ All provider blocks run on a common infrastructure foundation:
 | **Multi-node Kubernetes** | Kubespray + Helm + KubeRay (for Parallel Tool Calling) | Production, HA, scale-out |
 | **Single-node Kubernetes** | K8s + Helm | Pilot, staging, edge |
 | **Docker Compose** | Docker Compose | Development, demos, single machine |
+| **Rack-Scale AI Fabric** | Kubespray + Calico BGP + Rook/Ceph on fabric | High-performance rack with high-speed AI fabric (100G/200G/400G/800G) and NVMe storage |
 
 
 ## Deployment Platform
@@ -264,6 +268,21 @@ To tear down the cluster and redeploy from scratch, see **[Decommission and Rede
 
 ---
 
+## Rack-Scale AI Fabric Mode
+
+For deployments on a **high-speed AI fabric** (100G, 200G, 400G, or 800G — Arista Clos or equivalent) with Intel® E810-C or compatible NICs, dual-homed nodes, and NVMe Ceph storage, the toolkit ships a dedicated rack-scale deployment path driven by a single declarative `rack-profile.yaml`.
+
+- **Zero-encapsulation pod networking** — Calico native BGP, no IPIP/VXLAN, wire-speed L3 routing via leaf switches at any link speed
+- **Ceph storage on fabric** — OSDs bind to fabric IPs, not management NICs; NVMe drives are the bottleneck, not the network
+- **Single config file** — `rack-profile.yaml` describes node roles, NIC mappings, leaf switches, and NVMe devices; a parser generates all derived Kubernetes and Ceph config automatically
+- **Speed-agnostic** — migrating from 100G to 400G or 800G requires only updating NIC names and the `mtu` field; no code changes
+
+**Validated on Intel Lab201 (100G Arista Clos, E810-C NICs):** 83 Gbits/sec cross-leaf throughput, 1.42 GB/s Ceph sequential write, 29K IOPS under concurrent burn.
+
+See **[Rack-Scale Deployment Guide](docs/rack-scale-deployment.md)** for the full setup walkthrough.
+
+---
+
 ## Build vs. Build-from-Scratch
 
 | Dimension | Build from Scratch | Intel® Toolkit |
@@ -315,6 +334,7 @@ Clone the repo, run `./deploy-agentic-stack.sh`, and follow the [Quick Start Gui
 - [GitHub Repository](https://github.com/intel/enterprise-agent-toolkit)
 - [Quick Start Guide](docs/README.md)
 - [Prerequisites](docs/prerequisites.md)
+- [Rack-Scale AI Fabric Deployment](docs/rack-scale-deployment.md)
 - [Decommission & Redeploy](docs/decommission-and-redeploy.md)
 
 ---

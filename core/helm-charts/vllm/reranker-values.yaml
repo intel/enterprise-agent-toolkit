@@ -7,7 +7,7 @@ port: 2082
 
 image:
   repository: vllm/vllm-openai-cpu
-  tag: "v0.24.0"
+  tag: "v0.28.0"
   pullPolicy: IfNotPresent
 
 pvc:
@@ -28,6 +28,9 @@ defaultModelConfigs:
     XDG_CACHE_HOME: "/tmp/.cache"
     TORCHINDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
     HF_HUB_DISABLE_XET: "1"
+    # Without this, vLLM CPU requires 92% of NUMA node memory free at startup
+    # and crashes when an LLM is already running on the node.
+    VLLM_CPU_KVCACHE_SPACE: "16"
   extraCmdArgs: []
 
 modelConfigs:
@@ -38,6 +41,7 @@ modelConfigs:
       XDG_CACHE_HOME: "/tmp/.cache"
       TORCHINDUCTOR_CACHE_DIR: "/tmp/torchinductor_cache"
       HF_HUB_DISABLE_XET: "1"
+      VLLM_CPU_KVCACHE_SPACE: "16"
     extraCmdArgs:
       - "--dtype"
       - "bfloat16"

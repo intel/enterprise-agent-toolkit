@@ -175,6 +175,7 @@ openshell_release_tag="v0.0.116"
 | `openshell_sandbox_network_policy` | `true` | Apply `eat-openshell-sandbox-pods` |
 | `openshell_upstream_proxy_cidrs` | RFC 1918 ranges | Where the corporate proxy may live (proxy port only) |
 | `openshell_sandbox_egress_cidrs` | `[]` | Extra private CIDRs that sandbox policies may target |
+| `openshell_sandbox_dns_cidrs` | `[]` | Extra resolvers reachable on port `53`; empty = auto-detect NodeLocal DNSCache |
 
 The corporate proxy (`https_proxy` / `no_proxy` from `agentic-config.cfg`) is passed to the
 gateway, which chains sandbox egress through it.
@@ -529,9 +530,11 @@ does not select. The toolkit applies `eat-openshell-sandbox-pods` to these pods 
 depth under the OpenShell egress policy:
 
 - **Ingress**: only from `openshell-system`
-- **Egress**: kube-dns, `openshell-system`, the GenAI Gateway on port `4000`, the proxy port on
-  `openshell_upstream_proxy_cidrs`, `openshell_sandbox_egress_cidrs`, and public addresses
-  (all private and link-local ranges excluded)
+- **Egress**: kube-dns, port `53` on the NodeLocal DNSCache address (auto-detected from the
+  `nodelocaldns` DaemonSet, or `openshell_sandbox_dns_cidrs`), `openshell-system`, the GenAI
+  Gateway on port `4000`, the proxy port on `openshell_upstream_proxy_cidrs`,
+  `openshell_sandbox_egress_cidrs`, and public addresses (all private and link-local ranges
+  excluded)
 
 Pods labelled `openshell.ai/boundary-role` (split supervisor/workload pods of newer charts) are
 not selected, so the chart's stricter policies stay in effect.
@@ -607,6 +610,7 @@ openshell logs <sandbox> --source sandbox
 | LLM call returns `policy_denied` | The calling binary is not in the provider profile `binaries` list (`core/helm-charts/openshell/genai-gateway-provider.yaml`); edit it and re-run `./deploy-agentic-stack.sh` with `deploy_openshell=on` |
 | `transport error` / `Connection reset by peer`, or `--upload` fails with `ssh tar extract exited with status 255` | `kubectl port-forward` dropped a stream; retry the command (re-run `openshell sandbox upload <name> <file> <dest>` for a failed upload), and restart the port-forward if it exited |
 | CLI hangs | Make sure `NO_PROXY` includes `127.0.0.1`, so the CLI does not send gateway traffic through a proxy |
+| Sandbox fails with `Policy fetch failed ... failed to connect to OpenShell server` | Sandbox DNS is blocked. Check `kubectl get netpol eat-openshell-sandbox-pods -n openshell-sandboxes -o yaml` lists the resolver from the pod's `/etc/resolv.conf` (NodeLocal DNSCache `169.254.25.10` on kubespray); if the cluster uses another DNS cache, set `openshell_sandbox_dns_cidrs` and re-run the deployment |
 
 ---
 

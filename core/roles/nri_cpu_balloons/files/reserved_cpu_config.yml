@@ -1,0 +1,168 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+---
+# Reserved CPU Configuration
+# This file defines CPU reservation requirements for non-model workloads
+# based on which components are deployed in the cluster.
+#
+# Previous approach: Hardcoded 8 CPUs total
+# New approach: Component-based calculation with configurable profiles
+
+# Component CPU requirements (per component instance)
+component_cpu_requirements:
+  # Core infrastructure components
+  keycloak:
+    cpu_cores: 2
+    description: "Identity and Access Management (Keycloak)"
+    priority: "high"
+
+  apisix:
+    cpu_cores: 2
+    description: "API Gateway (APISIX)"
+    priority: "high"
+
+  genai_gateway:
+    cpu_cores: 4
+    description: "GenAI Gateway (LiteLLM + Langfuse)"
+    priority: "high"
+
+  # Observability components
+  prometheus:
+    cpu_cores: 2
+    description: "Metrics collection (Prometheus)"
+    priority: "medium"
+
+  grafana:
+    cpu_cores: 1
+    description: "Metrics visualization (Grafana)"
+    priority: "medium"
+
+  fluent_bit:
+    cpu_cores: 1
+    description: "Log aggregation (Fluent Bit)"
+    priority: "low"
+
+  # Service mesh
+  istio:
+    cpu_cores: 2
+    description: "Service mesh (Istio control plane)"
+    priority: "medium"
+
+  # Storage
+  ceph:
+    cpu_cores: 2
+    description: "Distributed storage (Ceph)"
+    priority: "medium"
+
+  # Kubernetes system overhead
+  kubernetes_system:
+    cpu_cores: 4
+    description: "Kubernetes system pods (kube-proxy, CNI, etc.)"
+    priority: "critical"
+
+# Deployment profiles (predefined component combinations)
+deployment_profiles:
+  minimal:
+    description: "Minimal deployment - core services + storage"
+    components:
+      - kubernetes_system
+      - istio
+      - ceph
+    total_reserved_cpus: 8
+
+  standard:
+    description: "Standard deployment - minimal + authentication + API gateway"
+    components:
+      - kubernetes_system
+      - istio
+      - ceph
+      - keycloak
+      - apisix
+    total_reserved_cpus: 12
+
+  observability:
+    description: "Standard + observability stack"
+    components:
+      - kubernetes_system
+      - istio
+      - ceph
+      - keycloak
+      - apisix
+      - prometheus
+      - grafana
+      - fluent_bit
+    total_reserved_cpus: 16
+
+  full:
+    description: "Full deployment - all components"
+    components:
+      - kubernetes_system
+      - istio
+      - ceph
+      - keycloak
+      - apisix
+      - prometheus
+      - grafana
+      - fluent_bit
+      - genai_gateway
+    total_reserved_cpus: 20
+
+# Reserved CPU calculation strategy
+reservation_strategy:
+  # Calculation method
+  # - "profile": Use predefined profile (fast, recommended)
+  # - "auto_detect": Auto-detect deployed components (slower, more accurate)
+  # - "manual": Use manually specified total (legacy compatibility)
+  method: "profile"
+
+  # Default profile to use (if method=profile)
+  default_profile: "standard"
+
+  # Manual override (if method=manual, for backward compatibility)
+  manual_total_reserved_cpus: 8
+
+  # Minimum reserved CPUs (safety threshold)
+  min_reserved_cpus: 4
+
+  # Maximum reserved CPUs (prevent over-reservation)
+  max_reserved_cpus_percent: 20  # Max 20% of total CPUs
+
+  # Round up to nearest multiple (for NUMA alignment)
+  round_to_multiple: 2
+
+# NUMA distribution strategy for reserved CPUs
+numa_distribution:
+  # Strategy for distributing reserved CPUs across NUMA nodes
+  # - "balanced": Distribute evenly across all NUMA nodes (default)
+  # - "concentrated": Allocate from fewer NUMA nodes to maximize free nodes for models
+  # - "first_node": Reserve from first NUMA node only (simple, but may cause imbalance)
+  strategy: "balanced"
+
+  # For "concentrated" strategy: maximum NUMA nodes to use for reservation
+  max_numa_nodes_for_reservation: 2
+
+  # Hyperthreading handling
+  # - "balanced": Mix physical and HT cores (default)
+  # - "physical_first": Prefer physical cores over HT siblings
+  # - "physical_only": Use only physical cores (if available)
+  hyperthreading_strategy: "balanced"
+
+# Migration support (backward compatibility)
+backward_compatibility:
+  # Support old hardcoded value for existing deployments
+  legacy_total_reserved_cpus: 8
+
+  # If true, warn users about migration to new system
+  warn_about_legacy: true
+
+# Validation rules
+validation:
+  # Warn if reserved CPUs exceed this percentage
+  warn_threshold_percent: 15
+
+  # Error if reserved CPUs exceed this percentage
+  error_threshold_percent: 25
+
+  # Minimum CPUs remaining for workloads after reservation
+  min_workload_cpus: 16

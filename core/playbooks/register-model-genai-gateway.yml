@@ -1,6 +1,22 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 ---
+# Job specs are immutable, so state: present on an existing Job (e.g. within its
+# ttlSecondsAfterFinished window) is silently a no-op -- delete it first so a
+# re-run always creates a fresh Job instead of skipping registration.
+- name: Delete previous model-registration Job
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: default
+    name: "register-{{ reg_model_name | replace('/', '-') | replace('.', '-') | lower }}"
+    wait: true
+    wait_timeout: 60
+  failed_when: false
+  run_once: true
+  tags: always
+
 - name: Create Kubernetes Job for model registration
   kubernetes.core.k8s:
     state: present

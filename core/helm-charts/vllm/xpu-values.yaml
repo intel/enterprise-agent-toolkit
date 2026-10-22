@@ -1,0 +1,346 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# Intel XPU-optimized override values for vLLM deployments.
+# This file contains XPU-specific overrides for Intel discrete GPU (Arc/Flex/Max) deployments.
+# Requires the Intel GPU Plugin (intel-device-plugins-gpu) to be installed on the cluster.
+
+# Intel XPU accelerator device (Arc GPU)
+accelDevice: "xpu"
+
+# Kubernetes resource name exposed by the Intel GPU device plugin.
+# Use "gpu.intel.com/xe" with the Xe kernel driver (Ubuntu 25.10 / Arc B-series),
+# or "gpu.intel.com/i915" on hosts still using the i915 driver.
+xpuDeviceResource: "gpu.intel.com/xe"
+
+block_size: 64        # XPU-optimised KV cache block size
+max_num_seqs: 128     # Max concurrent sequences
+d_type: "float16"
+max_model_len: 32768
+tensor_parallel_size: "4"
+
+image:
+  repository: vllm/vllm-openai-xpu
+  tag: "v0.28.0"
+  pullPolicy: IfNotPresent
+  command: ["bash", "-c", "source /opt/intel/oneapi/setvars.sh --force && export LD_LIBRARY_PATH=/host-gpu-libs:${LD_LIBRARY_PATH} && python3 -m vllm.entrypoints.openai.api_server \"$@\"", "--"]
+
+podSecurityContext:
+  supplementalGroups: [990, 44]
+
+securityContext:
+  runAsNonRoot: false
+  runAsUser: 0
+
+# Node affinity for XPU inference nodes
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: ei-inference-eligible
+              operator: In
+              values: ["true"]
+
+# Intel XPU runtime settings
+VLLM_NO_USAGE_STATS: 1
+DO_NOT_TRACK: 1
+VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+
+LLM_MODEL_ID: "google/gemma-4-31B-it"
+port: 8000
+
+
+modelConfigs:
+  "google/gemma-4-31B-it":
+    configMapValues:
+      TORCH_LLM_ALLREDUCE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+      VLLM_USE_V1: "1"
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ATTENTION_BACKEND: "TORCH_SDPA"
+      VLLM_TARGET_DEVICE: "xpu"
+      ZE_FLAT_DEVICE_HIERARCHY: "FLAT"
+      ONEAPI_DEVICE_SELECTOR: "level_zero:*"
+      USER: "vllm"
+      LOGNAME: "vllm"
+      HOME: "/tmp"
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      HF_ENDPOINT: "https://huggingface.co"
+      SYCL_CACHE_PERSISTENT: "1"
+      ZES_ENABLE_SYSMAN: "1"
+      CCL_PROCESS_LAUNCHER: "none"
+      CCL_WORKER_OFFLOAD: "0"
+      CCL_WORKER_AFFINITY: ""
+      CCL_ZE_IPC_EXCHANGE: "pidfd"
+      CCL_ALLREDUCE: "ring"
+      ZE_ENABLE_PCI_ID_DEVICE_ORDER: "1"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TRITON_HOME: "/tmp/.triton"
+      XDG_CACHE_HOME: "/tmp/.cache"
+    extraCmdArgs:
+      - "--host"
+      - "0.0.0.0"
+      - "--dtype"
+      - "float16"
+      - "--block-size"
+      - "64"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--gpu-memory-utilization"
+      - "0.9"
+      - "--enforce-eager"
+      - "--tool-call-parser"
+      - "gemma4"
+      - "--chat-template"
+      - "examples/tool_chat_template_gemma4.jinja"
+      - "--trust-remote-code"
+      - "--no-enable-prefix-caching"
+    tensor_parallel_size: "4"
+
+  "Qwen/Qwen3.6-27B":
+    configMapValues:
+      VLLM_NO_USAGE_STATS: "1"
+      TORCH_LLM_ALLREDUCE: "1"
+      VLLM_USE_V1: "1"
+      DO_NOT_TRACK: "1"
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ATTENTION_BACKEND: "TORCH_SDPA"
+      VLLM_TARGET_DEVICE: "xpu"
+      ZE_FLAT_DEVICE_HIERARCHY: "FLAT"
+      ONEAPI_DEVICE_SELECTOR: "level_zero:*"
+      USER: "vllm"
+      LOGNAME: "vllm"
+      HOME: "/tmp"
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      HF_ENDPOINT: "https://huggingface.co"
+      SYCL_CACHE_PERSISTENT: "1"
+      ZES_ENABLE_SYSMAN: "1"
+      CCL_PROCESS_LAUNCHER: "none"
+      CCL_WORKER_OFFLOAD: "0"
+      CCL_WORKER_AFFINITY: ""
+      CCL_ZE_IPC_EXCHANGE: "pidfd"
+      CCL_ALLREDUCE: "ring"
+      ZE_ENABLE_PCI_ID_DEVICE_ORDER: "1"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TRITON_HOME: "/tmp/.triton"
+      XDG_CACHE_HOME: "/tmp/.cache"
+    extraCmdArgs:
+      - "--host"
+      - "0.0.0.0"
+      - "--dtype"
+      - "float16"
+      - "--block-size"
+      - "64"
+      - "--gpu-memory-utilization"
+      - "0.9"
+      - "--enforce-eager"
+      - "--no-enable-prefix-caching"
+      - "--trust-remote-code"
+      - "--disable-sliding-window"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+    tensor_parallel_size: "4"
+
+  "Qwen/Qwen3-Coder-Next":
+    configMapValues:
+      VLLM_NO_USAGE_STATS: "1"
+      TORCH_LLM_ALLREDUCE: "1"
+      VLLM_USE_V1: "1"
+      DO_NOT_TRACK: "1"
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_ATTENTION_BACKEND: "TORCH_SDPA"
+      VLLM_TARGET_DEVICE: "xpu"
+      ZE_FLAT_DEVICE_HIERARCHY: "FLAT"
+      ONEAPI_DEVICE_SELECTOR: "level_zero:*"
+      USER: "vllm"
+      LOGNAME: "vllm"
+      HOME: "/tmp"
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      HF_ENDPOINT: "https://huggingface.co"
+      SYCL_CACHE_PERSISTENT: "1"
+      ZES_ENABLE_SYSMAN: "1"
+      CCL_PROCESS_LAUNCHER: "none"
+      CCL_WORKER_OFFLOAD: "0"
+      CCL_WORKER_AFFINITY: ""
+      CCL_ZE_IPC_EXCHANGE: "pidfd"
+      CCL_ALLREDUCE: "ring"
+      ZE_ENABLE_PCI_ID_DEVICE_ORDER: "1"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TRITON_HOME: "/tmp/.triton"
+      XDG_CACHE_HOME: "/tmp/.cache"
+    extraCmdArgs:
+      - "--dtype"
+      - "float16"
+      - "--block-size"
+      - "64"
+      - "--gpu-memory-utilization"
+      - "0.9"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--enforce-eager"
+      - "--no-enable-prefix-caching"
+      - "--trust-remote-code"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+    tensor_parallel_size: "4"
+
+  "Qwen/Qwen3-Coder-30B-A3B-Instruct":
+    configMapValues:
+      VLLM_NO_USAGE_STATS: "1"
+      TORCH_LLM_ALLREDUCE: "1"
+      VLLM_USE_V1: "1"
+      DO_NOT_TRACK: "1"
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      HF_HUB_DISABLE_XET: "1"
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      HF_ENDPOINT: "https://huggingface.co"
+      SYCL_CACHE_PERSISTENT: "1"
+      ZES_ENABLE_SYSMAN: "1"
+      CCL_PROCESS_LAUNCHER: "none"
+      CCL_WORKER_OFFLOAD: "0"
+      CCL_WORKER_AFFINITY: ""
+      CCL_ZE_IPC_EXCHANGE: "pidfd"
+      CCL_ALLREDUCE: "ring"
+      ZE_ENABLE_PCI_ID_DEVICE_ORDER: "1"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TRITON_HOME: "/tmp/.triton"
+      XDG_CACHE_HOME: "/tmp/.cache"
+    extraCmdArgs:
+      - "--dtype"
+      - "float16"
+      - "--block-size"
+      - "64"
+      - "--gpu-memory-utilization"
+      - "0.9"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--enforce-eager"
+      - "--no-enable-prefix-caching"
+      - "--trust-remote-code"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+    tensor_parallel_size: "4"
+
+  "meta-llama/Llama-3.1-8B-Instruct":
+    configMapValues:
+      TORCH_LLM_ALLREDUCE: "1"
+      VLLM_USE_V1: "1"
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      SYCL_CACHE_PERSISTENT: "1"
+      ZES_ENABLE_SYSMAN: "1"
+      HF_HUB_DISABLE_XET: "1"
+    extraCmdArgs:
+      - "--dtype"
+      - "bfloat16"
+      - "--gpu-memory-utilization"
+      - "0.9"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--enforce-eager"
+      - "--no-enable-prefix-caching"
+      - "--trust-remote-code"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "llama3_json"
+    tensor_parallel_size: "1"
+
+  "Qwen/Qwen2.5-Coder-14B-Instruct":
+    configMapValues:
+      VLLM_NO_USAGE_STATS: "1"
+      TORCH_LLM_ALLREDUCE: "1"
+      VLLM_USE_V1: "1"
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      DO_NOT_TRACK: "1"
+      HF_HUB_DISABLE_XET: "1"
+      SYCL_CACHE_PERSISTENT: "1"
+      ZES_ENABLE_SYSMAN: "1"
+      CCL_PROCESS_LAUNCHER: "none"
+      CCL_WORKER_OFFLOAD: "0"
+      CCL_WORKER_AFFINITY: ""
+      CCL_ZE_IPC_EXCHANGE: "pidfd"
+      CCL_ALLREDUCE: "ring"
+      ZE_ENABLE_PCI_ID_DEVICE_ORDER: "1"
+      TRITON_CACHE_DIR: "/tmp/.triton"
+      TRITON_HOME: "/tmp/.triton"
+      XDG_CACHE_HOME: "/tmp/.cache"
+    extraCmdArgs:
+      - "--dtype"
+      - "float16"
+      - "--block-size"
+      - "64"
+      - "--gpu-memory-utilization"
+      - "0.9"
+      - "--max-num-batched-tokens"
+      - "2048"
+      - "--enforce-eager"
+      - "--no-enable-prefix-caching"
+      - "--trust-remote-code"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_xml"
+    tensor_parallel_size: "2"
+
+
+# Mount host Level Zero GPU driver libs — missing from vllm/vllm-openai-xpu image
+extraVolumes:
+  - name: host-gpu-libs
+    hostPath:
+      path: /usr/lib/x86_64-linux-gnu
+      type: Directory
+  - name: host-opencl-vendors
+    hostPath:
+      path: /etc/OpenCL/vendors
+      type: Directory
+  - name: host-intel-opencl
+    hostPath:
+      path: /usr/lib/x86_64-linux-gnu/intel-opencl
+      type: Directory
+
+extraVolumeMounts:
+  # Whole host lib dir, prepended to LD_LIBRARY_PATH by image.command above.
+  - name: host-gpu-libs
+    mountPath: /host-gpu-libs
+    readOnly: true
+  - name: host-gpu-libs
+    mountPath: /usr/lib/x86_64-linux-gnu/libze_intel_gpu.so.1
+    subPath: libze_intel_gpu.so.1
+    readOnly: true
+  - name: host-gpu-libs
+    mountPath: /usr/lib/x86_64-linux-gnu/libze_loader.so.1
+    subPath: libze_loader.so.1
+    readOnly: true
+  - name: host-opencl-vendors
+    mountPath: /etc/OpenCL/vendors
+    readOnly: true
+  - name: host-intel-opencl
+    mountPath: /usr/lib/x86_64-linux-gnu/intel-opencl
+    readOnly: true
+
+defaultModelConfigs:
+  configMapValues:
+    SYCL_CACHE_PERSISTENT: "1"
+    ZES_ENABLE_SYSMAN: "1"
+    HF_HUB_DISABLE_XET: "1"
+  extraCmdArgs:
+    - "--dtype"
+    - "bfloat16"
+    - "--max-model-len"
+    - "32768"
+    - "--gpu-memory-utilization"
+    - "0.85"
+    - "--disable-log-requests"
+  pipeline_parallel_size: "1"

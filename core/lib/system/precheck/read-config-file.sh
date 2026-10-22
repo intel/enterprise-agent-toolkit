@@ -23,8 +23,15 @@ read_config_file() {
         done < "$config_file"        
         
         # Load the environment variables from the temporary file
-        source temp_env_vars        
-        rm temp_env_vars    
+        source temp_env_vars
+        rm temp_env_vars
+
+        # Map air_gapped (config-file flag) to AIR_GAPPED (env var consumed
+        # by prereq-check.sh). The config reader normalises "on"→"yes", so check "yes".
+        if [[ "${air_gapped:-}" == "yes" ]]; then
+            export AIR_GAPPED=true
+        fi
+
         local metadata_config_file="$HOMEDIR/inventory/metadata/agentic-metadata.cfg"
         if [ -f "$metadata_config_file" ]; then
             echo "Metadata configuration file found, setting vars!"
@@ -61,6 +68,80 @@ read_config_file() {
         # Includes namespace-level wildcards (.default, .genai-gateway, etc.) to cover
         # short-form service DNS names (e.g. vllm-service.default) in addition to
         # fully-qualified names (e.g. vllm-service.default.svc.cluster.local).
+        # ── Loopback and every node/fabric address must bypass the proxy ─────
+        # kubectl talks to the apiserver at https://<addr>:6443. If ANY form of
+        # that address goes through the corporate proxy, the proxy answers 403
+        # Forbidden and tasks like "Apply Calico CNI" fail.
+        #
+        # Three sources are needed; each has burned us:
+        #   1. localhost / 127.0.0.1 / ::1 — Python urllib3 (used by Ansible's
+        #      kubernetes modules) matches no_proxy entries LITERALLY, so the name
+        #      "localhost" does NOT cover the literal address "127.0.0.1". Both
+        #      forms must be listed. This caused a live 403 on "Apply Calico CNI".
+        #   2. Every management IP on this host, not just the first — `hostname -I`
+        #      ordering is not stable, and on rack-scale nodes the first address
+        #      may be a fabric IP rather than the mgmt IP.
+        #   3. The fabric prefixes from the generated inventory — in rack-scale
+        #      mode access_ip (and so the apiserver address kubectl is handed) is
+        #      a FABRIC IP, which never appears in `hostname -I` on the other nodes.
+        local _node_ip; _node_ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v '^$' | paste -sd, -)"
+        local _fabric_no_proxy=""
+        local _hosts_yaml="$HOMEDIR/inventory/hosts.yaml"
+        if [[ -f "${_hosts_yaml}" ]]; then
+            # Collect the fabric /16 supernets covering every node's fabric NICs.
+            # A supernet is correct HERE (unlike Calico autodetection, which needs
+            # exact /32s) — no_proxy only decides "skip the proxy", so being wider
+            # than strictly necessary is safe, and it keeps the string short.
+            _fabric_no_proxy="$(python3 -c "
+import ipaddress, sys, yaml
+try:
+    inv = yaml.safe_load(open('${_hosts_yaml}')) or {}
+    nets = []
+    for host in (inv.get('all', {}).get('hosts') or {}).values():
+        for nic in (host.get('node_fabric_nics') or []):
+            ip = nic.get('fabric_ip')
+            if not ip:
+                continue
+            net = str(ipaddress.ip_network(f'{ip}/16', strict=False))
+            if net not in nets:
+                nets.append(net)
+    print(','.join(nets))
+except Exception:
+    print('')
+" 2>/dev/null)"
+        fi
+        # ── Cluster CIDRs ────────────────────────────────────────────────────
+        # Used in every no_proxy string and in the containerd proxy drop-in, and
+        # they must match what kubespray actually builds the cluster with.
+        #
+        # Precedence: agentic-config.cfg > rack-profile.yaml > built-in default.
+        # In rack-scale mode rack-profile.yaml is the single source of truth, so
+        # read it here rather than falling straight through to a hardcoded value —
+        # otherwise no_proxy would carry 10.244/10.96 while the cluster ran on
+        # whatever the profile declared, and in-cluster traffic would be sent to
+        # the corporate proxy. The cfg still wins when explicitly set, so a
+        # non-rack-scale deployment behaves exactly as before.
+        local _profile="$HOMEDIR/inventory/rack-profile.yaml"
+        if [[ -z "${pod_cidr:-}" || -z "${service_cidr:-}" ]] && [[ -f "${_profile}" ]]; then
+            local _profile_cidrs
+            _profile_cidrs="$(python3 -c "
+import yaml
+try:
+    net = (yaml.safe_load(open('${_profile}')) or {}).get('network') or {}
+    print(net.get('pod_cidr', ''))
+    print(net.get('service_cidr', ''))
+except Exception:
+    print(); print()
+" 2>/dev/null)"
+            pod_cidr="${pod_cidr:-$(echo "${_profile_cidrs}" | sed -n 1p)}"
+            service_cidr="${service_cidr:-$(echo "${_profile_cidrs}" | sed -n 2p)}"
+        fi
+        pod_cidr="${pod_cidr:-10.244.0.0/16}"
+        service_cidr="${service_cidr:-10.96.0.0/12}"
+
+        # Cluster CIDRs keep in-cluster pod/service traffic off the corporate proxy.
+        # These MUST match kube_pods_subnet / kube_service_addresses in kubespray.
+
         # Mandatory cluster entries (loopback, apiserver IP, service/pod CIDRs,
         # svc suffixes, node IP) are derived from kubespray's live k8s-cluster.yml
         # by _build_k8s_no_proxy(), defined in lib/system/setup-env.sh which is
@@ -69,17 +150,21 @@ read_config_file() {
         local _k8s_base; _k8s_base="$(_build_k8s_no_proxy)"
         # Namespace-level wildcards cover short-form service DNS names
         # (e.g. vllm-service.default) in addition to fully-qualified ones.
-        local _ns_suffixes=".default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.openshell-system,.flowise"
-        local _k8s_no_proxy="${_k8s_base},${_ns_suffixes}${cluster_url:+,${cluster_url}}"
+        local _ns_suffixes=".default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.openshell-system,.flowise,.vllm-sr"
+        local _k8s_no_proxy="${_k8s_base},${_ns_suffixes}localhost,127.0.0.1,::1,.svc,.svc.cluster.local,.default,.genai-gateway,.redis,.ingress-nginx,.agent-sandbox,.flowise,169.254.0.0/16,${service_cidr},${pod_cidr}${_node_ip:+,${_node_ip}}${_fabric_no_proxy:+,${_fabric_no_proxy}}${cluster_url:+,${cluster_url}}"
         if [[ -n "${no_proxy:-}" ]]; then
             no_proxy="${no_proxy},${_k8s_no_proxy}"
         else
             no_proxy="${_k8s_no_proxy}"
         fi
+        # Collapse duplicates (first occurrence wins) and strip empty fields —
+        # the user's agentic-config.cfg no_proxy commonly already lists localhost
+        # or 127.0.0.1, and a repeated entry makes the string harder to read in
+        # all.yml and in the containerd proxy drop-in.
         # De-duplicate while preserving order. This function runs on every
         # invocation (and read_config_file is called from many entry points), so
         # without this the list grows with repeated entries on each re-run.
-        no_proxy="$(echo "${no_proxy}" | tr ',' '\n' \
+        no_proxy="$(printf '%s' "${no_proxy}" | tr ',' '\n' \
             | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
             | awk 'NF && !seen[$0]++' | paste -sd, -)"
         # Also write the updated no_proxy back to all.yml — BOTH nested (under
@@ -157,11 +242,36 @@ except Exception as e:
             "c" | "cpu")
             compute_platform="c"
             ;;
+            "g" | "gpu")
+            compute_platform="g"
+            ;;
+            "x" | "xpu")
+            compute_platform="xpu"
+            ;;
             *)
-            echo "Invalid value for cpu. It should be 'c' or 'cpu' for CPU."
+            echo "Invalid value for compute_platform. Expected 'c'/'cpu' (CPU), 'g'/'gpu' (GPU), or 'x'/'xpu' (Intel XPU)."
             exit 1
             ;;
         esac
+
+        # Derive GPU values file path from model name prefix gpu-<vendor>-<hwmodel>-*
+        # e.g. gpu-nvidia-b300-llama-70b  →  b300-values.yaml
+        if [[ "$compute_platform" == "g" && -n "${models:-}" ]]; then
+            local _first_model
+            _first_model="$(echo "${models}" | tr ',' ' ' | awk '{print $1}')"
+            if [[ "${_first_model}" == gpu-*-*-* ]]; then
+                local _hw_model
+                _hw_model="$(echo "${_first_model}" | cut -d'-' -f3)"
+                local _gpu_values_candidate="${HOMEDIR}/helm-charts/vllm/${_hw_model}-values.yaml"
+                if [[ -f "${_gpu_values_candidate}" ]]; then
+                    gpu_values_file_path="${REMOTEDIR:-/tmp/helm-charts}/vllm/${_hw_model}-values.yaml"
+                else
+                    echo "WARNING: GPU values file not found: ${_gpu_values_candidate} — deployment may fail"
+                    gpu_values_file_path="${REMOTEDIR:-/tmp/helm-charts}/vllm/${_hw_model}-values.yaml"
+                fi
+            fi
+        fi
+
         case "$deploy_genai_gateway" in
             "no")
                 deploy_genai_gateway="no"                

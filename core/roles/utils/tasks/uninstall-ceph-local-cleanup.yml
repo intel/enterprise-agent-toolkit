@@ -1,0 +1,56 @@
+---
+# Shared Rook/Ceph local-node teardown: stale kernel mounts, on-disk state
+# directories, kubelet CSI plugin dirs, and stale local-path-provisioner PVC
+# dirs. Runs per-host (no run_once) — included on hosts: all / k8s_cluster by
+# both uninstall-ceph-storage.yml and reset.yml.
+
+- name: Find stale CephFS/RBD kernel mounts
+  ansible.builtin.shell: mount | grep -E 'ceph|rbd' | awk '{print $3}' | sort -r
+  register: stale_mounts
+  changed_when: false
+  failed_when: false
+
+- name: Force-unmount stale CephFS/RBD kernel mounts
+  ansible.builtin.command: umount -l -f {{ item }}
+  loop: "{{ stale_mounts.stdout_lines }}"
+  when: stale_mounts.stdout_lines | length > 0
+  failed_when: false
+  changed_when: true
+
+- name: Remove Rook/Ceph local state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /var/lib/rook
+    - /var/lib/ceph
+    - /etc/ceph
+  register: remove_local_data
+
+- name: Remove Rook CSI plugin directories from kubelet
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /var/lib/kubelet/plugins/rook-ceph.rbd.csi.ceph.com
+    - /var/lib/kubelet/plugins/rook-ceph.cephfs.csi.ceph.com
+    - /var/lib/kubelet/plugins_registry/rook-ceph.rbd.csi.ceph.com
+    - /var/lib/kubelet/plugins_registry/rook-ceph.cephfs.csi.ceph.com
+
+- name: Find stale local-path-provisioner PVC directories
+  ansible.builtin.find:
+    paths: /opt/local-path-provisioner
+    patterns: "pvc*"
+    file_type: any
+  register: stale_pvc_dirs
+  failed_when: false
+
+- name: Remove stale local-path-provisioner PVC directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ stale_pvc_dirs.files | default([]) }}"
+
+- name: Display local data removal results
+  debug:
+    msg: "Local Rook/Ceph state removal on {{ inventory_hostname }}: {{ 'Success' if remove_local_data.changed else 'Already clean' }}"

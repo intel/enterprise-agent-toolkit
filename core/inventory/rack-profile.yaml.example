@@ -1,0 +1,265 @@
+# Copy this file to rack-profile.yaml and fill in your site-specific values.
+# After adding GPU nodes, run: bash core/lib/rack-profile-parser.sh --dry-run
+# to verify node_profiles resolve correctly before applying.
+# DO NOT commit rack-profile.yaml — it contains real IPs, hostnames, and topology.
+# After editing, regenerate derived files with: ./core/lib/rack-profile-parser.sh
+#
+# Two fabric topologies are supported. Pick one and delete the other example below.
+#   clos — leaf/spine. Every node's fabric NIC sits on a leaf subnet whose gateway
+#          is the switch SVI. Cross-leaf traffic routes via that gateway.
+#   star — switchless hub-and-spoke. One node is the hub; each spoke is cabled
+#          directly to it over a point-to-point /30. The hub forwards between legs.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Node profiles — define silicon once, reference from individual nodes.
+#
+# Each profile defines the hardware characteristics of a node type. Nodes
+# reference a profile with `profile: <name>`; fields from the profile are
+# merged with node-level fields (node wins on conflict).
+#
+# CPU-only profiles need only node_family (+sku for NRI tuning in GPU-5).
+# GPU profiles also need accelerator and gpu_count.
+#
+# node_family values:  cpu-gnr-ap | cpu-gnr-sp | cpu-cwf | cpu-spr
+# accelerator format:  <vendor>-<model>[-<form>]
+#   e.g. nvidia-b300-hgx  nvidia-h100-sxm  amd-mi300x-oam
+# ─────────────────────────────────────────────────────────────────────────────
+node_profiles:
+  cpu-gnr-ap-6980P:
+    node_family: cpu-gnr-ap
+    sku: 6980P
+  # Example GPU profile — uncomment and fill in when B300 nodes are present:
+  # gpu-b300-hgx:
+  #   node_family: cpu-gnr-sp   # CPU board family (the Xeon on the HGX board)
+  #   sku: 6776P
+  #   accelerator: nvidia-b300-hgx
+  #   gpu_count: 8
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Site metadata
+# ─────────────────────────────────────────────────────────────────────────────
+site:
+  name: <your-site-name>           # e.g. lab201
+  location: "<Building, Room>"
+  description: "<Description of your rack>"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Network fabric
+# ─────────────────────────────────────────────────────────────────────────────
+network:
+  calico_mode: bgp                 # bgp (peer with switches) | vxlan (overlay/switchless)
+  topology: clos                   # clos (leaf/spine, default) | star (switchless)
+  # Applied verbatim to kubespray as kube_pods_subnet / kube_service_addresses
+  # (overriding kubespray's 10.233.x.x defaults) and to no_proxy. Set them here,
+  # not in agentic-config.cfg. Must not overlap each other, a fabric prefix, or
+  # any mgmt_ip — the parser validates this and refuses to generate on conflict.
+  pod_cidr: 10.244.0.0/16
+  service_cidr: 10.96.0.0/12
+  mtu: 9000                        # must match what the switches/NICs actually carry
+
+  # Default on-link prefix length for every fabric NIC. Clos sites share one flat
+  # subnet per leaf (/16 is typical); star sites use per-cable /30s, declared on
+  # each NIC with `prefix:` below.
+  fabric_prefix: 16
+
+  # Netplan renderer for the generated 99-fabric.yaml. Must match what the host
+  # already runs, or the two renderers fight over the interface.
+  #   networkd        — Ubuntu Server default
+  #   NetworkManager  — Ubuntu Desktop, RHEL-family
+  netplan_renderer: networkd
+
+  # Control plane fabric participation:
+  #   false — masters/etcd only have management NICs (typical customer site).
+  #           kube-apiserver and etcd bind to mgmt_ip; workers still use fabric.
+  #   true  — masters have fabric NICs too; they bind to their fabric IP.
+  control_plane_on_fabric: false
+
+  # There is deliberately no mgmt_nic: key. It used to pin Calico's autodetection
+  # interface on control-plane nodes off the fabric. Calico now uses kubespray's
+  # can-reach=$(NODEIP) default, which resolves per-node from the kubelet's
+  # --node-ip, so no interface name is required. A profile that still sets
+  # mgmt_nic parses, but the key is ignored and the parser prints a NOTE.
+
+  # ── Clos only ──────────────────────────────────────────────────────────────
+  # Leaf switches. Each fabric NIC references one by name.
+  #   peer_ip       — switch SVI, used as the gateway and the Calico BGP peer.
+  #                   Leave as "TBD" until confirmed; routes/peers are then skipped.
+  #   fabric_subnet — that leaf's subnet, used to generate cross-leaf routes.
+  # Delete this whole block for topology: star.
+  leafs:
+    - name: leaf1
+      model: "<switch model>"
+      asn: 65005
+      peer_ip: 10.202.0.1
+      fabric_subnet: 10.202.0.0/16
+    - name: leaf2
+      model: "<switch model>"
+      asn: 65004
+      peer_ip: 10.201.0.1
+      fabric_subnet: 10.201.0.0/16
+
+  bgp:
+    cluster_asn: 65100             # AS number assigned to all cluster nodes
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SSH access defaults for non-bastion nodes.
+# Override per node with ansible_user / ansible_ssh_private_key_file.
+# ─────────────────────────────────────────────────────────────────────────────
+access:
+  ansible_user: ubuntu
+  ansible_ssh_private_key_file: ~/.ssh/id_ed25519
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Racks and nodes
+#
+# `racks` is a MAPPING of rack name → rack, and each rack's `nodes` is a MAPPING
+# of inventory name → node. The inventory name (master1, gnr01, …) is what
+# appears in hosts.yaml and what storage.nodes[].name references.
+#
+# Per-node keys:
+#   hostname       — actual system hostname
+#   mgmt_ip        — management IP; must be unique across the profile
+#   local: true    — this node is the Ansible bastion (local connection)
+#   roles          — see the role reference in docs/rack-scale-deployment.md
+#   profile        — name from node_profiles; silicon fields are inherited
+#   node_family    — inline override (cpu-gnr-ap|cpu-gnr-sp|cpu-cwf|cpu-spr)
+#   sku            — CPU model (6980P, 6780E, etc.) — label only for now
+#   accelerator    — GPU: vendor-model[-form] e.g. nvidia-b300-hgx
+#   gpu_count      — required when accelerator is set; integer (e.g. 8)
+#   rdma_nics      — list of RDMA NIC names; warning if hgx form and absent
+#   fabric_nics    — one entry per fabric NIC (see below)
+#   fabric_router  — star only; marks the hub that forwards between legs
+#   ceph_fabric_nic — overrides storage.ceph_fabric_nic for this node
+#   ansible_user / ansible_ssh_private_key_file — override access defaults
+#
+# Per-NIC keys:
+#   nic        — kernel interface name (varies across node families)
+#   fabric_ip  — IP to configure on that NIC; must be unique across the profile
+#   prefix     — on-link prefix for this NIC; defaults to network.fabric_prefix
+#   leaf       — clos only; must match a name in network.leafs
+#   peer       — star only; inventory name of the node at the other end of the cable
+#
+# The FIRST fabric_nic is the primary — it becomes ip/access_ip for workers (and
+# for masters when control_plane_on_fabric=true). Nodes with no fabric_nics fall
+# back to mgmt_ip.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Example A: clos ──────────────────────────────────────────────────────────
+racks:
+  rack-infra:
+    description: "Control plane and storage"
+    nodes:
+      master1:
+        hostname: <master1-hostname>
+        mgmt_ip: 172.18.168.1
+        local: true
+        roles: [kube_control_plane, etcd]
+        fabric_nics:
+          - nic: ens786f0np0
+            fabric_ip: 10.201.1.1
+            leaf: leaf2
+
+      ceph1:
+        hostname: <storage1-hostname>
+        mgmt_ip: 172.18.168.7
+        roles: [kube_node, storage]
+        fabric_nics:
+          - nic: ens786f0np0
+            fabric_ip: 10.201.2.1
+            leaf: leaf2
+
+  rack-compute:
+    description: "GPU/accelerator workers"
+    nodes:
+      gnr01:
+        hostname: <worker1-hostname>
+        mgmt_ip: 172.18.148.1
+        profile: cpu-gnr-ap-6980P    # silicon fields come from node_profiles
+        roles: [kube_node]
+        fabric_nics:
+          - nic: ens6f0              # primary — becomes ip/access_ip
+            fabric_ip: 10.201.148.1
+            leaf: leaf2
+          - nic: ens28f0             # secondary — dual-homed, gets ECMP sysctl
+            fabric_ip: 10.202.148.1
+            leaf: leaf1
+      # Example GPU node — add when B300 hardware is present:
+      # b300-node1:
+      #   hostname: <b300-hostname>
+      #   mgmt_ip: 172.18.148.20
+      #   profile: gpu-b300-hgx
+      #   roles: [kube_node]
+      #   fabric_nics:
+      #     - nic: ens6f0
+      #       fabric_ip: 10.201.148.5
+      #       leaf: leaf2
+      #   rdma_nics: [ens1f0, ens1f1]   # physical wiring varies
+
+# ── Example B: star (switchless) ─────────────────────────────────────────────
+# Set network.topology: star, delete network.leafs, and drop `leaf:` from NICs.
+# Each cable is its own /30. Exactly one node must set fabric_router: true; the
+# parser gives every spoke a static route to the fabric supernet via the hub leg
+# it shares a subnet with, and grants the hub ip_forward.
+#
+# racks:
+#   rack-infra:
+#     nodes:
+#       master1:
+#         hostname: <master1-hostname>
+#         mgmt_ip: 172.18.168.1
+#         local: true
+#         roles: [kube_control_plane, etcd, storage]
+#         fabric_nics:
+#           - nic: enp167s0np0
+#             fabric_ip: 10.201.1.1
+#             prefix: 30
+#             peer: worker1
+#       master2:
+#         hostname: <master2-hostname>
+#         mgmt_ip: 172.18.168.2
+#         roles: [kube_control_plane, etcd, storage]
+#         fabric_nics:
+#           - nic: enp167s0np0
+#             fabric_ip: 10.201.1.5
+#             prefix: 30
+#             peer: worker1
+#
+#   rack-compute:
+#     nodes:
+#       worker1:                       # the hub — one NIC per spoke
+#         hostname: <worker1-hostname>
+#         mgmt_ip: 172.18.168.10
+#         roles: [kube_node]
+#         fabric_router: true
+#         fabric_nics:
+#           - nic: enp151s0np0
+#             fabric_ip: 10.201.1.2
+#             prefix: 30
+#             peer: master1
+#           - nic: enp185s0f0np0
+#             fabric_ip: 10.201.1.6
+#             prefix: 30
+#             peer: master2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Storage — only needed when some node carries the `storage` role
+# ─────────────────────────────────────────────────────────────────────────────
+storage:
+  # Fabric NIC carrying Ceph public + cluster traffic. Site-wide default;
+  # override per node with ceph_fabric_nic when interface names differ.
+  # Setting this enables Rook's 'provider: host', which is what actually puts Ceph
+  # on the fabric — daemons bind to the node IP, i.e. the primary fabric IP. The
+  # name is not handed to Rook, but it IS validated against every storage node's
+  # real NICs, so it must exist on all of them.
+  ceph_fabric_nic: ens786f0np0
+
+  # Applied as Rook's network.addressRanges -> Ceph public_network/cluster_network.
+  ceph_public_network: 10.201.0.0/16    # client-to-OSD traffic
+  ceph_cluster_network: 10.201.0.0/16   # OSD-to-OSD replication
+
+  # `name` must match an inventory name under racks.*.nodes.
+  # Ceph WIPES every device listed here — verify with lsblk first.
+  # nvme0n1 is usually the OS disk. Never list it.
+  nodes:
+    - name: ceph1
+      devices: [nvme1n1, nvme2n1, nvme3n1]

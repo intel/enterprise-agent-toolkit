@@ -69,6 +69,36 @@
         (k8s_nodes.resources | length == 1 and worker_nodes | length > 0)
       run_once: true
 
+    - name: Apply silicon labels from rack-profile hostvars
+      kubernetes.core.k8s:
+        state: patched
+        kind: Node
+        name: "{{ item }}"
+        definition:
+          metadata:
+            labels: >-
+              {{
+                ({
+                  'cpu-gen': hostvars[item]['node_family'] | regex_replace('^cpu-', '')
+                } if hostvars[item]['node_family'] is defined else {})
+                | combine(
+                  {'cpu-sku': hostvars[item]['node_sku']}
+                  if hostvars[item]['node_sku'] is defined else {}
+                )
+                | combine(
+                  {
+                    'accelerator':    hostvars[item]['node_gpu_model'],
+                    'gpu-vendor':     hostvars[item]['node_gpu_vendor'],
+                    'gpu-form':       hostvars[item]['node_gpu_form'] | default(''),
+                  }
+                  if hostvars[item]['node_accelerator'] is defined else {}
+                )
+              }}
+      loop: "{{ groups['all'] }}"
+      when:
+        - hostvars[item]['node_family'] is defined or hostvars[item]['node_accelerator'] is defined
+      run_once: true
+
     - name: Verify node labels
       kubernetes.core.k8s_info:
         kind: Node

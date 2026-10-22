@@ -23,13 +23,13 @@ run_reset_playbook() {
 
 reset_cluster() {
     echo "-----------------------------------------------------------"
-    echo "|     Purge Cluster! Intel AI for Enterprise Agent Toolkit!              |"
+    echo "|     Purge Cluster! Intel® AI for Enterprise Agent Toolkit!              |"
     echo "-----------------------------------------------------------"
-    echo -e "${YELLOW}NOTICE: You are initiating a reset of the existing Intel AI for Enterprise Agent Toolkit."
+    echo -e "${YELLOW}NOTICE: You are initiating a reset of the existing Intel® AI for Enterprise Agent Toolkit."
     echo -e "This action will erase all current configurations, services and resources. Potentially causing service interruptions and data loss. This operation cannot be undone. ${NC}"
     read -p "Are you sure you want to proceed? (yes/no): " confirm_reset            
     if [[ "$confirm_reset" =~ ^(yes|y|Y)$ ]]; then
-        echo "Resetting the existing Intel AI for Enterprise Agent Toolkit..."
+        echo "Resetting the existing Intel® AI for Enterprise Agent Toolkit..."
         skip_check="true" 
         purge_inference_cluster="purging"        
         invoke_prereq_workflows "$@"
