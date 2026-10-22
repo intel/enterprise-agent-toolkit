@@ -1,0 +1,24 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Only agents' identity proxies may call the server; 15008 is the ambient mesh's HBONE port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mcp-server.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "mcp-server.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "mcp-server.fullname" . }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {app.kubernetes.io/managed-by: agent-operator}
+          podSelector:
+            matchLabels: {intel-stack.io/component: identity-proxy}
+      ports:
+        - {protocol: TCP, port: {{ .Values.port }}}
+        - {protocol: TCP, port: 15008}

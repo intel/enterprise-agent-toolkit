@@ -1,0 +1,5 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+- name: "openclaw_operator | Dispatch action: {{ component_action | default('install') }}"
+  ansible.builtin.include_tasks: "{{ component_action | default('install') }}.yaml"

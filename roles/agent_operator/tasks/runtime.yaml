@@ -1,0 +1,31 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# The operator creates each agent's memory schema; the memory server reads the same Secret.
+
+- name: "agent_operator | runtime | Read the pgvector credentials"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: "{{ claw_pgvector_secret }}"
+    namespace: "{{ claw_pgvector_namespace }}"
+  register: _ao_pg
+  no_log: true
+  failed_when: >-
+    _ao_pg.resources | default([]) | length == 0 or
+    'POSTGRES_DSN' not in (_ao_pg.resources[0].data | default({}))
+
+- name: "agent_operator | runtime | Write the runtime Secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: "{{ claw_runtime_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: agent-operator-role
+      data:
+        pgvector-dsn: "{{ _ao_pg.resources[0].data.POSTGRES_DSN }}"
+  no_log: true

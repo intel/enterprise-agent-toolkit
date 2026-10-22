@@ -1,0 +1,36 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agent requests (~65 KB) exceed Envoy's 32 KiB buffer; add a policy only if none exists.
+
+- name: "agent_operator | ai-gateway | Find request policies on the inference gateway"
+  kubernetes.core.k8s_info:
+    api_version: gateway.envoyproxy.io/v1alpha1
+    kind: ClientTrafficPolicy
+    namespace: "{{ claw_ai_gateway_namespace }}"
+  register: _ao_ctp
+
+- name: "agent_operator | ai-gateway | Raise the request buffer limit"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: ClientTrafficPolicy
+      metadata:
+        name: claw-ai-gateway
+        namespace: "{{ claw_ai_gateway_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: agent-operator-role
+      spec:
+        targetRefs:
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            name: "{{ claw_ai_gateway_name }}"
+        connection:
+          bufferLimit: "{{ claw_ai_gateway_buffer_limit }}"
+  when: >-
+    _ao_ctp.resources | default([])
+    | rejectattr('metadata.name', 'eq', 'claw-ai-gateway')
+    | selectattr('spec.targetRefs', 'defined')
+    | map(attribute='spec.targetRefs') | flatten
+    | selectattr('name', 'eq', claw_ai_gateway_name) | list | length == 0

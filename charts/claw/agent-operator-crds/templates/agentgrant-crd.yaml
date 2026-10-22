@@ -1,0 +1,63 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Time-limited sharing of an agent: written by agent-backend for the owner, read at every request.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentgrants.intel-stack.io
+  labels:
+    app.kubernetes.io/name: agent-operator
+    app.kubernetes.io/part-of: enterprise-agent-toolkit
+spec:
+  group: intel-stack.io
+  names:
+    kind: AgentGrant
+    listKind: AgentGrantList
+    plural: agentgrants
+    singular: agentgrant
+    shortNames: [agr]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - {name: Agent, type: string, jsonPath: .spec.agentRef}
+        - {name: Grantee, type: string, jsonPath: .spec.grantee}
+        - {name: Capabilities, type: string, jsonPath: .spec.capabilities}
+        - {name: Expires, type: string, jsonPath: .spec.expiresAt}
+        - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [agentRef, grantor, grantee, capabilities, expiresAt]
+              properties:
+                agentRef:
+                  type: string
+                  maxLength: 63
+                  description: The Agent, in this namespace, being shared.
+                grantor:
+                  type: string
+                  maxLength: 254
+                  description: The owner who granted; a grant from anyone else confers nothing.
+                grantee:
+                  type: string
+                  maxLength: 254
+                  description: Email of the user the agent is shared with.
+                capabilities:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    enum: [view, suspend-resume, converse, credential, delete, delegate]
+                tools:
+                  type: array
+                  description: Subset of the agent's skills the grantee may use; empty means all.
+                  items:
+                    type: string
+                expiresAt:
+                  type: string
+                  format: date-time

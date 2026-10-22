@@ -1,0 +1,126 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# The operator's own service account in the agent realm, via kcadm in the Keycloak pod.
+
+- name: "agent_operator | keycloak | Find the Keycloak server pod"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ claw_keycloak_namespace }}"
+    label_selectors: ["app=keycloak"]
+    field_selectors: ["status.phase=Running"]
+  register: _ao_kc_pod
+  failed_when: _ao_kc_pod.resources | default([]) | length == 0
+
+- name: "agent_operator | keycloak | Read the admin credentials"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ claw_keycloak_namespace }}"
+    name: "{{ claw_keycloak_admin_secret }}"
+  register: _ao_kc_admin
+  failed_when: _ao_kc_admin.resources | default([]) | length == 0
+  no_log: true
+
+- name: "agent_operator | keycloak | Configure the client"
+  vars:
+    _kc_pod: "{{ _ao_kc_pod.resources[0].metadata.name }}"
+    _kcadm: /opt/keycloak/bin/kcadm.sh
+    # kcadm takes --config only after the subcommand.
+    _kccfg: "--config /tmp/kcadm-{{ claw_keycloak_operator_client }}.config"
+    _sa_user: "service-account-{{ claw_keycloak_operator_client }}"
+  block:
+    - name: "agent_operator | keycloak | Log in"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} config credentials {{ _kccfg }} --server http://localhost:8080 --realm master
+          --user {{ _ao_kc_admin.resources[0].data.username | b64decode }}
+          --password {{ _ao_kc_admin.resources[0].data.password | b64decode }}
+      changed_when: false
+      no_log: true
+
+    - name: "agent_operator | keycloak | Check the realm exists"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: "{{ _kcadm }} get realms/{{ claw_keycloak_realm }} {{ _kccfg }} --fields realm"
+      changed_when: false
+
+    - name: "agent_operator | keycloak | Look up the client"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} get clients {{ _kccfg }} -r {{ claw_keycloak_realm }}
+          -q clientId={{ claw_keycloak_operator_client }} --fields id --format csv --noquotes
+      register: _ao_kc_lookup
+      changed_when: false
+
+    - name: "agent_operator | keycloak | Create the client"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} create clients {{ _kccfg }} -r {{ claw_keycloak_realm }} -i
+          -s clientId={{ claw_keycloak_operator_client }} -s enabled=true -s publicClient=false
+          -s serviceAccountsEnabled=true -s standardFlowEnabled=false
+          -s directAccessGrantsEnabled=false
+      register: _ao_kc_created
+      when: (_ao_kc_lookup.stdout | trim) == ""
+
+    - name: "agent_operator | keycloak | List the service account's realm-management roles"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} get-roles {{ _kccfg }} -r {{ claw_keycloak_realm }} --uusername {{ _sa_user }}
+          --cclientid realm-management --fields name --format csv --noquotes
+      register: _ao_kc_roles
+      changed_when: false
+
+    - name: "agent_operator | keycloak | Grant manage-clients"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} add-roles {{ _kccfg }} -r {{ claw_keycloak_realm }} --uusername {{ _sa_user }}
+          --cclientid realm-management --rolename manage-clients
+      when: "'manage-clients' not in _ao_kc_roles.stdout_lines"
+
+    - name: "agent_operator | keycloak | Read the client secret"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: >-
+          {{ _kcadm }} get clients/{{ (_ao_kc_created.stdout | default('') or _ao_kc_lookup.stdout) | trim }}/client-secret {{ _kccfg }}
+          -r {{ claw_keycloak_realm }} --fields value --format csv --noquotes
+      register: _ao_kc_secret
+      changed_when: false
+      no_log: true
+
+  always:
+    - name: "agent_operator | keycloak | Remove the admin session"
+      kubernetes.core.k8s_exec:
+        namespace: "{{ claw_keycloak_namespace }}"
+        pod: "{{ _kc_pod }}"
+        command: "rm -f /tmp/kcadm-{{ claw_keycloak_operator_client }}.config"
+      changed_when: false
+      failed_when: false
+
+- name: "agent_operator | keycloak | Store the operator credentials"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ claw_keycloak_credentials_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+        labels:
+          app.kubernetes.io/name: agent-operator
+      type: Opaque
+      stringData:
+        client-id: "{{ claw_keycloak_operator_client }}"
+        client-secret: "{{ _ao_kc_secret.stdout | trim }}"
+  no_log: true
