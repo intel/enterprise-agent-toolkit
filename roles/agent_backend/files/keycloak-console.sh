@@ -2,14 +2,15 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 # The console's sign-in client, run with kcadm inside the Keycloak pod. Idempotent.
-# Arguments: realm admin-user admin-password client origin audience
+# Arguments: realm admin-user client origin audience; the admin password on stdin.
 set -eu
-REALM=$1 ADMIN=$2 PASS=$3 CLIENT=$4 ORIGIN=$5 AUD=$6
+REALM=$1 ADMIN=$2 CLIENT=$3 ORIGIN=$4 AUD=$5
+IFS= read -r KC_CLI_PASSWORD || :; export KC_CLI_PASSWORD
 KC=/opt/keycloak/bin/kcadm.sh
 CFG=/tmp/kcadm-agent-console.config
 trap 'rm -f "$CFG"' EXIT
 k() { sub=$1; shift; "$KC" "$sub" --config "$CFG" -r "$REALM" "$@"; }
-"$KC" config credentials --config "$CFG" --server http://localhost:8080 --realm master --user "$ADMIN" --password "$PASS" >/dev/null
+"$KC" config credentials --config "$CFG" --server http://localhost:8080 --realm master --user "$ADMIN" >/dev/null
 
 # Authorization code with PKCE only; callbacks for the console and each agent dashboard.
 cid=$(k get clients -q "clientId=$CLIENT" --fields id --format csv --noquotes)
