@@ -681,7 +681,9 @@ def _gw_objects(name, spec):
             "authorization": {"defaultAction": "Deny", "rules": [{
                 "name": "owner-and-grantees", "action": "Allow",
                 "principal": {"jwt": {"provider": "keycloak", "scopes": ["agent:converse"],
-                                      "claims": [{"name": "email", "values": _gw_allowed(name, spec)}]}}}]}}}
+                                      # Keycloak's email_verified is a boolean, which this policy cannot match.
+                                      "claims": [{"name": "email", "values": _gw_allowed(name, spec)},
+                                                 {"name": "email_verified_string", "values": ["true"]}]}}}]}}}
     grant = {
         "apiVersion": "gateway.networking.k8s.io/v1beta1", "kind": "ReferenceGrant",
         "metadata": {"name": "agent-gateway-route", "namespace": agent_ns, "labels": MANAGED_BY},

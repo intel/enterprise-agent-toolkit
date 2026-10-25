@@ -30,6 +30,17 @@ audience
     -s protocolMapper=oidc-audience-mapper -s "config.\"included.custom.audience\"=$AUD" \
     -s 'config."access.token.claim"=true' -s 'config."id.token.claim"=false' >/dev/null && echo "CREATED mapper audience" ;;
 esac
+# email_verified as a string: the agent dashboards' gateway policy can match only string claims.
+case "
+$mappers
+" in *"
+email-verified-string
+"*) ;; *) k create "clients/$cid/protocol-mappers/models" -s name=email-verified-string -s protocol=openid-connect \
+    -s protocolMapper=oidc-usermodel-property-mapper -s 'config."user.attribute"=emailVerified' \
+    -s 'config."claim.name"=email_verified_string' -s 'config."jsonType.label"=String' \
+    -s 'config."access.token.claim"=true' -s 'config."id.token.claim"=false' -s 'config."userinfo.token.claim"=false' \
+    >/dev/null && echo "CREATED mapper email-verified-string" ;;
+esac
 # A browser session cannot ask for scopes per call, so the console's tokens carry all of them.
 k get client-scopes --fields id,name --format csv --noquotes | while IFS=, read -r id name; do
   case "$name" in agent:read|agent:write|agent:converse|agent:grant) k update "clients/$cid/default-client-scopes/$id" ;; esac

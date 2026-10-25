@@ -57,7 +57,8 @@ class RouteTest(unittest.TestCase):
         p = self.policy["spec"]
         self.assertEqual(p["authorization"]["defaultAction"], "Deny")
         self.assertEqual(p["authorization"]["rules"][0]["principal"]["jwt"]["claims"],
-                         [{"name": "email", "values": ["alice@example.com"]}])
+                         [{"name": "email", "values": ["alice@example.com"]},
+                          {"name": "email_verified_string", "values": ["true"]}])
         self.assertEqual(p["authorization"]["rules"][0]["principal"]["jwt"]["scopes"], ["agent:converse"])
         self.assertEqual(p["jwt"]["providers"][0]["claimToHeaders"], [{"claim": "email", "header": "x-gw-user"}])
         self.assertEqual(p["jwt"]["providers"][0]["audiences"], ["agent-backend"])
