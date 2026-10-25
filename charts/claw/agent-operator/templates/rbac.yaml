@@ -34,7 +34,7 @@ rules:
     resources: ["httproutes", "referencegrants"]
     verbs: ["get", "create", "patch", "delete"]
   - apiGroups: ["gateway.envoyproxy.io"]
-    resources: ["securitypolicies"]
+    resources: ["securitypolicies", "backendtrafficpolicies"]
     verbs: ["get", "create", "patch", "delete"]
   - apiGroups: ["openclaw.rocks"]
     resources: ["openclawinstances"]

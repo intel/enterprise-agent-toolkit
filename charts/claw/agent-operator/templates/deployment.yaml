@@ -58,6 +58,7 @@ spec:
             - {name: GW_GATEWAY_SECTION, value: {{ .Values.gatewayRoute.gateway.sectionName | quote }}}
             - {name: GW_OIDC_CLIENT_ID, value: {{ .Values.gatewayRoute.oidcClientId | quote }}}
             - {name: GW_OIDC_SECRET, value: {{ .Values.gatewayRoute.oidcSecret | quote }}}
+            - {name: GW_DASHBOARD_SESSION, value: {{ .Values.gatewayRoute.dashboardSession | quote }}}
             - {name: GATEWAY_TRUSTED_PROXIES, value: {{ .Values.gatewayRoute.trustedProxies | quote }}}
             - {name: MCP_AUDIENCES, value: {{ .Values.keycloak.mcpAudiences | quote }}}
             - name: KEYCLOAK_CLIENT_ID

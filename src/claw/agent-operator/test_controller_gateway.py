@@ -43,7 +43,7 @@ class AllowedTest(unittest.TestCase):
 class RouteTest(unittest.TestCase):
     def setUp(self):
         _with_grants([])
-        self.route, self.policy, self.grant = C._gw_objects("lab", spec("alice"))
+        self.route, self.policy, self.session, self.grant = C._gw_objects("lab", spec("alice"))
 
     def test_the_route_is_the_agent_path_and_strips_the_user_s_credentials(self):
         rules = self.route["spec"]["rules"]
@@ -65,6 +65,14 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(p["oidc"]["redirectURL"], "https://agents.example.com/gw/user-alice/lab/oauth2/callback")
         self.assertTrue(p["oidc"]["passThroughAuthHeader"])
         self.assertEqual(p["oidc"]["cookieConfig"], {"sameSite": "Lax"})
+
+    def test_an_open_dashboard_is_closed_after_the_session_limit(self):
+        # Envoy checks the policy only when the websocket opens; this bounds a revoked user's access.
+        self.assertEqual([r["name"] for r in self.route["spec"]["rules"]], ["chat", "dashboard"])
+        s = self.session["spec"]
+        self.assertEqual(s["targetRefs"], [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute",
+                                            "name": "agent-alice-lab", "sectionName": "dashboard"}])
+        self.assertEqual(s["timeout"]["http"]["maxStreamDuration"], C.GW_DASHBOARD_SESSION)
 
     def test_only_this_route_may_reach_only_this_service(self):
         self.assertEqual(self.grant["metadata"]["namespace"], "agent-alice-lab")
@@ -100,7 +108,7 @@ class ApplyOrderTest(unittest.TestCase):
 
     def test_the_policy_is_written_before_the_route(self):
         api = self._apply(policy_fails=False)
-        self.assertEqual(api.written, ["SecurityPolicy", "HTTPRoute", "ReferenceGrant"])
+        self.assertEqual(api.written, ["SecurityPolicy", "HTTPRoute", "BackendTrafficPolicy", "ReferenceGrant"])
         self.assertEqual(api.deleted, [])
 
     def test_no_route_is_left_without_its_policy(self):

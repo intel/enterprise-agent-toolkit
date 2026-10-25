@@ -167,7 +167,9 @@ platform gateway in your browser.
 3. **Open dashboard** shows the agent's OpenClaw Control UI; **Chat** talks to it. Both go to
    `https://agents.<domain>/gw/user-<you>/<name>/`.
 4. Under **Share access**, grant another user `converse` for an hour. They can now open the
-   dashboard; anyone else gets `403 RBAC: access denied`. **Revoke** ends it within seconds.
+   dashboard; anyone else gets `403 RBAC: access denied`. **Revoke** refuses their next request
+   within seconds; a dashboard they already have open is closed within `claw_dashboard_session`
+   (5 minutes by default).
 
 ---
 

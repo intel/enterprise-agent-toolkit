@@ -115,6 +115,9 @@ GW_GATEWAY = {"name": os.environ.get("GW_GATEWAY_NAME", "eg-gateway"),
 GW_OIDC_CLIENT_ID = os.environ.get("GW_OIDC_CLIENT_ID", "agent-console")
 GW_OIDC_SECRET = os.environ.get("GW_OIDC_SECRET", "agent-console-oidc")
 GW_AUDIENCE = os.environ.get("GW_AUDIENCE", "agent-backend")
+# Envoy authorizes a dashboard websocket only when it opens, so it is closed after this long
+# and the dashboard reconnects through the policy: the most a revoked user keeps it.
+GW_DASHBOARD_SESSION = os.environ.get("GW_DASHBOARD_SESSION", "5m")
 GW_PORT = 18789
 
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "").rstrip("/")
@@ -638,7 +641,7 @@ def _gw_allowed(name, spec):
 
 
 def _gw_objects(name, spec):
-    """HTTPRoute + SecurityPolicy (operator namespace) and ReferenceGrant (agent namespace)."""
+    """HTTPRoute, SecurityPolicy, BackendTrafficPolicy (operator namespace) and ReferenceGrant (agent namespace)."""
     agent_ns, path = _agent_ns(name, spec), _gw_path(name, spec)
     labels = {**MANAGED_BY, AGENT_LABEL: name}
     meta = {"name": agent_ns, "namespace": OPERATOR_NAMESPACE, "labels": labels}
@@ -650,11 +653,11 @@ def _gw_objects(name, spec):
             "parentRefs": [GW_GATEWAY], "hostnames": [GW_HOSTNAME],
             "rules": [
                 # The chat API is served at the root, the dashboard under its base path.
-                {"matches": [{"path": {"type": "PathPrefix", "value": f"{path}/v1/"}}],
+                {"name": "chat", "matches": [{"path": {"type": "PathPrefix", "value": f"{path}/v1/"}}],
                  "filters": [no_credentials, {"type": "URLRewrite", "urlRewrite": {
                      "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/v1/"}}}],
                  "backendRefs": backend},
-                {"matches": [{"path": {"type": "PathPrefix", "value": path}}],
+                {"name": "dashboard", "matches": [{"path": {"type": "PathPrefix", "value": path}}],
                  "filters": [no_credentials], "backendRefs": backend,
                  "timeouts": {"request": "0s"}},
             ]}}
@@ -686,16 +689,22 @@ def _gw_objects(name, spec):
                                       # Keycloak's email_verified is a boolean, which this policy cannot match.
                                       "claims": [{"name": "email", "values": _gw_allowed(name, spec)},
                                                  {"name": "email_verified_string", "values": ["true"]}]}}}]}}}
+    session = {
+        "apiVersion": "gateway.envoyproxy.io/v1alpha1", "kind": "BackendTrafficPolicy", "metadata": meta,
+        "spec": {"targetRefs": [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": agent_ns,
+                                 "sectionName": "dashboard"}],
+                 "timeout": {"http": {"maxStreamDuration": GW_DASHBOARD_SESSION}}}}
     grant = {
         "apiVersion": "gateway.networking.k8s.io/v1beta1", "kind": "ReferenceGrant",
         "metadata": {"name": "agent-gateway-route", "namespace": agent_ns, "labels": MANAGED_BY},
         "spec": {"from": [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "namespace": OPERATOR_NAMESPACE}],
                  "to": [{"group": "", "kind": "Service", "name": name}]}}
-    return route, policy, grant
+    return route, policy, session, grant
 
 
 _GW_KINDS = {"HTTPRoute": ("gateway.networking.k8s.io", "v1", "httproutes"),
              "SecurityPolicy": ("gateway.envoyproxy.io", "v1alpha1", "securitypolicies"),
+             "BackendTrafficPolicy": ("gateway.envoyproxy.io", "v1alpha1", "backendtrafficpolicies"),
              "ReferenceGrant": ("gateway.networking.k8s.io", "v1beta1", "referencegrants")}
 
 
@@ -725,15 +734,16 @@ def _put_custom(obj, logger):
 def _apply_gateway_route(name, spec, logger):
     """The policy goes first: a route without it would let anyone reach the agent."""
     if GW_HOSTNAME and KEYCLOAK_ISSUER:
-        route, policy, grant = _gw_objects(name, spec)
+        route, policy, session, grant = _gw_objects(name, spec)
         if not _put_custom(policy, logger):
             _delete_gateway_route(name, spec, logger, kinds=("HTTPRoute",))
             return
         _put_custom(route, logger)
+        _put_custom(session, logger)
         _put_custom(grant, logger)
 
 
-def _delete_gateway_route(name, spec, logger, kinds=("SecurityPolicy", "HTTPRoute")):
+def _delete_gateway_route(name, spec, logger, kinds=("SecurityPolicy", "BackendTrafficPolicy", "HTTPRoute")):
     agent_ns = _agent_ns(name, spec)
     for kind in kinds:
         group, version, plural = _GW_KINDS[kind]

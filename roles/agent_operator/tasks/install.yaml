@@ -85,6 +85,7 @@
         hostname: "{{ claw_console_hostname if claw_console_enabled | bool else '' }}"
         oidcClientId: "{{ claw_console_oidc_client }}"
         oidcSecret: "{{ claw_console_oidc_secret }}"
+        dashboardSession: "{{ claw_dashboard_session }}"
         trustedProxies: "{{ claw_gateway_trusted_proxies }}"
         credentialsSecret: "{{ claw_keycloak_credentials_secret }}"
       agents:

@@ -48,6 +48,9 @@ claw_console_enabled: true
 claw_console_oidc_client: "agent-console"
 # checkov:skip=CKV_SECRET_6: a Secret name, not a value
 claw_console_oidc_secret: "agent-console-oidc"
+# An open dashboard is closed after this long and reconnects through the access check,
+# so a revoked or expired user loses it within this time.
+claw_dashboard_session: "5m"
 # Addresses the agent gateway trusts to name the user: the platform gateway's pods.
 claw_gateway_trusted_proxies: "{{ kubernetes_cluster_cidr | default('10.233.64.0/18') }}"
 

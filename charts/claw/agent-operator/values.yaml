@@ -27,6 +27,8 @@ runtimeSecret: agent-operator-runtime
 autoSuspendIdleMinutes: 240
 # Each agent's dashboard at https://<hostname>/gw/<owner ns>/<name>/, behind the console's
 # sign-in client; empty hostname = no routes. trustedProxies: the gateway pods' addresses.
+# dashboardSession: how long a dashboard websocket stays open before it reconnects through
+# the policy, so the longest a revoked user keeps an open dashboard.
 gatewayRoute:
   hostname: ""
   gateway:
@@ -35,6 +37,7 @@ gatewayRoute:
     sectionName: https
   oidcClientId: agent-console
   oidcSecret: agent-console-oidc
+  dashboardSession: 5m
   trustedProxies: ""
 
 # The API backend's ServiceAccount (same namespace), granted Secret access per agent namespace.
