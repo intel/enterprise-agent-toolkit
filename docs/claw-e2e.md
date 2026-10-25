@@ -57,8 +57,8 @@ curl -s localhost:18789/v1/chat/completions \
   -d '{"model":"openclaw","messages":[{"role":"user","content":"What is the capital of France?"}]}'
 ```
 
-The answer (`Paris`) arrives after about 30 seconds on CPU inference. Without the token the
-request returns `401`. Stop the port-forward with `kill %1`.
+The answer is `Paris`; how long it takes depends on the model and the hardware. Without the
+token the request returns `401`. Stop the port-forward with `kill %1`.
 
 ### 4. Suspend and resume
 
@@ -110,7 +110,8 @@ The validate summary ends with:
 The agent calls the inference layer's gateway, the `ai-gateway` Service in
 `envoy-gateway-system`. The URL is set per instance, in `models.providers.ai-gateway.baseUrl`
 of [the example](examples/openclaw-instance.yaml); change it there (and the egress rule under
-`security.networkPolicy`) if your gateway has another name or namespace. From any pod in a
+`security.networkPolicy`) if your gateway has another name or namespace. Agents created through
+the operator take it from `claw_model_base_url` instead. From any pod in a
 mesh-enrolled namespace:
 
 ```bash

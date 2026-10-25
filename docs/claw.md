@@ -6,6 +6,10 @@ Claw runs [OpenClaw](https://github.com/openclaw/openclaw) agents as long-lived 
 workloads on the Agent Toolkit, answered by the models the inference layer serves. It is
 off by default (`claw_enabled: false`).
 
+This is the reference for platform operators: what claw installs, how to enable and
+configure it, and its security model. To check an install step by step, with the expected
+output, follow [claw-e2e.md](claw-e2e.md).
+
 **Contents:** [Components](#components) · [Enable](#enable) · [Create an agent](#create-an-agent) ·
 [Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
 [Configuration](#configuration) · [Security](#security) · [Validate and remove](#validate-and-remove) ·
@@ -107,7 +111,10 @@ automatically. The chat walkthrough is in [claw-e2e.md](claw-e2e.md#create-an-ag
 Without the agent operator, an `OpenClawInstance` can be applied by hand:
 [`examples/openclaw-instance.yaml`](examples/openclaw-instance.yaml) runs one in namespace
 `claw-demo`. It shows the settings the platform requires: the ambient-mesh label, egress on
-port `15008` to the inference gateway, and the model's context window. The walkthrough is in
+port `15008` to the inference gateway, and the model's context window. It also shows,
+commented out, how to place the instance on particular nodes by node label
+(`availability.nodeSelector`, `affinity`, `tolerations`); agents created through the operator
+have no such setting yet. The walkthrough is in
 [claw-e2e.md](claw-e2e.md#run-an-openclaw-instance).
 
 ---
@@ -189,5 +196,5 @@ More symptoms are listed in [claw-e2e.md](claw-e2e.md#if-it-does-not-work).
 ## Limitations
 
 - Agents and their gateways are reachable only through `kubectl` (including `port-forward`).
-- On CPU inference the first token of each turn takes tens of seconds, because every turn sends
-  the agent's ~19,500-token system prompt.
+- Every turn sends the agent's ~19,500-token system prompt, so the first token of each turn is
+  slow on a model that reads long prompts slowly.
