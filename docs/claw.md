@@ -171,10 +171,10 @@ More symptoms are listed in [claw-e2e.md](claw-e2e.md#if-it-does-not-work).
   `kubectl`.
 - The instance's gateway is reachable only through `kubectl port-forward`.
 - **Inference gateway request size.** The inference layer's `ai-gateway` must accept request
-  bodies larger than Envoy's 32 KiB default; an agent request is about 65 KB. An
-  inference layer that sets `ai_gateway_buffer_limit` (a `ClientTrafficPolicy` with
-  `bufferLimit` on the `ai-gateway` Gateway) is required. On an inference layer without it,
-  apply the same policy by hand:
+  bodies larger than Envoy's 32 KiB default; an agent request is about 65 KB. The inference
+  layer doesn't raise it yet: `ai_gateway_buffer_limit` is added by enterprise-inference
+  [#38](https://github.com/intel/enterprise-inference/pull/38), which is not merged. Until it
+  is, apply the same `ClientTrafficPolicy` by hand:
 
   ```yaml
   apiVersion: gateway.envoyproxy.io/v1alpha1
