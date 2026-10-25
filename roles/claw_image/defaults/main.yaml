@@ -18,8 +18,3 @@ claw_image_buildkit_sha256: 9993fdd8b454e541ac14a1adf4bf53d271dbc8f3aafde45894bf
 claw_image_buildkit_url: "https://github.com/moby/buildkit/releases/download/{{ claw_image_buildkit_version }}/buildkit-{{ claw_image_buildkit_version }}.linux-amd64.tar.gz"
 claw_image_root: /var/lib/agent-toolkit/claw-image
 claw_image_build_timeout: 1800
-# Every manifest type a build can push; without them registry:2 returns a converted schema1 digest.
-claw_image_manifest_accept: >-
-  application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json,
-  application/vnd.docker.distribution.manifest.list.v2+json,
-  application/vnd.docker.distribution.manifest.v2+json
