@@ -302,6 +302,9 @@ def _reconcile(spec, patch, name, namespace, logger, resuming):
     if len(agent_ns) > _MAX_DERIVED_NAME:
         return _fail(patch, name, logger,
                      f"derived name '{agent_ns}' is {len(agent_ns)} chars, limit {_MAX_DERIVED_NAME}")
+    # Owner "operator" with agent "system" would otherwise land in the operator's own namespace.
+    if agent_ns in (OPERATOR_NAMESPACE, SANDBOX_NAMESPACE):
+        return _fail(patch, name, logger, f"derived namespace '{agent_ns}' is reserved for the platform")
     # Admission control for new agents only; lowering the cap never fails admitted ones.
     if MAX_AGENTS_PER_OWNER > 0 and not resuming:
         count = _owner_agent_count(owner)
@@ -551,7 +554,10 @@ def _ensure_namespace(ns, owner, agent_name, logger):
             metadata=kubernetes.client.V1ObjectMeta(name=ns, labels=labels)))
         logger.info(f"Created namespace '{ns}'")
         return
-    # A pre-created namespace is adopted, but never one claimed by another agent or owner.
+    # Only a namespace this operator created is reconciled: adopting a pre-existing one would
+    # put default-deny and a quota on it, and delete it with the agent.
+    if existing.get("app.kubernetes.io/managed-by") != MANAGED_BY["app.kubernetes.io/managed-by"]:
+        raise ValueError(f"namespace '{ns}' already exists and was not created by the agent operator")
     for key in (AGENT_LABEL, OWNER_LABEL):
         if existing.get(key, labels[key]) != labels[key]:
             raise ValueError(f"namespace '{ns}' belongs to another {key.split('/')[1]}")

@@ -91,6 +91,12 @@ class ReconcileGuardTest(unittest.TestCase):
         self.assertEqual(patch.status["phase"], "Failed")
         self.assertIn("malformed", patch.status["suspendReason"])
 
+    def test_the_platform_namespaces_are_reserved(self):
+        for username in ("operator", "sandbox"):
+            patch, _ = self._reconcile("system", username)
+            self.assertEqual(patch.status["phase"], "Failed")
+            self.assertIn("reserved for the platform", patch.status["suspendReason"])
+
     def test_the_owner_check_ignores_malformed_specs(self):
         self.assertFalse(C._owner_ns_matches(spec("ab-c"), "user-ab-c"))
         self.assertTrue(C._owner_ns_matches(spec("alice"), "user-alice"))
@@ -128,8 +134,17 @@ class NamespaceOwnershipTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             C._ensure_namespace("agent-alice-bot", "alice@example.com", "bot", Logger())
 
-    def test_an_unlabelled_namespace_is_adopted(self):
-        core = _Core({})
+    def test_a_namespace_the_operator_did_not_create_is_not_adopted(self):
+        # Adopting it would later delete it with the agent.
+        for labels in ({}, {C.AGENT_LABEL: "bot", C.OWNER_LABEL: "alice_at_example.com"}):
+            core = _Core(labels)
+            _install_core(core)
+            with self.assertRaises(ValueError):
+                C._ensure_namespace("agent-alice-bot", "alice@example.com", "bot", Logger())
+            self.assertEqual(core.patched, [])
+
+    def test_its_own_namespace_is_reconciled(self):
+        core = _Core({**C.MANAGED_BY, C.AGENT_LABEL: "bot", C.OWNER_LABEL: "alice_at_example.com"})
         _install_core(core)
         C._ensure_namespace("agent-alice-bot", "alice@example.com", "bot", Logger())
         self.assertEqual(core.patched[0]["metadata"]["labels"][C.AGENT_LABEL], "bot")
