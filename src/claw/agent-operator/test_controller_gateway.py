@@ -5,7 +5,7 @@ import datetime
 import types
 import unittest
 
-from testlib import ApiException, load_controller, spec
+from testlib import ApiException, Logger, load_controller, spec
 
 C = load_controller()
 C.GW_HOSTNAME, C.KEYCLOAK_ISSUER = "agents.example.com", "https://keycloak.example.com/realms/agent-toolkit"
@@ -70,6 +70,44 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(self.grant["metadata"]["namespace"], "agent-alice-lab")
         self.assertEqual(self.grant["spec"]["to"], [{"group": "", "kind": "Service", "name": "lab"}])
         self.assertEqual(self.grant["spec"]["from"][0]["namespace"], C.OPERATOR_NAMESPACE)
+
+
+class _Api(_Grants):
+    """Records writes; the SecurityPolicy write fails when asked to."""
+
+    def __init__(self, policy_fails):
+        super().__init__([])
+        self.policy_fails, self.written, self.deleted = policy_fails, [], []
+
+    def get_namespaced_custom_object(self, group, version, ns, plural, name):
+        raise ApiException(404)
+
+    def create_namespaced_custom_object(self, group, version, ns, plural, body):
+        if self.policy_fails and body["kind"] == "SecurityPolicy":
+            raise ApiException(422)
+        self.written.append(body["kind"])
+
+    def delete_namespaced_custom_object(self, group, version, ns, plural, name):
+        self.deleted.append(plural)
+
+
+class ApplyOrderTest(unittest.TestCase):
+    def _apply(self, policy_fails):
+        api = _Api(policy_fails)
+        C.kubernetes.client = types.SimpleNamespace(CustomObjectsApi=lambda: api, ApiException=ApiException)
+        C._apply_gateway_route("lab", spec("alice"), Logger())
+        return api
+
+    def test_the_policy_is_written_before_the_route(self):
+        api = self._apply(policy_fails=False)
+        self.assertEqual(api.written, ["SecurityPolicy", "HTTPRoute", "ReferenceGrant"])
+        self.assertEqual(api.deleted, [])
+
+    def test_no_route_is_left_without_its_policy(self):
+        # Otherwise the agent would be reachable without signing in.
+        api = self._apply(policy_fails=True)
+        self.assertEqual(api.written, [])
+        self.assertEqual(api.deleted, ["httproutes"])
 
 
 if __name__ == "__main__":

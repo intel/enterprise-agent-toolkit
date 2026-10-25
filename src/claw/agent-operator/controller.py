@@ -723,14 +723,19 @@ def _put_custom(obj, logger):
 
 
 def _apply_gateway_route(name, spec, logger):
+    """The policy goes first: a route without it would let anyone reach the agent."""
     if GW_HOSTNAME and KEYCLOAK_ISSUER:
-        for obj in _gw_objects(name, spec):
-            _put_custom(obj, logger)
+        route, policy, grant = _gw_objects(name, spec)
+        if not _put_custom(policy, logger):
+            _delete_gateway_route(name, spec, logger, kinds=("HTTPRoute",))
+            return
+        _put_custom(route, logger)
+        _put_custom(grant, logger)
 
 
-def _delete_gateway_route(name, spec, logger):
+def _delete_gateway_route(name, spec, logger, kinds=("SecurityPolicy", "HTTPRoute")):
     agent_ns = _agent_ns(name, spec)
-    for kind in ("SecurityPolicy", "HTTPRoute"):
+    for kind in kinds:
         group, version, plural = _GW_KINDS[kind]
         try:
             kubernetes.client.CustomObjectsApi().delete_namespaced_custom_object(
