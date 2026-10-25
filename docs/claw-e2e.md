@@ -175,7 +175,7 @@ can reuse them.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| The chat answer is `Context overflow: prompt too large for the model`, and the `openclaw` container log shows `rawError=413 Payload Too Large` | The inference gateway's request buffer is Envoy's 32 KiB default. An agent request is larger than that | Raise the gateway's `bufferLimit` with the `ClientTrafficPolicy` in [claw.md](claw.md#limitations) |
+| The chat answer is `Context overflow: prompt too large for the model`, and the `openclaw` container log shows `rawError=413 Payload Too Large` | The inference gateway's request buffer is Envoy's 32 KiB default. An agent request is larger than that | `install agent_operator` adds a `ClientTrafficPolicy` with `bufferLimit: 50Mi` (`claw_ai_gateway_buffer_limit`), but only when no other policy targets the gateway. If one does, raise its `bufferLimit` |
 | The chat answer is `Context overflow` and the log shows a token-length error | `contextWindow` in the example does not match the model's served length | Set it to the served `max_model_len` |
 | `curl` to `ai-gateway` gets `Connection reset by peer` | The calling namespace is not in the ambient mesh, and the platform enforces STRICT mTLS | Label the namespace `istio.io/dataplane-mode=ambient` |
 | The pod starts but model calls time out | The instance's network policy does not admit the gateway | Keep the `additionalEgress` rule from the example; in the mesh the port is `15008` |
