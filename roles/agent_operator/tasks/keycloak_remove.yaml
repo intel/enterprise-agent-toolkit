@@ -28,14 +28,26 @@
     _kcadm: /opt/keycloak/bin/kcadm.sh
     _kccfg: "--config /tmp/kcadm-{{ claw_keycloak_operator_client }}.config"
   block:
+    # Password over stdin, never in an argument (see keycloak.yaml).
     - name: "agent_operator | teardown | Log in to Keycloak"
-      kubernetes.core.k8s_exec:
-        namespace: "{{ claw_keycloak_namespace }}"
-        pod: "{{ _kc_pod }}"
-        command: >-
-          {{ _kcadm }} config credentials {{ _kccfg }} --server http://localhost:8080 --realm master
-          --user {{ _td_ao_kc_admin.resources[0].data.username | b64decode }}
-          --password {{ _td_ao_kc_admin.resources[0].data.password | b64decode }}
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -i
+          - -n
+          - "{{ claw_keycloak_namespace }}"
+          - "{{ _kc_pod }}"
+          - --
+          - sh
+          - -c
+          - >-
+            IFS= read -r KC_CLI_PASSWORD && export KC_CLI_PASSWORD &&
+            exec "$0" config credentials --config "$1" --server http://localhost:8080 --realm master --user "$2"
+          - "{{ _kcadm }}"
+          - "/tmp/kcadm-{{ claw_keycloak_operator_client }}.config"
+          - "{{ _td_ao_kc_admin.resources[0].data.username | b64decode }}"
+        stdin: "{{ _td_ao_kc_admin.resources[0].data.password | b64decode }}"
       changed_when: false
       no_log: true
 
