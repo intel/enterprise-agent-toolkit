@@ -38,6 +38,8 @@ Observability is handled via OpenTelemetry. vLLM-SR emits traces that appear
 in Langfuse alongside the LiteLLM traces, giving a complete view of routing
 decisions and inference performance.
 
+> **Note:** not available in this release.
+
 ---
 
 ## Getting Started
@@ -45,14 +47,14 @@ decisions and inference performance.
 ### Prerequisites
 
 - The base stack must be deployed (Kubernetes, ingress, LiteLLM, at least one model)
-- `deploy_vllm_sr=on` in `core/inventory/agentic-config.cfg`
+- `vllm_sr_enabled: true` in `env/<name>/config.inference.yaml`
 
 ### Deploy
 
 Run the standard deployment script:
 
 ```bash
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 ```
 
 The script will:
@@ -66,7 +68,7 @@ The script will:
 Send a request through the routing layer:
 
 ```bash
-curl -k https://<cluster_url>/v1/chat/completions \
+curl -k https://litellm.<base_domain_name>/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <LITELLM_MASTER_KEY>" \
   -d '{
@@ -78,43 +80,45 @@ curl -k https://<cluster_url>/v1/chat/completions \
 You can also call a model directly (bypasses routing):
 
 ```bash
-curl -k https://<cluster_url>/v1/chat/completions \
+curl -k https://litellm.<base_domain_name>/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <LITELLM_MASTER_KEY>" \
   -d '{
-    "model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+    "model": "qwen2-5-coder-14b",
     "messages": [{"role": "user", "content": "hello"}]
   }'
 ```
 
 ### Access the Dashboard
 
-The dashboard is exposed via ingress on its own host, `vllm-sr-<cluster_url>`:
+The dashboard is exposed via the gateway on its own host, `vllm-sr.<base_domain_name>`:
 
 ```
-https://vllm-sr-<cluster_url>/router
+https://vllm-sr.<base_domain_name>/
 ```
 
-For example: `https://vllm-sr-api.example.com/router`
+For example: `https://vllm-sr.example.com/`
 
 The dashboard serves root paths (`/login`, `/api`, `/assets`, ...) and cannot
-run under a sub-path, so it gets its own host instead of sharing `<cluster_url>`
+run under a sub-path, so it gets its own host instead of sharing `litellm.<base_domain_name>`
 with the GenAI Gateway (LiteLLM) UI. The router API stays on
 `https://<cluster_url>/v1/route`.
 
+> **Note:** not available in this release.
+
 Prerequisites for the dashboard host:
 
-- **DNS:** `vllm-sr-<cluster_url>` must resolve to the ingress (DNS record, or
+- **DNS:** `vllm-sr.<base_domain_name>` must resolve to the gateway (DNS record, or
   `/etc/hosts` on the node and on every client machine).
-- **TLS certificate:** the certificate must cover `vllm-sr-<cluster_url>`, either
-  as a SAN entry (`DNS:vllm-sr-<cluster_url>`) or via a parent-domain wildcard
-  (e.g. `*.example.com` for `api.example.com`). See [Prerequisites](prerequisites.md). Existing
+- **TLS certificate:** the certificate must cover `vllm-sr.<base_domain_name>`, either
+  as a SAN entry (`DNS:vllm-sr.<base_domain_name>`) or via a parent-domain wildcard
+  (e.g. `*.<base_domain_name>`). See [Prerequisites](prerequisites.md). Existing
   certificates without it must be regenerated.
-- **Corporate proxy:** add `vllm-sr-<cluster_url>` to the browser/OS proxy bypass
-  list, as for `<cluster_url>`.
+- **Corporate proxy:** add `vllm-sr.<base_domain_name>` to the browser/OS proxy bypass
+  list, as for `litellm.<base_domain_name>`.
 
-Default credentials are configured at deploy time via Ansible vault
-(see Configuration section below).
+Default credentials are generated at deploy time into the `vllm-sr-dashboard` Secret
+(namespace `vllm-semantic-router-system`, keys `admin-email` / `admin-password`).
 
 ---
 
@@ -179,11 +183,13 @@ routing:
           - type: embedding
             name: coding_tasks
       modelRefs:
-        - model: qwen2-5-coder-14b-instruct
+        - model: qwen2-5-coder-14b
           use_reasoning: false
 ```
 
 Lower priority number means higher precedence. The first matching decision wins.
+
+> **Note:** not available in this release.
 
 **Model backends** are the models the router can route to. In normal use they
 are discovered automatically at deploy time (see
@@ -193,50 +199,51 @@ hand.
 Each backend has this shape:
 
 ```yaml
-backends:
-  - name: qwen2-5-coder-14b-instruct                          # short name used in decisions
-    model: "Qwen/Qwen2.5-Coder-14B-Instruct"                  # the model the backend serves
-    baseUrl: "http://vllm-qwen-2-5-coder-14b-cpu-service.default:80/v1"  # its endpoint
-    apiFormat: openai
+providers:
+  models:
+    - name: qwen2-5-coder-14b                                   # short name used in decisions
+      provider_model_id: "qwen2-5-coder-14b"                    # the model the backend serves
+      backend_refs:
+        - name: "primary"
+          endpoint: "qwen2-5-coder-14b-kserve-workload-svc.llm-inference.svc.cluster.local:8000"  # its endpoint
+          protocol: "http"
+          weight: 100
 ```
 
 - `name` — the short identifier referenced in `routing.decisions`.
-- `model` — the model id the backend actually serves.
-- `baseUrl` — the in-cluster endpoint, ending in `/v1`.
-- `apiFormat` — the API style; `openai` for vLLM backends.
+- `provider_model_id` — the model id the backend actually serves.
+- `endpoint` — the in-cluster endpoint, `host:port`.
+- `protocol` — the API style; `http` for vLLM backends.
 
 ### Helm Values
 
-All configuration is in `core/helm-charts/vllm-sr/values.yaml`. Key settings:
+All configuration is in `env/<name>/config.inference.yaml`. Key settings:
 
 | Value | Description |
 |-------|-------------|
-| `image.tag` | vLLM-SR container version |
-| `dashboard.adminEmail` | Dashboard login email (from vault) |
-| `dashboard.adminPassword` | Dashboard login password (from vault) |
-| `cache.backend` | Semantic cache: `memory` or `redis` |
-| `routing.enableSemanticCache` | Enable/disable response caching |
-| `routing.cacheThreshold` | Similarity above which a cached response is reused (default `0.92`) |
-| `routing.defaultModel` | Backend **name** served when the router has no better choice. Empty => the first discovered backend. Set automatically by `deploy-vllm-sr.yml` |
-| `routing.enableJailbreakDetection` | **Not yet wired** — see the note in `values.yaml` |
-| `routing.enablePiiDetection` | **Not yet wired** — see the note in `values.yaml` |
-| `observability.enabled` | Enable trace export to Langfuse |
+| `vllm_sr_image_tag` | vLLM-SR container version |
+| `vllm_sr_dashboard_admin_email` | Dashboard login email (default `admin@<base_domain_name>`) |
+| `vllm_sr_dashboard_secret` | Secret holding the dashboard login password (default `vllm-sr-dashboard`, generated at deploy time) |
+| `vllm_sr_cache_backend` | Semantic cache: `memory` or `redis` |
+| `routing.enableSemanticCache` | Enable/disable response caching — not available in this release |
+| `routing.cacheThreshold` | Similarity above which a cached response is reused (default `0.92`) — not available in this release |
+| `vllm_sr_default_model` | Backend **name** served when the router has no better choice. Default: the toolkit's default model (`qwen2-5-coder-14b`); the first routed model when that one is not routed |
+| `routing.enableJailbreakDetection` | **Not yet wired** — not available in this release |
+| `routing.enablePiiDetection` | **Not yet wired** — not available in this release |
+| `observability.enabled` | Enable trace export to Langfuse — not available in this release |
 
 ### Updating the Routing Config
 
-After editing the configmap template or values, redeploy with:
+After editing the settings (or `vllm_sr_config_override`, the full routing config) in `env/<name>/config.inference.yaml`, redeploy with:
 
 ```bash
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 ```
 
 Or update only vLLM-SR:
 
 ```bash
-cd core
-ansible-playbook -i inventory/hosts.yaml playbooks/deploy-vllm-sr.yml \
-  --extra-vars "secret_name=<cluster_url> cert_file=<cert_path> key_file=<key_path>" \
-  --vault-password-file inventory/.vault-passfile
+./es_auto_installer.sh install vllm_sr --only
 ```
 
 The pod restarts automatically when the ConfigMap changes.
@@ -246,7 +253,7 @@ The pod restarts automatically when the ConfigMap changes.
 ## Onboarding a New Model
 
 When you deploy a model through the toolkit with vLLM-SR enabled
-(`deploy_vllm_sr=on`), the model is onboarded into routing automatically. There
+(`vllm_sr_enabled: true`), the model is onboarded into routing automatically. There
 is no separate registration step.
 
 During deployment, vLLM-SR discovers the model services running in the cluster,
@@ -255,14 +262,16 @@ then shows up in the dashboard and becomes a candidate for routing.
 
 To add a model:
 
-1. Deploy the model through the toolkit with `deploy_vllm_sr=on`.
+1. Deploy the model through the toolkit (`llm_services_autodeploy_models` in
+   `env/<name>/config.agent-toolkit.yaml`, then `./es_auto_installer.sh install agent-toolkit`)
+   with `vllm_sr_enabled: true`.
 2. That's it — the model is discovered and added to routing as part of the same
    deployment.
 
 You can confirm the model is available in the dashboard:
 
 ```
-https://<cluster_url>/router
+https://vllm-sr.<base_domain_name>/
 ```
 
 ### How routing picks up the new model
@@ -280,14 +289,14 @@ and a matching decision as described in
 
 ### Verify routing
 
-Send a prompt and check the selected model in the Langfuse trace
-(`semantic_router.decision.evaluation`):
+Send a prompt and check which model answered (the `model` field of the response):
 
 ```bash
-curl -k https://<cluster_url>/v1/chat/completions \
+curl -k https://litellm.<base_domain_name>/v1/chat/completions \
   -H "Authorization: Bearer <LITELLM_MASTER_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"model": "vllm-sr/auto", "messages": [{"role": "user", "content": "write a python function to sort a list"}]}'
+  -d '{"model": "vllm-sr/auto", "messages": [{"role": "user", "content": "write a python function to sort a list"}]}' \
+  | jq -r .model
 ```
 
 Clients keep calling `vllm-sr/auto` as before — the router dispatches to the new
@@ -327,6 +336,8 @@ For each request routed through vLLM-SR, Langfuse displays:
 - `semantic_router.decision.evaluation` -- which route was selected, which model
 - `semantic_router.upstream.request` -- backend call latency, HTTP status
 
+> **Note:** not available in this release.
+
 Together these give full visibility into why a model was selected and how
 it performed.
 
@@ -339,7 +350,7 @@ it performed.
 Check which container is failing:
 
 ```bash
-kubectl get pods -n vllm-sr -o jsonpath='{range .items[0].status.containerStatuses[*]}{.name}: {.ready}{"\n"}{end}'
+kubectl get pods -n vllm-semantic-router-system -o jsonpath='{range .items[0].status.containerStatuses[*]}{.name}: {.ready}{"\n"}{end}'
 ```
 
 Common causes:
@@ -354,13 +365,15 @@ Check the vLLM-SR container for export errors:
 kubectl logs -n vllm-sr <pod-name> -c vllm-sr | grep "traces export"
 ```
 
+> **Note:** not available in this release.
+
 **LiteLLM returns "Connection error" for vllm-sr/auto**
 
-Verify vLLM-SR is reachable from the genai-gateway namespace:
+Verify vLLM-SR is reachable from the litellm namespace:
 
 ```bash
-kubectl exec -n genai-gateway <litellm-pod> -- \
-  python3 -c "import socket; s=socket.socket(); s.connect(('vllm-sr-envoy.vllm-sr.svc.cluster.local', 8801)); print('OK')"
+kubectl exec -n litellm deploy/litellm -c litellm -- \
+  python3 -c "import socket; s=socket.socket(); s.connect(('semantic-router.envoy-gateway-system.svc.cluster.local', 80)); print('OK')"
 ```
 
 **Dashboard shows "Failed to read config"**
@@ -368,5 +381,5 @@ kubectl exec -n genai-gateway <litellm-pod> -- \
 Check the dashboard container logs:
 
 ```bash
-kubectl logs -n vllm-sr <pod-name> -c dashboard
+kubectl logs -n vllm-semantic-router-system deploy/semantic-router-dashboard
 ```

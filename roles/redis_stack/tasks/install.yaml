@@ -3,7 +3,43 @@
 # Redis Stack — Install via Helm
 # =============================================================================
 
-- name: "redis_stack | Check for existing Helm release"
+- name: "redis_stack | Create namespace"
+  kubernetes.core.k8s:
+    kind: Namespace
+    name: "{{ redis_stack_namespace }}"
+    state: present
+
+- name: "redis_stack | Enrol namespace in the ambient mesh"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ redis_stack_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when: istio_enabled | default(false) | bool
+
+# Reuse the stored password
+- name: "redis_stack | Read existing credentials"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: redis-stack-server-credentials
+    namespace: "{{ redis_stack_namespace }}"
+  register: _redis_secret
+  no_log: true
+
+- name: "redis_stack | Resolve password"
+  ansible.builtin.set_fact:
+    _redis_pw: >-
+      {{ (_redis_secret.resources[0].data.REDIS_PASSWORD | b64decode)
+         if (_redis_secret.resources | default([]) | length > 0 and _redis_secret.resources[0].data.REDIS_PASSWORD is defined)
+         else redis_stack_password }}
+  no_log: true
+
+# helm upgrade --install cannot recover a failed first release
+- name: "redis_stack | Check for an existing release"
   kubernetes.core.helm_info:
     name: "{{ redis_stack_release_name }}"
     release_namespace: "{{ redis_stack_namespace }}"
@@ -11,62 +47,58 @@
   failed_when: false
   no_log: true
 
-- name: "redis_stack | Already installed — skipping"
-  ansible.builtin.debug:
-    msg: "Redis Stack already deployed in {{ redis_stack_namespace }} — skipping install."
-  when: _redis_release.status is defined and _redis_release.status is not none
+- name: "redis_stack | Remove a failed release"
+  kubernetes.core.helm:
+    name: "{{ redis_stack_release_name }}"
+    release_namespace: "{{ redis_stack_namespace }}"
+    state: absent
+    wait: true
+  when: ((_redis_release.status | default({}, true)).status | default('') | lower) == 'failed'
 
-- name: "redis_stack | Install"
-  when: _redis_release.status is not defined or _redis_release.status is none
-  block:
+- name: "redis_stack | Install via Helm"
+  kubernetes.core.helm:
+    name: "{{ redis_stack_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/redis-stack"
+    release_namespace: "{{ redis_stack_namespace }}"
+    create_namespace: true
+    wait: true
+    timeout: "10m0s"
+    values:
+      # Overrides go under the subchart name (redis-stack-server), not "redis".
+      redis-stack-server:
+        redis_stack_server:
+          storage_class: "{{ redis_stack_storage_class }}"
+          storage: "{{ redis_stack_persistence_size }}"
+          auth:
+            enabled: "{{ redis_stack_auth_enabled | bool }}"
+            password: "{{ _redis_pw }}"
+          networkPolicy:
+            meshPort: 15008   # Istio ambient HBONE
+  register: _redis_helm
+  no_log: true
+  ignore_errors: true
 
-    - name: "redis_stack | Create namespace"
-      kubernetes.core.k8s:
-        kind: Namespace
-        name: "{{ redis_stack_namespace }}"
-        state: present
-    - name: "redis_stack | Install via Helm"
-      kubernetes.core.helm:
-        name: "{{ redis_stack_release_name }}"
-        chart_ref: "{{ role_path }}/../../charts/redis-stack"
-        release_namespace: "{{ redis_stack_namespace }}"
-        create_namespace: true
-        wait: true
-        timeout: "10m0s"
-        values:
-          # Overrides go under the subchart name (redis-stack-server), not "redis".
-          redis-stack-server:
-            redis_stack_server:
-              storage_class: "{{ redis_stack_storage_class }}"
-              storage: "{{ redis_stack_persistence_size }}"
-              auth:
-                enabled: "{{ redis_stack_auth_enabled | bool }}"
-                password: "{{ redis_stack_password }}"
-      register: _redis_helm
-      no_log: true
-      ignore_errors: true
+- name: "redis_stack | Check Helm install result"
+  ansible.builtin.assert:
+    that: _redis_helm is succeeded
+    fail_msg: "Redis Stack Helm install failed: {{ _redis_helm.msg | default('no error message returned') }}"
+    quiet: true
 
-    - name: "redis_stack | Check Helm install result"
-      ansible.builtin.assert:
-        that: _redis_helm is succeeded
-        fail_msg: "Redis Stack Helm install failed: {{ _redis_helm.msg | default('no error message returned') }}"
-        quiet: true
-
-    - name: "redis_stack | Wait for pods to be ready"
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Pod
-        namespace: "{{ redis_stack_namespace }}"
-        label_selectors:
-          # The vendored redis-stack-server chart labels pods `app: redis-stack-server`
-          # (not the standard app.kubernetes.io/instance).
-          - app=redis-stack-server
-      register: _redis_pods
-      until:
-        - _redis_pods.resources | default([]) | length > 0
-        - _redis_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length > 0
-      retries: 60
-      delay: 5
+- name: "redis_stack | Wait for pods to be ready"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ redis_stack_namespace }}"
+    label_selectors:
+      # The vendored redis-stack-server chart labels pods `app: redis-stack-server`
+      # (not the standard app.kubernetes.io/instance).
+      - app=redis-stack-server
+  register: _redis_pods
+  until:
+    - _redis_pods.resources | default([]) | length > 0
+    - _redis_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length > 0
+  retries: 60
+  delay: 5
 
 - name: "redis_stack | Install complete"
   ansible.builtin.debug:

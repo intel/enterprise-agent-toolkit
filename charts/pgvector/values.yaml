@@ -28,6 +28,10 @@ resources:
     cpu: "1"
     memory: 1Gi
 
+# PostgreSQL server settings (postgres -c key=value); empty keeps the image defaults
+postgresql:
+  parameters: {}
+
 tolerations:
   - key: "node-role.kubernetes.io/control-plane"
     operator: "Exists"

@@ -77,14 +77,14 @@ spec:
               runAsNonRoot: true
               capabilities:
                 drop: ["ALL"]
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- with .Values.affinity }}
+        affinity:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.tolerations }}
+        tolerations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
 
   # ---------------------------------------------------------------------------
   # Worker groups
@@ -122,11 +122,11 @@ spec:
                   exec:
                     # Drain the worker gracefully before the pod terminates
                     command: ["/bin/sh", "-c", "ray stop"]
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

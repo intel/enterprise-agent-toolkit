@@ -18,15 +18,15 @@ Agent (e.g. Coding Agent)
         │
         │  HTTP  (in-cluster DNS)
         ▼
-sandbox-router-svc.agent-sandbox.svc.cluster.local:8080
+sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080
         │
         │  creates SandboxClaim CR via Kubernetes API
         ▼
-  agent-sandbox-controller  (agent-sandbox namespace)
+  agent-sandbox-controller  (agent-sandbox-system namespace)
         │
         │  spawns pod from SandboxTemplate spec
         ▼
-  sandbox-claim-<id>  (pod in agent-sandbox namespace)
+  sandbox-claim-<id>  (pod in agent-sandbox-system namespace)
         │
         │  NetworkPolicy: allows ingress from app=sandbox-router
         │  in the SAME namespace only
@@ -37,7 +37,7 @@ sandbox-router-svc.agent-sandbox.svc.cluster.local:8080
 
 **Key design points:**
 
-- All components live in the **`agent-sandbox`** namespace so the
+- All components live in the **`agent-sandbox-system`** namespace so the
   controller-generated `NetworkPolicy` (which allows ingress only from pods
   labelled `app=sandbox-router` in the same namespace) applies correctly.
 - The **sandbox-router** is the only component that calls the Kubernetes API —
@@ -50,11 +50,11 @@ sandbox-router-svc.agent-sandbox.svc.cluster.local:8080
 
 | Component | Kind | Namespace | Image Source |
 |---|---|---|---|
-| `agent-sandbox-controller` | Deployment | `agent-sandbox` | `registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.0` |
+| `agent-sandbox-controller` | Deployment | `agent-sandbox-system` | `registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.0` |
 | CRDs | ClusterScoped | — | `sandboxes`, `sandboxtemplates`, `sandboxclaims`, `sandboxwarmpools` (v1beta1) |
-| `sandbox-router-deployment` | Deployment (×2) | `agent-sandbox` | `us-central1-docker.pkg.dev/.../sandbox-router:latest-main` (staging) |
-| `sandbox-router-svc` | Service | `agent-sandbox` | ClusterIP :8080 |
-| `python-sandbox-template` | SandboxTemplate CR | `agent-sandbox` | Uses `registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.0` |
+| `sandbox-router-deployment` | Deployment (×2) | `agent-sandbox-system` | `us-central1-docker.pkg.dev/.../sandbox-router:latest-main` (staging) |
+| `sandbox-router-svc` | Service | `agent-sandbox-system` | ClusterIP :8080 |
+| `python-sandbox-template` | SandboxTemplate CR | `agent-sandbox-system` | Uses `registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.0` |
 
 ---
 
@@ -82,22 +82,24 @@ the two templates is `runtimeClassName`.
 
 ### Enable it
 
-```ini
-# core/inventory/agentic-config.cfg
-deploy_agent_sandbox=on       # required — Kata is an add-on, not a standalone component
-deploy_kata_containers=on
-kata_runtime=kata-fc          # kata-fc | kata-qemu | both
+```yaml
+# env/<name>/config.agent-toolkit.yaml
+agent_sandbox_enabled: true   # required — Kata is an add-on, not a standalone component
+
+# env/<name>/global_config.yaml
+kata_containers_enabled: true
+kata_runtime: "kata-fc"       # kata-fc | kata-qemu | both
 ```
 
-```ini
-# core/inventory/metadata/agentic-metadata.cfg
-kata_version="3.32.0"         # kata-deploy Helm chart version
+```yaml
+# env/<name>/global_config.yaml
+kata_version: "3.32.0"        # kata-deploy Helm chart version
 ```
 
 Kata is an **add-on to Agent Sandbox**: the `SandboxTemplate` it publishes needs
-the agent-sandbox CRDs. With `deploy_kata_containers=on` and
-`deploy_agent_sandbox=off` the stack prints a warning and skips Kata entirely —
-the rest of the deployment is unaffected.
+the agent-sandbox CRDs. With `kata_containers_enabled: true` and
+`agent_sandbox_enabled: false` the Kata runtime classes are still installed, but no Kata
+sandbox template or pool is created — the rest of the deployment is unaffected.
 
 ### Node prerequisites
 
@@ -121,10 +123,12 @@ skips:
 | Situation | Behaviour |
 |---|---|
 | No node exposes `/dev/kvm` | Warn, install nothing, exit 0 |
-| `kata_runtime=kata-fc` but devmapper setup did not succeed on any node | Warn (with the fix), install nothing, exit 0 |
-| `kata_runtime=both` but devmapper setup did not succeed | Warn, install `kata-qemu` only |
-| `deploy_agent_sandbox=off` | Warn, skip Kata |
+| `kata_runtime: "kata-fc"` but devmapper setup did not succeed on any node | Warn (with the fix), install nothing, exit 0 |
+| `kata_runtime: "both"` but devmapper setup did not succeed | Warn, install `kata-qemu` only |
+| `agent_sandbox_enabled: false` | Warn, skip Kata |
 | Invalid `kata_runtime` value | Warn listing valid values, skip Kata |
+
+> **Note:** warn-and-skip is not available in this release.
 
 ### What gets installed
 
@@ -187,7 +191,7 @@ kubectl describe pod -n agent-sandbox-system -l sandbox=kata
 
 | Symptom | Cause / fix |
 |---|---|
-| `FailedCreatePodSandBox ... ENOENT` on a `kata-fc` pod | devmapper snapshotter not active on that node — check `systemctl status containerd-devmapper` and `ctr plugins ls \| grep devmapper`, or use `kata_runtime=kata-qemu` |
+| `FailedCreatePodSandBox ... ENOENT` on a `kata-fc` pod | devmapper snapshotter not active on that node — check `systemctl status containerd-devmapper` and `ctr plugins ls \| grep devmapper`, or use `kata_runtime: "kata-qemu"` |
 | Sandbox pod stuck `Pending` | No node carries both `ei-kata-eligible=true` and the `katacontainers.io/kata-runtime=true` label that the RuntimeClass selects; check `kubectl get nodes --show-labels` |
 | `RuntimeClass 'kata-fc' was not created by kata-deploy` | The chart version does not ship the fc shim — check `kata_version` |
 | Pod runs but `uname -r` matches the host | The pod landed on `runc`; confirm `spec.runtimeClassName` on the pod |
@@ -218,19 +222,21 @@ sudo systemctl restart containerd
 
 ## Configuration
 
-### Enable in `core/inventory/agentic-config.cfg`
+### Enable in `env/<name>/config.agent-toolkit.yaml`
 
-```ini
-deploy_agent_sandbox=on
+```yaml
+agent_sandbox_enabled: true
 ```
 
-Set to `off` to skip deployment. On re-runs, if the `agent-sandbox` namespace
+Set to `false` to skip deployment. On re-runs, if the `agent-sandbox-system` namespace
 already exists the deployment is automatically skipped (resume mode).
 
-### Version pin in `core/inventory/metadata/agentic-metadata.cfg`
+> **Note:** resume mode is not available in this release.
 
-```ini
-agent_sandbox_version="v0.5.0"
+### Version pin in `env/<name>/config.agent-toolkit.yaml`
+
+```yaml
+agent_sandbox_version: "v0.5.0"
 ```
 
 This controls the version of official release manifests fetched from GitHub and
@@ -243,10 +249,10 @@ the image tags used for the runtime components. Update the version here to upgra
 Agent Sandbox is deployed as part of the standard stack run using **Ansible**:
 
 ```bash
-# core/inventory/agentic-config.cfg
-deploy_agent_sandbox=on
+# env/<name>/config.agent-toolkit.yaml
+agent_sandbox_enabled: true
 
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 ```
 
 The Ansible playbook runs 7 task groups:
@@ -266,28 +272,28 @@ The Ansible playbook runs 7 task groups:
 
 ```bash
 # All components should be Running
-kubectl get pods -n agent-sandbox
+kubectl get pods -n agent-sandbox-system
 
 # Confirm CRDs are registered (should show v1alpha1 and v1beta1)
 kubectl get crd sandboxes.agents.x-k8s.io -o jsonpath='{.spec.versions[*].name}'
 # Expected: v1alpha1 v1beta1
 
 # Check the SandboxTemplate exists
-kubectl get sandboxtemplate -n agent-sandbox
+kubectl get sandboxtemplate -n agent-sandbox-system
 # Expected: python-sandbox-template
 
 # Check default WarmPool exists
-kubectl get sandboxwarmpool -n agent-sandbox python-pool
+kubectl get sandboxwarmpool -n agent-sandbox-system python-pool
 # Expected: SIZE=5 and READY=5
 
 # Verify controller deployment
-kubectl get deployment -n agent-sandbox agent-sandbox-controller
+kubectl get deployment -n agent-sandbox-system agent-sandbox-controller
 
 # Verify router deployment
-kubectl get deployment -n agent-sandbox sandbox-router-deployment
+kubectl get deployment -n agent-sandbox-system sandbox-router-deployment
 
 # Quick end-to-end health check via the router
-kubectl port-forward -n agent-sandbox svc/sandbox-router-svc 8080:8080 &
+kubectl port-forward -n agent-sandbox-system svc/sandbox-router-svc 8080:8080 &
 curl -s http://localhost:8080/healthz
 # {"status":"ok"}
 ```
@@ -297,14 +303,14 @@ curl -s http://localhost:8080/healthz
 ## Default SandboxTemplate
 
 The stack ships one template out of the box:
-`core/helm-charts/agent-sandbox/default-templates.yaml`
+`charts/agent-sandbox/default-templates.yaml`
 
 ```yaml
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
-  namespace: agent-sandbox
+  namespace: agent-sandbox-system
 spec:
   service: true          # headless Service created per pod — required for SDK DNS mode
   podTemplate:
@@ -372,7 +378,7 @@ apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: node-sandbox-template
-  namespace: agent-sandbox   # must match the namespace where sandboxes will be created
+  namespace: agent-sandbox-system   # must match the namespace where sandboxes will be created
 spec:
   service: true
   podTemplate:
@@ -400,7 +406,7 @@ spec:
 
 ```bash
 kubectl apply -f node-sandbox-template.yaml
-kubectl get sandboxtemplate -n agent-sandbox
+kubectl get sandboxtemplate -n agent-sandbox-system
 ```
 
 ### 4. Use it from the SDK
@@ -408,7 +414,7 @@ kubectl get sandboxtemplate -n agent-sandbox
 ```python
 sandbox = client.create_sandbox(
     template="node-sandbox-template",
-    namespace="agent-sandbox",
+    namespace="agent-sandbox-system",
 )
 ```
 
@@ -439,13 +445,13 @@ from k8s_agent_sandbox.models import SandboxLocalTunnelConnectionConfig
 
 client = SandboxClient(
     connection_config=SandboxLocalTunnelConnectionConfig(
-        namespace="agent-sandbox"
+        namespace="agent-sandbox-system"
     )
 )
 
 sandbox = client.create_sandbox(
     template="python-sandbox-template",
-    namespace="agent-sandbox",
+    namespace="agent-sandbox-system",
 )
 try:
     result = sandbox.commands.run("python3 --version")
@@ -458,7 +464,7 @@ finally:
 
 ```bash
 # Terminal 1 — keep port-forward running
-kubectl port-forward -n agent-sandbox svc/sandbox-router-svc 8080:8080
+kubectl port-forward -n agent-sandbox-system svc/sandbox-router-svc 8080:8080
 ```
 
 ```python
@@ -473,7 +479,7 @@ client = SandboxClient(
 
 sandbox = client.create_sandbox(
     template="python-sandbox-template",
-    namespace="agent-sandbox",
+    namespace="agent-sandbox-system",
 )
 try:
     result = sandbox.commands.run("echo 'Hello from Agent Sandbox!'")
@@ -496,13 +502,13 @@ from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
 client = SandboxClient(
     connection_config=SandboxDirectConnectionConfig(
-        api_url="http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080"
+        api_url="http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080"
     )
 )
 
 sandbox = client.create_sandbox(
     template="python-sandbox-template",
-    namespace="agent-sandbox",
+    namespace="agent-sandbox-system",
 )
 try:
     result = sandbox.commands.run("python3 -c \"print('Hello from in-cluster sandbox!')\"")
@@ -524,7 +530,7 @@ from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
 _client = SandboxClient(
     connection_config=SandboxDirectConnectionConfig(
-        api_url="http://sandbox-router-svc.agent-sandbox.svc.cluster.local:8080"
+        api_url="http://sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080"
     )
 )
 _sandbox = None
@@ -534,7 +540,7 @@ def get_sandbox():
     if _sandbox is None or not _sandbox.is_active:
         _sandbox = _client.create_sandbox(
             template="python-sandbox-template",
-            namespace="agent-sandbox",
+            namespace="agent-sandbox-system",
         )
     return _sandbox
 
@@ -562,12 +568,12 @@ apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
   name: python-pool
-  namespace: agent-sandbox
+  namespace: agent-sandbox-system
   labels:
     app: python-pool
 spec:
-  size: 3                          # number of pre-warmed pods to maintain
-  templateRef:
+  replicas: 3                      # number of pre-warmed pods to maintain
+  sandboxTemplateRef:
     name: python-sandbox-template  # must exist in the same namespace
 ```
 
@@ -575,7 +581,7 @@ Apply:
 
 ```bash
 kubectl apply -f warmpool.yaml
-kubectl get sandboxwarmpool -n agent-sandbox
+kubectl get sandboxwarmpool -n agent-sandbox-system
 # NAME           SIZE   READY
 # python-pool    5      5
 ```
@@ -591,10 +597,12 @@ immediately and refills the pool in the background.
 
 | Operation | Behaviour |
 |---|---|
-| `deploy_agent_sandbox=on` on a running stack | Ansible playbook is idempotent; manifests are re-applied with `kubectl apply` (safe for upgrades) |
+| `agent_sandbox_enabled: true` on a running stack | Ansible playbook is idempotent; manifests are re-applied with `kubectl apply` (safe for upgrades) |
 | Namespace already exists | Ansible creates namespace with `state: present` (idempotent) |
 | Controller already running | Kubernetes applies manifests declaratively (no duplication) |
-| Resume mode | If `agent-sandbox` namespace exists, `_auto_skip_deployed_components()` sets `deploy_agent_sandbox=off` for that run |
+| Resume mode | If `agent-sandbox-system` namespace exists, `_auto_skip_deployed_components()` sets `deploy_agent_sandbox=off` for that run |
+
+> **Note:** resume mode is not available in this release.
 
 ---
 
@@ -607,14 +615,14 @@ immediately and refills the pool in the background.
    kubectl get sandboxes,sandboxclaims,sandboxtemplates,sandboxwarmpools -A -o yaml > backup.yaml
    ```
 
-2. **Update version** in `core/inventory/metadata/agentic-metadata.cfg`:
-   ```ini
-   agent_sandbox_version="v0.5.0"
+2. **Update version** in `env/<name>/config.agent-toolkit.yaml`:
+   ```yaml
+   agent_sandbox_version: "v0.5.0"
    ```
 
 3. **Re-run deployment**:
    ```bash
-   ./deploy-agentic-stack.sh
+   ./es_auto_installer.sh install agent-toolkit
    ```
 
 4. **Update client SDK**:
@@ -636,8 +644,8 @@ immediately and refills the pool in the background.
 
 ### Future Version Upgrades
 
-1. Update `agent_sandbox_version` in `core/inventory/metadata/agentic-metadata.cfg`
-2. Re-run `./deploy-agentic-stack.sh`
+1. Update `agent_sandbox_version` in `env/<name>/config.agent-toolkit.yaml`
+2. Re-run `./es_auto_installer.sh install agent-toolkit`
 3. Upgrade client SDK to matching version
 
 The Ansible playbook handles all deployment updates automatically.
@@ -650,16 +658,16 @@ The Ansible playbook handles all deployment updates automatically.
 
 ```bash
 # Check pod status
-kubectl get pods -n agent-sandbox
+kubectl get pods -n agent-sandbox-system
 
 # Check controller logs
-kubectl logs -n agent-sandbox -l app.kubernetes.io/name=agent-sandbox
+kubectl logs -n agent-sandbox-system -l app.kubernetes.io/name=agent-sandbox
 
 # Check router logs
-kubectl logs -n agent-sandbox -l app=sandbox-router
+kubectl logs -n agent-sandbox-system -l app=sandbox-router
 
 # Describe failed pod
-kubectl describe pod -n agent-sandbox <pod-name>
+kubectl describe pod -n agent-sandbox-system <pod-name>
 ```
 
 ### Image pull errors
@@ -671,20 +679,20 @@ If using published images, ensure cluster has internet access:
 kubectl run test --rm -it --restart=Never --image=registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.0 -- echo "success"
 ```
 
-For air-gapped environments, mirror images to your private registry and update variables in `core/inventory/metadata/vars/inference_agent_sandbox.yml`.
+For air-gapped environments, mirror images to your private registry and update variables in `env/<name>/config.agent-toolkit.yaml`.
 
 ### SDK connection errors
 
 ```bash
 # Verify router is running
-kubectl get svc -n agent-sandbox sandbox-router-svc
+kubectl get svc -n agent-sandbox-system sandbox-router-svc
 
 # Test router health
-kubectl port-forward -n agent-sandbox svc/sandbox-router-svc 8080:8080 &
+kubectl port-forward -n agent-sandbox-system svc/sandbox-router-svc 8080:8080 &
 curl http://localhost:8080/healthz
 
 # Check NetworkPolicy
-kubectl get networkpolicy -n agent-sandbox
+kubectl get networkpolicy -n agent-sandbox-system
 ```
 
 ---
@@ -693,14 +701,14 @@ kubectl get networkpolicy -n agent-sandbox
 
 ### Variables
 
-`core/inventory/metadata/vars/inference_agent_sandbox.yml`:
+`env/<name>/config.agent-toolkit.yaml`:
 ```yaml
-agent_sandbox_namespace: "agent-sandbox"
-sandbox_router_image: "us-central1-docker.pkg.dev/.../sandbox-router:latest-main"
-python_runtime_sandbox_image: "registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.0"
+agent_sandbox_namespace: "agent-sandbox-system"
+agent_sandbox_router_image: "us-central1-docker.pkg.dev/.../sandbox-router:latest-main"
+agent_sandbox_python_runtime_image: "registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.0"
 ```
 
-`core/inventory/metadata/vars/inference_kata.yml`:
+Kata settings (`roles/kata_containers/defaults/main.yaml` in enterprise-ai-solutions, and the toolkit's `roles/agent_sandbox/defaults/main.yaml`):
 ```yaml
 kata_namespace: "kube-system"
 kata_chart_ref: "oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
@@ -711,15 +719,13 @@ kata_warm_pool_size: 1
 
 ### Deployment Script
 
-- **Playbook**: `core/playbooks/deploy-agent-sandbox.yml` (Ansible)
-- **Wrapper**: `core/lib/components/agent-sandbox-controller.sh` (calls Ansible)
-- **Kata playbook**: `core/playbooks/deploy-kata-containers.yml` (Ansible)
-- **Kata wrapper**: `core/lib/components/kata-containers-controller.sh` (calls Ansible)
+- **Role**: `roles/agent_sandbox/tasks/install.yaml` (agent toolkit)
+- **Kata role**: `roles/kata_containers` (enterprise-ai-solutions, infrastructure layer)
 
 ### Templates
 
-- **Default SandboxTemplate**: `core/helm-charts/agent-sandbox/default-templates.yaml`
-- **Kata SandboxTemplate**: `core/helm-charts/agent-sandbox/kata-templates.yaml`
+- **Default SandboxTemplate**: `charts/agent-sandbox/default-templates.yaml`
+- **Kata SandboxTemplate**: `charts/agent-sandbox/kata-templates.yaml`
 - **kata-deploy chart values**: `core/helm-charts/kata-deploy/values.yaml`
 
 ---

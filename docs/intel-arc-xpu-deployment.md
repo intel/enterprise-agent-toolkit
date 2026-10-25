@@ -1,5 +1,7 @@
 # Intel® Arc™ (XPU) GPU Deployment Guide
 
+> **Note:** not available with the unified installer in this release.
+
 <!-- Copyright (C) 2025-2026 Intel Corporation -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
@@ -25,7 +27,7 @@ model replica is sharded across.
 | 36 | Qwen/Qwen3.6-27B | `xpu-qwen36-27b` | 4 |
 
 These map 1:1 to the `modelConfigs` entries in
-[`core/helm-charts/vllm/xpu-values.yaml`](../core/helm-charts/vllm/xpu-values.yaml), which
+[`core/helm-charts/vllm/xpu-values.yaml`](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/helm-charts/vllm/xpu-values.yaml), which
 holds the per-model vLLM flags, tool-call parser, and tensor-parallel size. Update that file
 if you need to change memory utilization, context length, or add a new model.
 
@@ -146,10 +148,10 @@ will print the "Available Models for XPU Deployment" menu (31–36) and prompt f
 
 ```bash
 # Fresh cluster + XPU model deployment
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 
-# Interactive menu (add/remove models on an already-deployed cluster)
-./deploy-agentic-stack.sh --menu
+# Add or remove models on an already-deployed cluster
+./model-manager deploy <name>     # or: ./model-manager undeploy <name>
 ```
 
 Internally, `install-model.sh` detects `compute_platform=xpu`, sets `xpu_playbook=true`,

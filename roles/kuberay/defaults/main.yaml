@@ -31,3 +31,20 @@ kuberay_head_cpu_request: "500m"
 kuberay_head_cpu_limit: "2"
 kuberay_head_memory_request: "2Gi"
 kuberay_head_memory_limit: "4Gi"
+
+# Prefer platform nodes; tolerate the control-plane taint
+kuberay_affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - {key: workload-class, operator: In, values: ["platform"]}
+kuberay_tolerations:
+  - {key: "node-role.kubernetes.io/control-plane", operator: "Exists", effect: "NoSchedule"}
+  - {key: "node-role.kubernetes.io/master", operator: "Exists", effect: "NoSchedule"}
+
+# Ray Dashboard at https://ray.<domain>/ behind basic auth (Secret ray-dashboard-auth)
+kuberay_dashboard_enabled: true
+kuberay_dashboard_hostname: "ray.{{ base_domain_name | default('example.com') }}"
+kuberay_dashboard_basic_auth: true

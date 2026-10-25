@@ -7,7 +7,7 @@ that tier, learning over time which model is most efficient.
 
 It is integrated into the stock LiteLLM proxy image **without rebuilding the image** —
 the router code is mounted from a Kubernetes ConfigMap and activated through a
-LiteLLM callback. Enable or disable it with a single Helm value.
+LiteLLM callback. Enable or disable it with a single setting.
 
 ---
 
@@ -72,7 +72,7 @@ async_log_success_event / async_log_failure_event
      (the bandit learns, per tier, which model is fastest over time)
 ```
 
-Requests to any other model name (`llama-8b`, `qwen-local-4b`, …) are **not touched** —
+Requests to any other model name (`llama-3-1-8b`, `qwen3-4b`, …) are **not touched** —
 only traffic addressed to the virtual `hybrid-router` entry is intercepted.
 
 ---
@@ -127,32 +127,33 @@ Three bandit algorithms ship (selectable via `bandit`):
 
 ## Deployment
 
-The router is part of the **`genai-gateway`** Helm chart and is controlled by one value:
+The router is part of the **`litellm`** role and is controlled by one value:
 
 ```yaml
-# core/helm-charts/genai-gateway/values.yaml
-customRouter:
-  # Mount the custom hybrid router into the LiteLLM container.
-  enabled: true
+# env/<name>/config.agent-toolkit.yaml
+# Mount the custom hybrid router into the LiteLLM container.
+hybrid_router_enabled: true
 ```
 
-When `customRouter.enabled: true`, the chart:
+When `hybrid_router_enabled: true`, the chart:
 
-1. Renders the router source into the `genai-gateway-router-code` ConfigMap
+1. Renders the router source into the `litellm-router-code` ConfigMap
    (`templates/router-configmap.yaml`).
-2. Volume-mounts each Python file into `/app/` and `/app/router_strategy/…` in the
+2. Volume-mounts each Python file into `/etc/litellm/` and `/etc/litellm/router_strategy/…` in the
    LiteLLM container (`templates/deployment.yaml`).
 3. Registers the callback so LiteLLM imports the module (and applies the monkey-patch)
    at startup:
 
    ```yaml
    litellm_settings:
-     callbacks: ["langfuse_otel", "custom_hybrid_router.proxy_handler_instance"]
+     callbacks: ["custom_hybrid_router.proxy_handler_instance"]
    ```
 
 No image rebuild is required. To change router *code*, edit the files under
-`core/helm-charts/genai-gateway/router/` and `helm upgrade`; to change router *config*,
-edit the virtual model entry (below) and restart the pod.
+`ext/enterprise.ai-inference/roles/litellm/files/router/` and re-run
+`./es_auto_installer.sh install agent-toolkit -- -e litellm_reconcile=true`; to change router
+*config*, edit the `hybrid_router_*` settings in `env/<name>/config.agent-toolkit.yaml` and
+re-run the same command.
 
 ---
 
@@ -185,31 +186,31 @@ whose `model` uses the `auto_router/hybrid_router` prefix. Example config:
 ```yaml
 model_list:
   # --- real backends ---
-  - model_name: llama-8b
+  - model_name: llama-3-1-8b
     litellm_params:
-      model: openai/Llama-3.1-8B
-      api_base: http://inference-8b:8000/v1
-      api_key: not-needed
-  - model_name: llama-70b
+      model: openai/llama-3-1-8b
+      api_base: http://ai-gateway.envoy-gateway-system.svc.cluster.local/llm-inference/llama-3-1-8b/v1
+      api_key: unused
+  - model_name: qwen3-coder-30b
     litellm_params:
-      model: openai/Llama-3.1-70B
-      api_base: http://inference-70b:8000/v1
-      api_key: not-needed
+      model: openai/qwen3-coder-30b
+      api_base: http://ai-gateway.envoy-gateway-system.svc.cluster.local/llm-inference/qwen3-coder-30b/v1
+      api_key: unused
 
   # --- virtual hybrid-router entry (what clients call) ---
   - model_name: hybrid-router
     litellm_params:
       model: auto_router/hybrid_router
-      hybrid_router_default_model: llama-8b
+      hybrid_router_default_model: llama-3-1-8b
       hybrid_router_config:
         bandit: thompson
         target_tpt: 1.0
         quality_weight: 0.0
         tier_candidates:
-          SIMPLE:    [llama-8b, llama-70b]
-          MEDIUM:    [llama-8b, llama-70b]
-          COMPLEX:   [llama-70b]
-          REASONING: [llama-70b]
+          SIMPLE:    [llama-3-1-8b, qwen3-coder-30b]
+          MEDIUM:    [llama-3-1-8b, qwen3-coder-30b]
+          COMPLEX:   [qwen3-coder-30b]
+          REASONING: [qwen3-coder-30b]
         complexity_router_config:
           tier_boundaries:
             simple_medium: 0.15
@@ -227,19 +228,19 @@ virtual entry live — no config edit or restart — by POSTing to `/model/new` 
 master key. First retrieve the key the same way as the other guides:
 
 ```bash
-# Retrieve the LiteLLM master key from the running deployment
-export LITELLM_MASTER_KEY=$(kubectl get deploy -n genai-gateway genai-gateway-deployment \
-  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="LITELLM_MASTER_KEY")].value}')
+# Retrieve the LiteLLM master key from its Secret
+export LITELLM_MASTER_KEY=$(kubectl get secret litellm-master-key -n litellm -o jsonpath='{.data.master_key}' | base64 -d)
 
-# Replace api.example.com with your gateway (cluster) URL
-curl -k --location 'https://api.example.com/model/new' \
+# The admin API is not published at the edge: use a port-forward
+kubectl port-forward -n litellm svc/litellm 4000:4000 &
+curl -s --location 'http://localhost:4000/model/new' \
   --header "Authorization: Bearer ${LITELLM_MASTER_KEY}" \
   --header 'Content-Type: application/json' \
   --data '{
     "model_name": "hybrid_router2",
     "litellm_params": {
         "model": "auto_router/hybrid_router",
-        "hybrid_router_default_model": "Qwen/Qwen2.5-Coder-14B-Instruct",
+        "hybrid_router_default_model": "qwen2-5-coder-14b",
         "hybrid_router_config": {
             "bandit": "thompson",
             "delta": 0.1,
@@ -248,18 +249,18 @@ curl -k --location 'https://api.example.com/model/new' \
             "quality_weight": 0.0,
             "tier_candidates": {
                 "SIMPLE": [
-                    "meta-llama/Llama-3.1-8B-Instruct",
-                    "Qwen/Qwen2.5-Coder-14B-Instruct"
+                    "llama-3-1-8b",
+                    "qwen2-5-coder-14b"
                 ],
                 "MEDIUM": [
-                    "meta-llama/Llama-3.1-8B-Instruct",
-                    "Qwen/Qwen2.5-Coder-14B-Instruct"
+                    "llama-3-1-8b",
+                    "qwen2-5-coder-14b"
                 ],
                 "COMPLEX": [
-                    "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+                    "qwen3-coder-30b"
                 ],
                 "REASONING": [
-                    "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+                    "qwen3-coder-30b"
                 ]
             },
             "complexity_router_config": {
@@ -281,8 +282,8 @@ curl -k --location 'https://api.example.com/model/new' \
 
 The `model_name` is what clients call (here `hybrid_router2`), and every model listed
 in `tier_candidates` / `hybrid_router_default_model` must already be onboarded on the
-gateway. The `LITELLM_MASTER_KEY` is set in the `genai-gateway-deployment` environment
-variables in the `genai-gateway` namespace.
+gateway. The `LITELLM_MASTER_KEY` is stored in the `litellm-master-key` Secret in the
+`litellm` namespace.
 
 ---
 
@@ -291,14 +292,14 @@ variables in the `genai-gateway` namespace.
 Send any request to `model="hybrid-router"`:
 
 ```bash
-curl http://<gateway-host>:4000/chat/completions \
+curl -k https://litellm.<base_domain_name>/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "hybrid-router", "messages": [{"role": "user", "content": "What is 2+2?"}]}'
 ```
 
 The router classifies the prompt and transparently forwards it. Requests addressed to
-`llama-8b`, `llama-70b`, or any other model name are unaffected.
+`llama-3-1-8b`, `qwen3-coder-30b`, or any other model name are unaffected.
 
 ---
 
@@ -308,14 +309,14 @@ The proxy logs one line at startup and one per routed request:
 
 ```
 [HybridRouterProxy] litellm.router.Router patched for auto_router/hybrid_router
-[HybridRouterProxy] Initialised model_name=hybrid-router bandit=thompson default=llama-8b tiers=['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING']
-[HybridRouterProxy] model=hybrid-router call_id=... tier=SIMPLE -> llama-8b
+[HybridRouterProxy] Initialised model_name=hybrid-router bandit=thompson default=llama-3-1-8b tiers=['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING']
+[HybridRouterProxy] model=hybrid-router call_id=... tier=SIMPLE -> llama-3-1-8b
 ```
 
 Inspect them with:
 
 ```bash
-kubectl logs -n genai-gateway deploy/genai-gateway-deployment -c litellm-container -f
+kubectl logs -n litellm deploy/litellm -c litellm -f
 ```
 
 Per-tier bandit state (arm counts, running means, and — for Thompson — the Beta
@@ -348,7 +349,8 @@ core/helm-charts/genai-gateway/
 
 ## Disabling the router
 
-Set `customRouter.enabled: false` in `values.yaml` and `helm upgrade`. The ConfigMap and
+Set `hybrid_router_enabled: false` in `env/<name>/config.agent-toolkit.yaml` and re-run
+`./es_auto_installer.sh install agent-toolkit -- -e litellm_reconcile=true`. The ConfigMap and
 volume mounts are removed and the callback is dropped, so the gateway behaves as a stock
 LiteLLM proxy. Remove the virtual `hybrid-router` model entry as well so clients no
 longer reference it.

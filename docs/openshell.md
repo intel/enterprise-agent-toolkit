@@ -13,7 +13,7 @@ The toolkit registers the **GenAI Gateway** (LiteLLM) as an OpenShell provider, 
 OpenShell sandboxes call models through LiteLLM with a dedicated, budgeted virtual key that
 never enters the sandbox.
 
-OpenShell is **optional** and **off by default** (`deploy_openshell=off`).
+OpenShell is **optional** and **off by default** (`openshell_enabled: false`).
 
 ---
 
@@ -23,8 +23,8 @@ OpenShell is **optional** and **off by default** (`deploy_openshell=off`).
 |---|---|
 | OpenShell Helm chart / images | `0.0.116` (`oci://ghcr.io/nvidia/openshell/helm-chart`) |
 | OpenShell CLI (used by the deployment) | `v0.0.116` GitHub release |
-| Agent Sandbox | `v0.5.0` (`deploy_agent_sandbox=on`) |
-| GenAI Gateway | LiteLLM as deployed by `deploy_genai_gateway=on` (optional; provider is skipped if absent) |
+| Agent Sandbox | `v0.5.0` (`agent_sandbox_enabled: true`) |
+| GenAI Gateway | LiteLLM as deployed by `auth_provider: "litellm"` (optional; provider is skipped if absent) |
 | User authentication | Single-admin mode (ClusterIP gateway, access gated by Kubernetes RBAC) |
 | CNI | Must enforce `NetworkPolicy` (e.g. Calico) |
 
@@ -36,7 +36,7 @@ Two different components are called "gateway" in this document:
 
 - **OpenShell gateway** — the OpenShell control plane. It creates and deletes sandboxes and
   stores policies and provider credentials. It does not proxy LLM traffic.
-- **GenAI Gateway (LiteLLM)** — the toolkit's existing model proxy (`deploy_genai_gateway=on`).
+- **GenAI Gateway (LiteLLM)** — the toolkit's existing model proxy (`auth_provider: "litellm"`).
   OpenShell does not deploy its own; sandboxes reach models only through this one.
 
 An **agent** is any program you run inside a sandbox (a custom Python agent, a coding
@@ -54,7 +54,7 @@ OpenShell gateway  (StatefulSet openshell-0, openshell-system)
    │ 1. creates Sandbox CR              ▲ 3. supervisor fetches policy and
    ▼                                    │    provider credentials (mTLS)
 Agent Sandbox controller ── 2. creates pod ──┐
-(deploy_agent_sandbox)                       ▼
+(agent_sandbox_enabled)                      ▼
 ┌─ sandbox pod default--<name> (openshell-sandboxes) ─────────┐
 │  agent process (your code)  ──►  OpenShell supervisor       │
 │                                  egress / L7 policy, Landlock│
@@ -75,11 +75,11 @@ GenAI Gateway (LiteLLM, :4000)                   hosts allowed by the sandbox
 
 | Toolkit component | Used by OpenShell for | Changed |
 |---|---|---|
-| Kubernetes cluster (`ei-infra-eligible` node label) | Runs the gateway and sandbox pods; the gateway is placed on infra nodes | No |
-| Agent Sandbox controller `v0.5.0` (`deploy_agent_sandbox`) | Turns OpenShell `Sandbox` CRs into pods | No |
-| GenAI Gateway / LiteLLM (`deploy_genai_gateway`) | The only path from a sandbox to models | One additional virtual key |
+| Kubernetes cluster | Runs the gateway and sandbox pods | No |
+| Agent Sandbox controller `v0.5.0` (`agent_sandbox_enabled`) | Turns OpenShell `Sandbox` CRs into pods | No |
+| GenAI Gateway / LiteLLM (`auth_provider: "litellm"`) | The only path from a sandbox to models | One additional virtual key |
 | Model backends behind LiteLLM | Reached through LiteLLM only | No |
-| Deployment framework (`agentic-config.cfg`, metadata pins, `fresh-install.sh`, Ansible, resume mode) | Installs and re-runs OpenShell like other components | New `deploy_openshell` switch |
+| Deployment framework (`config.agent-toolkit.yaml`, `es_auto_installer.sh`, Ansible) | Installs and re-runs OpenShell like other components | New `openshell_enabled` switch |
 | Proxy settings (`https_proxy`, `no_proxy`) | Sandbox egress is chained through the corporate proxy | No |
 | CNI (e.g. Calico) | Enforces the sandbox NetworkPolicy | No |
 
@@ -110,7 +110,7 @@ on 0.0.116 (see [Known Limitations](#known-limitations-00116)).
 | 6 | Supervisor | LiteLLM `:4000` | OpenAI-compatible HTTP; `Authorization: Bearer <placeholder>` rewritten to the virtual key | Provider profile; `providers_v2_enabled=true` (playbook) |
 | 7 | Playbook | LiteLLM admin API | `kubectl exec` into the LiteLLM pod, `POST /key/generate` with the in-pod master key → Secret `openshell-genai-key` → provider credential | Playbook |
 | 8 | LiteLLM | Model backends | Unchanged; the key's allowed models and budget apply | Toolkit, unchanged |
-| 9 | Supervisor | External hosts | Only hosts in the sandbox policy, through the corporate proxy | `--policy` per sandbox; proxy from `agentic-config.cfg` |
+| 9 | Supervisor | External hosts | Only hosts in the sandbox policy, through the corporate proxy | `--policy` per sandbox; proxy from `global_config.yaml` |
 
 ### Where credentials live
 
@@ -126,7 +126,7 @@ on 0.0.116 (see [Known Limitations](#known-limitations-00116)).
 
 | Component | Kind | Namespace | Notes |
 |---|---|---|---|
-| `openshell` | StatefulSet + Service (ClusterIP :8080, mTLS) | `openshell-system` | Upstream Helm chart with `core/helm-charts/openshell/values.yaml` |
+| `openshell` | StatefulSet + Service (ClusterIP :8080, mTLS) | `openshell-system` | Upstream Helm chart with `charts/openshell/values.yaml` |
 | `openshell-client-tls` | Secret | `openshell-system`, `openshell-sandboxes` | Client mTLS bundle; copied into the sandbox namespace (supervisors mount it) |
 | `openshell-genai-key` | Secret | `openshell-system` | LiteLLM virtual key minted inside the LiteLLM pod (master key never leaves it) |
 | `eat-genai-gateway` | Provider profile | gateway | LiteLLM endpoint, bearer credential, allowed binaries |
@@ -137,28 +137,30 @@ on 0.0.116 (see [Known Limitations](#known-limitations-00116)).
 
 ## Configuration
 
-### Enable in `core/inventory/agentic-config.cfg`
+### Enable in `env/<name>/config.agent-toolkit.yaml`
 
-```ini
-deploy_agent_sandbox=on
-deploy_openshell=on
+```yaml
+agent_sandbox_enabled: true
+openshell_enabled: true
 ```
 
-`deploy_openshell=on` requires `deploy_agent_sandbox=on` in the same run, or Agent Sandbox
+`openshell_enabled: true` requires `agent_sandbox_enabled: true` in the same run, or Agent Sandbox
 CRDs already present on the cluster; otherwise the deployment exits before installing
 anything. On re-runs, resume mode skips OpenShell only if the `openshell_release_name` release
-in `openshell_namespace` (as set in `inference_openshell.yml`) is `deployed` and the last run
+in `openshell_namespace` (as set in `config.agent-toolkit.yaml`) is `deployed` and the last run
 completed with the current version pins and settings (see [Deployment](#deployment)).
 
-### Version pins in `core/inventory/metadata/agentic-metadata.cfg`
+> **Note:** resume mode is not available in this release.
 
-```ini
-openshell_chart_version="0.0.116"
-openshell_image_tag="0.0.116"
-openshell_release_tag="v0.0.116"
+### Version pins in `env/<name>/config.agent-toolkit.yaml`
+
+```yaml
+openshell_chart_version: "0.0.116"
+openshell_image_tag: "0.0.116"
+openshell_release_tag: "v0.0.116"
 ```
 
-### Settings in `core/inventory/metadata/vars/inference_openshell.yml`
+### Settings in `env/<name>/config.agent-toolkit.yaml`
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -177,15 +179,17 @@ openshell_release_tag="v0.0.116"
 | `openshell_sandbox_egress_cidrs` | `[]` | Extra private CIDRs that sandbox policies may target |
 | `openshell_sandbox_dns_cidrs` | `[]` | Extra resolvers reachable on port `53`; empty = auto-detect NodeLocal DNSCache |
 
-The corporate proxy (`https_proxy` / `no_proxy` from `agentic-config.cfg`) is passed to the
+> **Note:** `openshell_allow_unauthenticated_clusterip_only` is not available in this release.
+
+The corporate proxy (`https_proxy` / `no_proxy` from `global_config.yaml`) is passed to the
 gateway, which chains sandbox egress through it.
 
 ### Authentication
 
 OpenShell on Kubernetes authenticates users with OIDC only; mTLS covers transport and
-supervisors. Choose one mode explicitly — the playbook fails otherwise:
+supervisors. Choose one mode:
 
-- **Single-admin (supported)**: set `openshell_allow_unauthenticated_clusterip_only: true`.
+- **Single-admin (supported)**: leave `openshell_oidc_issuer` empty (the default).
   The gateway stays `ClusterIP`; only users who can `kubectl port-forward` in
   `openshell-system` and read `openshell-client-tls` can reach it.
 - **OIDC**: set `openshell_oidc_issuer` (for example a Keycloak realm URL, served over HTTPS).
@@ -196,14 +200,12 @@ supervisors. Choose one mode explicitly — the playbook fails otherwise:
 ## Deployment
 
 ```bash
-# core/inventory/agentic-config.cfg
-deploy_agent_sandbox=on
-deploy_openshell=on
+# env/<name>/config.agent-toolkit.yaml
+agent_sandbox_enabled: true
+openshell_enabled: true
+openshell_oidc_issuer: ""   # empty = single-admin via kubectl port-forward
 
-# core/inventory/metadata/vars/inference_openshell.yml
-openshell_allow_unauthenticated_clusterip_only: true
-
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 ```
 
 The Ansible playbook (`core/playbooks/deploy-openshell.yml`) runs 4 task groups:
@@ -219,11 +221,13 @@ Re-running is safe: the virtual key is minted once, the provider profile is upda
 (running sandboxes pick up changes), and an existing provider is kept.
 
 The last task stores a fingerprint of the version pins, `inference_openshell.yml`,
-`core/helm-charts/openshell/` and the playbook in ConfigMap `openshell-deploy-state`. On the
-next `./deploy-agentic-stack.sh`, resume mode skips OpenShell only while that fingerprint
+`charts/openshell/` and the playbook in ConfigMap `openshell-deploy-state`. On the
+next `./es_auto_installer.sh install agent-toolkit`, resume mode skips OpenShell only while that fingerprint
 matches. To apply a changed pin, setting or provider profile, edit the file and re-run
-`./deploy-agentic-stack.sh` with `deploy_openshell=on`; a failed or interrupted run is retried
+`./es_auto_installer.sh install agent-toolkit` with `openshell_enabled: true`; a failed or interrupted run is retried
 the same way.
+
+> **Note:** the `openshell-deploy-state` fingerprint is not available in this release.
 
 ---
 
@@ -266,7 +270,7 @@ openshell provider list
 
 ```bash
 openshell sandbox create --name demo --provider genai-gateway --detach \
-  --env OPENAI_BASE_URL=http://genai-gateway-service.genai-gateway.svc.cluster.local:4000/v1
+  --env OPENAI_BASE_URL=http://litellm.litellm.svc.cluster.local:4000/v1
 
 openshell sandbox exec -n demo --no-tty -- sh -c 'echo $OPENAI_API_KEY'
 # openshell:resolve:env:..._OPENAI_API_KEY    <- placeholder, not the key
@@ -319,7 +323,7 @@ network_policies: {}
 YAML
 
 openshell sandbox create --name opencode --provider genai-gateway --policy /tmp/opencode-policy.yaml --detach \
-  --env OPENAI_BASE_URL=http://genai-gateway-service.genai-gateway.svc.cluster.local:4000/v1
+  --env OPENAI_BASE_URL=http://litellm.litellm.svc.cluster.local:4000/v1
 
 # OpenCode talks to the GenAI Gateway using the sandbox's injected env (placeholder key).
 openshell sandbox exec -n opencode --no-tty -- sh -c 'mkdir -p ~/.config/opencode && cat > ~/.config/opencode/opencode.json' <<JSON
@@ -363,7 +367,8 @@ openshell sandbox delete opencode
 > In the community image, `opencode` is a Node launcher that starts the bundled executable
 > `/usr/lib/node_modules/opencode-ai/bin/.opencode`, which makes the model calls. That path is
 > allowlisted in the `genai-gateway` provider profile
-> (`core/helm-charts/openshell/genai-gateway-provider.yaml`). If a
+> (`charts/openshell/genai-gateway-provider.yaml` in the agent toolkit, `ext/enterprise.agent-toolkit/` in the
+> enterprise-ai-solutions checkout). If a
 > model call returns `binary ... not allowed in policy '_provider_genai_gateway'`, add OpenCode's
 > resolved binary path there and re-run the deployment (or `openshell provider profile update`).
 
@@ -457,7 +462,7 @@ for _ in range(10):
 ```bash
 openshell sandbox create --name agent-demo --provider genai-gateway \
   --policy github-readonly.yaml --upload agent.py:/sandbox/agent.py --detach \
-  --env OPENAI_BASE_URL=http://genai-gateway-service.genai-gateway.svc.cluster.local:4000/v1 \
+  --env OPENAI_BASE_URL=http://litellm.litellm.svc.cluster.local:4000/v1 \
   --env MODEL=<model-id>
 
 openshell sandbox get agent-demo
@@ -563,9 +568,9 @@ not selected, so the chart's stricter policies stay in effect.
 ## Removal
 
 The toolkit has no per-component uninstall. To remove OpenShell from a running cluster, set
-`deploy_openshell=off` in `agentic-config.cfg` (so a later run does not reinstall it), then run
+`openshell_enabled: false` in `config.agent-toolkit.yaml` (so a later run does not reinstall it), then run
 these steps on the control plane. They use the default names; if you changed them in
-`inference_openshell.yml`, use yours.
+`config.agent-toolkit.yaml`, use yours.
 
 ```bash
 # 1. Delete the sandboxes (with the CLI connected, see Verification)
@@ -579,11 +584,11 @@ helm uninstall openshell -n openshell-system --wait
 kubectl delete namespace openshell-sandboxes openshell-system
 
 # 3. Revoke the LiteLLM virtual key (runs in the LiteLLM pod, which holds the master key)
-kubectl exec -n genai-gateway deploy/genai-gateway-deployment -c litellm-container -- python -c '
+kubectl exec -n litellm deploy/litellm -c litellm -- python -c '
 import os, urllib.request
 req = urllib.request.Request("http://127.0.0.1:4000/key/delete",
     b"{\"key_aliases\": [\"openshell-sandboxes\"]}",
-    {"Authorization": "Bearer " + os.environ["LITELLM_MASTER_KEY"], "Content-Type": "application/json"})
+    {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
 print(urllib.request.urlopen(req).read().decode())'
 
 # 4. Admin host: `gateway remove` keeps the client certificate files, so delete them too,
@@ -605,9 +610,9 @@ openshell logs <sandbox> --source sandbox
 
 | Symptom | Cause / Fix |
 |---|---|
-| `deploy_openshell=on requires deploy_agent_sandbox=on` | Enable Agent Sandbox in the same run |
-| `OpenShell on Kubernetes authenticates users via OIDC only` | Choose an auth mode in `inference_openshell.yml` |
-| LLM call returns `policy_denied` | The calling binary is not in the provider profile `binaries` list (`core/helm-charts/openshell/genai-gateway-provider.yaml`); edit it and re-run `./deploy-agentic-stack.sh` with `deploy_openshell=on` |
+| `openshell \| Check Agent Sandbox API is served (agent_sandbox)` fails | Enable Agent Sandbox in the same run |
+| `OpenShell on Kubernetes authenticates users via OIDC only` | Choose an auth mode in `config.agent-toolkit.yaml` |
+| LLM call returns `policy_denied` | The calling binary is not in the provider profile `binaries` list (`charts/openshell/genai-gateway-provider.yaml` in the agent toolkit); edit it and re-run `./es_auto_installer.sh install agent-toolkit` with `openshell_enabled: true` |
 | `transport error` / `Connection reset by peer`, or `--upload` fails with `ssh tar extract exited with status 255` | `kubectl port-forward` dropped a stream; retry the command (re-run `openshell sandbox upload <name> <file> <dest>` for a failed upload), and restart the port-forward if it exited |
 | CLI hangs | Make sure `NO_PROXY` includes `127.0.0.1`, so the CLI does not send gateway traffic through a proxy |
 | Sandbox fails with `Policy fetch failed ... failed to connect to OpenShell server` | Sandbox DNS is blocked. Check `kubectl get netpol eat-openshell-sandbox-pods -n openshell-sandboxes -o yaml` lists the resolver from the pod's `/etc/resolv.conf` (NodeLocal DNSCache `169.254.25.10` on kubespray); if the cluster uses another DNS cache, set `openshell_sandbox_dns_cidrs` and re-run the deployment |
@@ -616,11 +621,10 @@ openshell logs <sandbox> --source sandbox
 
 ## Configuration Files
 
-- **Playbook**: `core/playbooks/deploy-openshell.yml`
-- **Wrapper**: `core/lib/components/openshell-controller.sh`
-- **Variables**: `core/inventory/metadata/vars/inference_openshell.yml`
-- **Helm overlay**: `core/helm-charts/openshell/values.yaml`
-- **Provider profile**: `core/helm-charts/openshell/genai-gateway-provider.yaml`
+- **Role**: `roles/openshell/tasks/install.yaml`
+- **Variables**: `roles/openshell/defaults/main.yaml` (override them in `env/<name>/config.agent-toolkit.yaml`)
+- **Helm overlay**: `charts/openshell/values.yaml`
+- **Provider profile**: `charts/openshell/genai-gateway-provider.yaml`
 
 ---
 

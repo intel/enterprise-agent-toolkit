@@ -26,3 +26,5 @@ pgvector_resources:
   limits:
     cpu: "2"
     memory: "2Gi"
+# PostgreSQL server settings, e.g. max_connections: 600; empty keeps the image defaults
+pgvector_parameters: {}

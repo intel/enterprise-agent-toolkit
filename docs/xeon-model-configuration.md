@@ -1,7 +1,7 @@
 # Xeon (CPU) vLLM Model Configuration
 
 This guide covers the `modelConfigs` structure in
-[`core/helm-charts/vllm/xeon-values.yaml`](../core/helm-charts/vllm/xeon-values.yaml) — how
+[`core/helm-charts/vllm/xeon-values.yaml`](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/helm-charts/vllm/xeon-values.yaml) — how
 per-model tuning is defined for CPU/Xeon deployments, and how to add a new model to it.
 
 ## How the lookup works
@@ -20,9 +20,9 @@ modelConfigs:
     extraCmdArgs: [ ... ]
 ```
 
-- **[`configmap.yaml`](../core/helm-charts/vllm/templates/configmap.yaml)** copies the
+- **[`configmap.yaml`](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/helm-charts/vllm/templates/configmap.yaml)** copies the
   matched entry's `configMapValues` into the pod's ConfigMap (env vars).
-- **[`deployment.yaml`](../core/helm-charts/vllm/templates/deployment.yaml)** uses
+- **[`deployment.yaml`](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/helm-charts/vllm/templates/deployment.yaml)** uses
   `extraCmdArgs` for the vLLM CLI args, `optimal_cpu_cores` as the CPU request/limit
   (or falls back to `optimal_balloon_config.workload_cpus` from the NRI balloon policy if
   not defined), and `tensor_parallel_size`/`pipeline_parallel_size` for the parallelism flags.
@@ -36,13 +36,13 @@ wrong for its architecture (missing tool-call parser, wrong chat template, etc).
 ## CPU cores and memory limits (avoiding OOM)
 
 **CPU core allocation:**
-- **If `optimal_cpu_cores` is defined** in the model config → use that value as the CPU request/limit
-- **If `optimal_cpu_cores` is omitted** → the NRI balloon policy calculates `workload_cpus` based on the node's detected NUMA/socket topology and uses that instead
+- **If `cpu` is a number** in the model's `env/<name>/models.yaml` entry → use that value as the CPU request/limit
+- **If `cpu: auto`** → under the NRI balloon policy, model-manager takes the free physical cores of one NUMA node per TP rank on the smallest schedulable node and uses that instead
 
 This lets smaller models (like Llama-8B with `tp=1`) use a full NUMA node's worth of cores instead of a hardcoded minimum.
 
-When picking `optimal_cpu_cores` for a new entry, keep it a multiple of
-`tensor_parallel_size` (vLLM shards evenly across TP ranks) and within a single socket's
+When picking `cpu` for a new entry, keep it a multiple of
+`--tensor-parallel-size` (vLLM shards evenly across TP ranks) and within a single socket's
 core count — spanning multiple NUMA nodes is unsupported for CPU deployments and can crash
 (`shm.cpp thread_num mismatch`) unless `tensor_parallel_size` is explicitly forced to `1`.
 
@@ -64,12 +64,14 @@ model deployed in that run:
 > parameters in BF16) is OOM-killed at TP=1, so give it a higher `tensor_parallel_size`
 > (2 or 4).
 
+> **Note:** not available in this release.
+
 The limit is a hard cap enforced by the kernel — if a model's real footprint (weights +
 `VLLM_CPU_KVCACHE_SPACE` + engine overhead) exceeds it, the pod gets OOM-killed no matter
 how much physical memory the node has. When adding a new model — especially a large one at
-`tensor_parallel_size >= 4` — check that its expected footprint fits under **400Gi** before
-assuming the deployment will be stable; there's currently no per-model override for this,
-so a model that needs more has to be handled as a special case in the playbook.
+`tensor_parallel_size >= 4` — check that its expected footprint fits under its `memory`
+value before assuming the deployment will be stable; a model that needs more gets a larger
+`memory` on its `env/<name>/models.yaml` entry (or `--memory` on `./model-manager deploy`).
 
 **Approximate footprint per model** (BF16 weights, `Base weights = total params × 2 bytes`
 — use *total* params for MoE models, not active params, since every expert's weights sit
@@ -94,18 +96,21 @@ gives every `tensor_parallel_size >= 4` model today; they only stay stable becau
 when the node has it free. There's no margin left for anything bigger at TP=4 without
 raising that ceiling.
 
+> **Note:** not available in this release.
+
 ## Adding a new model
 
-1. **Add an entry keyed by the exact model ID** you'll pass as `LLM_MODEL_ID`. Keep the
+1. **Add an entry to `env/<name>/models.yaml`** with a `name` and the exact Hugging Face `model_id`. Keep the
    `# Benchmarked: ...` or `# Estimated: ...` comment convention already used by the other
-   entries, noting the instance type and how `optimal_cpu_cores`/`tensor_parallel_size`
+   entries, noting the instance type and how `cpu`/`--tensor-parallel-size`
    were derived.
 
 2. **Sizing fields:**
-   - `optimal_cpu_cores` — (optional) CPU cores requested/limited per replica. If omitted, the NRI
-     balloon policy will calculate and use `workload_cpus` based on detected NUMA topology. See
+   - `cpu` — CPU cores requested/limited per replica, or `auto`: the free physical cores of
+     one NUMA node per TP rank, based on detected NUMA topology. See
      [CPU cores and memory limits](#cpu-cores-and-memory-limits-avoiding-oom) for details.
-   - `tensor_parallel_size` / `pipeline_parallel_size` — vLLM parallelism. These are also
+   - `--tensor-parallel-size` in `args` (or `--tp N` on `./model-manager deploy`) — vLLM
+     parallelism. These are also
      read by the Ansible pre-flight validator (`validate-cpu-requirements.sh`, via a
      mirrored `model_benchmark_config.yml`), so treat this file as the source of truth for
      sizing, not just the Helm chart.
@@ -115,7 +120,9 @@ raising that ceiling.
      > hardware that could back it). A mismatch fails with `CreateContainerError: no
      > balloon for annotation`.
 
-3. **`configMapValues`** — environment variables injected into the pod. Common knobs:
+     > **Note:** not available in this release.
+
+3. **`env`** — environment variables injected into the pod. Common knobs:
    | Key | Meaning |
    |---|---|
    | `VLLM_CPU_KVCACHE_SPACE` | KV-cache size in GB reserved per replica — raise for longer contexts/more concurrent requests, at the cost of memory headroom |
@@ -125,24 +132,23 @@ raising that ceiling.
    | `HF_HUB_DISABLE_XET`, `TRITON_CACHE_DIR`, `USER` | Boilerplate — copy as-is unless you know you need to change them |
    | `HF_HOME` | Only set for large models where weights should persist on the PVC (`/data`) rather than the ephemeral `/tmp` emptyDir — see the `Qwen/Qwen3.6-35B-A3B` entry for why |
 
-4. **`extraCmdArgs`** — the vLLM CLI flags. The most model-specific ones:
+4. **`args`** — the vLLM CLI flags. The most model-specific ones:
    - `--tool-call-parser` must match the model family: `llama3_json` (Llama-3.x),
      `hermes` (Qwen3 non-coder), `qwen3_xml` (Qwen3-Coder / Qwen2.5-Coder), `gemma4`.
-   - `--chat-template` — only needed if the model doesn't ship a template that already
+   - `chat_template_file` (vLLM `--chat-template`) — only needed if the model doesn't ship a template that already
      produces the tool-call format its parser expects. Templates live in
-     [`files/`](../core/helm-charts/vllm/files/); add a new `.jinja` there if the model
+     `ext/enterprise.ai-inference/model_manager/chat-templates/`; add a new `.jinja` there if the model
      needs one.
    - `--trust-remote-code` — required for some custom model architectures (see the
      Qwen3-Coder-30B and Qwen3.6-35B entries).
 
-5. **`speculativeConfig`** (optional) — a JSON string:
-   `{"method":"draft_model","model":"<draft-model-id>","num_speculative_tokens":N}`.
-   This only takes effect when the release is installed with `--set speculative.enabled=true`;
-   it's otherwise ignored, so it's safe to leave on an entry that's normally deployed
-   without speculative decoding.
+5. **`draft_model_id`** (optional) — the draft model's Hugging Face repo, fetched to
+   `/mnt/models/draft`, plus `args` in dot notation:
+   `"--speculative-config.method", "draft_model", "--speculative-config.model", "/mnt/models/draft", "--speculative-config.num_speculative_tokens", "N"`.
+   Speculative decoding is a separate catalog entry (e.g. `qwen3-coder-30b-specdec`), so the
+   base entry stays deployed without speculative decoding.
 
-6. **Wire it into the deploy tooling.** Adding a `modelConfigs` entry alone doesn't make
-   the model deployable end-to-end — you also need a case in
-   `core/lib/models/model-selection.sh` (menu number / `models=` string) and an
-   install/uninstall block in `core/playbooks/deploy-inference-models.yml` that sets
-   `LLM_MODEL_ID` to the same key and runs `helm upgrade --install`.
+6. **Wire it into the deploy tooling.** The catalog entry is deployable end-to-end as is:
+   `./model-manager deploy <name>` from the `enterprise-ai-solutions` checkout (or list it in
+   `llm_services_autodeploy_models` in `config.agent-toolkit.yaml` to deploy it on install);
+   `./model-manager undeploy <name>` removes it.

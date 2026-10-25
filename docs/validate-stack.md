@@ -5,7 +5,7 @@ Intel® AI for Enterprise Agent Toolkit. Produces a consolidated traffic-light
 report (GREEN / AMBER / RED) covering every deployed layer — from kernel
 settings to end-to-end inference.
 
-> **Topology-aware:** Reads `rack-scale-flags.env` and `agentic-config.cfg` to
+> **Topology-aware:** Reads `rack-scale-flags.env` and `env/<name>/global_config.yaml`, `config.inference.yaml` and `config.agent-toolkit.yaml` to
 > gate checks. Layers for components that are not deployed are skipped cleanly,
 > not reported as failures. Works on both single-node and rack-scale deployments.
 
@@ -56,6 +56,8 @@ DNS resolution failure, gateway unreachable.
 ansible-playbook -i core/inventory/hosts.yaml core/playbooks/preflight-check.yml
 ```
 
+> **Note:** not available in this release.
+
 ---
 
 ## Validate Stack — Post-Deploy
@@ -72,13 +74,13 @@ Exit code: `0` if no RED results (AMBER counts as pass), non-zero on any RED.
 ### Run all checks
 
 ```bash
-ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml
+./es_auto_installer.sh validate agent-toolkit
 ```
 
 ### Run a single layer
 
 ```bash
-ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml --tags kubernetes
+./es_auto_installer.sh validate platform --only
 ```
 
 ### Run with extended burn (opt-in)
@@ -87,6 +89,8 @@ ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml 
 ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml \
   --tags all,extended-burn -e burn_duration=10m
 ```
+
+> **Note:** not available in this release.
 
 ---
 
@@ -99,21 +103,21 @@ Each layer maps to an Ansible tag and a separate task file under
 
 | Layer | Tag | What it checks | Gated by |
 |---|---|---|---|
-| End-to-end inference | `e2e` | Model serving via GenAI Gateway — sends a real inference request and validates the response | `deploy_genai_gateway=on` |
+| End-to-end inference | `e2e` | Model serving via GenAI Gateway — sends a real inference request and validates the response | `auth_provider: "litellm"` |
 | Kubernetes | `kubernetes` | API server, etcd, CoreDNS, node readiness, system pods | Always |
-| Storage | `storage` | Ceph health, OSD status, pool configuration, PVC binding | `deploy_ceph=on` |
-| AI Stack services | `ai-stack` | LiteLLM, Redis, pgvector, Langfuse, Grafana pod/service status | `deploy_genai_gateway=on` |
-| Inter-component wiring | `wiring` | Service connectivity between components — LiteLLM→vLLM, Gateway→Redis, etc. | `deploy_genai_gateway=on` |
-| GPU | `gpu` | GPU operator, device plugin, nvidia-smi / xpu-smi output, resource allocation | `rack_scale_gpu_vendor` set |
-| KubeRay | `kuberay` | Ray operator, head node, worker pods, dashboard accessibility | `deploy_kuberay=on` |
-| Agent Sandbox | `sandbox` | Sandbox controller, template and warmpool pod status | `deploy_agent_sandbox=on` |
-| Flowise | `flowise` | Flowise deployment, service, and UI accessibility | `deploy_agenticai_plugin=on` |
+| Storage | `storage` | Ceph health, OSD status, pool configuration, PVC binding | `storage_backend: ceph` |
+| AI Stack services | `ai-stack` | LiteLLM, Redis, pgvector, Langfuse, Grafana pod/service status | `auth_provider: "litellm"` |
+| Inter-component wiring | `wiring` | Service connectivity between components — LiteLLM→vLLM, Gateway→Redis, etc. | `auth_provider: "litellm"` |
+| GPU | `gpu` | GPU operator, device plugin, nvidia-smi / xpu-smi output, resource allocation | `rack_scale_gpu_vendor` set. **Note:** not available in this release. |
+| KubeRay | `kuberay` | Ray operator, head node, worker pods, dashboard accessibility | `kuberay_enabled: true` |
+| Agent Sandbox | `sandbox` | Sandbox controller, template and warmpool pod status | `agent_sandbox_enabled: true` |
+| Flowise | `flowise` | Flowise deployment, service, and UI accessibility | `deploy_agenticai_plugin=on`. **Note:** not available in this release. |
 
 ### Host-level checks (Play 2 — runs on every node)
 
 | Layer | Tag | What it checks | Gated by |
 |---|---|---|---|
-| Fabric | `fabric` | NIC link speed, MTU, BGP peering (Clos), latency between peers | `rack_scale_mode=on` |
+| Fabric | `fabric` | NIC link speed, MTU, BGP peering (Clos), latency between peers | `rack_scale_mode=on`. **Note:** not available in this release. |
 | Network | `network` | Basic connectivity, DNS resolution, gateway reachability | Always |
 | Proxy | `proxy` | HTTP/HTTPS proxy configuration, no_proxy correctness | Always |
 | Platform health | `platform` | Kernel version, CPU governor, NUMA, THP, swap, disk space | Always |
@@ -142,6 +146,8 @@ ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml 
   -e burn_duration=10m
 ```
 
+> **Note:** not available in this release.
+
 ---
 
 ## Reports
@@ -152,6 +158,8 @@ Validate-stack produces two report formats:
 |---|---|---|
 | JSON | `core/inventory/metadata/health-report-latest.json` | Machine-readable, cumulative — each run replaces its layers, preserves others |
 | HTML | `core/inventory/metadata/health-report-latest.html` | Visual traffic-light dashboard, served from the same directory |
+
+> **Note:** not available in this release.
 
 Timestamped archives are also written (e.g., `health-report-20260910-143022.json`)
 so you can compare reports across runs.
@@ -165,9 +173,11 @@ The terminal output includes:
 
 ## Integration with fresh-install.sh
 
-When running a full deployment via `deploy-agentic-stack.sh`, only the
+When running a full deployment via `es_auto_installer.sh`, only the
 **preflight check** runs automatically — before kubespray, if
 `preflight-check.yml` exists and `--skip-check` is not set.
+
+> **Note:** not available in this release.
 
 Post-deploy validation (`validate-stack.yml`) is **not** run by the deployment.
 Run it manually once the deployment has finished, as shown in
@@ -185,6 +195,8 @@ ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml 
   -e burn_storage_seq_write_gbps=2 \
   -e burn_gpu_temp_ceil=80
 ```
+
+> **Note:** not available in this release.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -204,7 +216,7 @@ ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml 
 
 Ensure `chronyd` or `ntpd` is running and synchronized on all nodes:
 ```bash
-ansible -i core/inventory/hosts.yaml all -b -m shell -a "chronyc tracking || ntpq -p"
+ansible -i env/<name>/inventory/hosts.yaml all -b -m shell -a "chronyc tracking || ntpq -p"
 ```
 
 ### AMBER results for model loading
@@ -212,7 +224,7 @@ ansible -i core/inventory/hosts.yaml all -b -m shell -a "chronyc tracking || ntp
 AMBER is expected during initial model loading (can take 5-15 minutes for large
 models). Re-run validation after models are fully loaded:
 ```bash
-ansible-playbook -i core/inventory/hosts.yaml core/playbooks/validate-stack.yml --tags e2e
+./es_auto_installer.sh validate inference
 ```
 
 ### Silent checkpoints not producing output
@@ -223,7 +235,11 @@ design. Results are written to the cumulative JSON report. Check:
 cat core/inventory/metadata/health-report-latest.json | python3 -m json.tool | head -20
 ```
 
+> **Note:** not available in this release.
+
 ### Fabric checks skipped on single-node
 
 Fabric layer checks only run when `rack_scale_mode=on`. This is expected
 for single-node deployments.
+
+> **Note:** not available in this release.

@@ -30,4 +30,9 @@ spec:
     ports:
     - protocol: TCP
       port: {{ .Values.redis_stack_server.port }}
+    {{- if .Values.redis_stack_server.networkPolicy.meshPort }}
+    # HBONE port for meshed clients
+    - protocol: TCP
+      port: {{ .Values.redis_stack_server.networkPolicy.meshPort }}
+    {{- end }}
 {{- end }}

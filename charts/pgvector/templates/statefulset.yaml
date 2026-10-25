@@ -21,6 +21,14 @@ spec:
         - name: pgvector
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.postgresql.parameters }}
+          # Each parameter becomes postgres -c key=value
+          args:
+            {{- range $k, $v := . }}
+            - "-c"
+            - "{{ $k }}={{ $v }}"
+            {{- end }}
+          {{- end }}
           ports:
             - name: postgres
               containerPort: 5432

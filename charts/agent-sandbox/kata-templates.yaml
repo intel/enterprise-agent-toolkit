@@ -28,6 +28,8 @@ spec:
     metadata:
       labels:
         sandbox: kata
+        # Kata microVMs cannot join the ambient mesh
+        istio.io/dataplane-mode: none
     spec:
       runtimeClassName: KATA_RUNTIME_CLASS
       # Only nodes that passed the KVM preflight can run microVMs.

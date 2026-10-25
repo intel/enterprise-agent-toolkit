@@ -15,6 +15,39 @@
       metadata:
         name: "{{ agent_sandbox_namespace }}"
 
+- name: "agent_sandbox | Enrol namespace in the ambient mesh"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ agent_sandbox_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when: istio_enabled | default(false) | bool
+
+# The API server reaches the conversion webhook in plaintext
+- name: "agent_sandbox | Accept the API server on the controller webhook port"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: security.istio.io/v1
+      kind: PeerAuthentication
+      metadata:
+        name: agent-sandbox-controller-webhook
+        namespace: "{{ agent_sandbox_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: agentic-ai-stack
+      spec:
+        selector:
+          matchLabels:
+            app: agent-sandbox-controller
+        mtls:
+          mode: STRICT
+        portLevelMtls: "{{ {'9443': {'mode': 'PERMISSIVE'}} }}"
+  when: istio_enabled | default(false) | bool
+
 # ── Core components (CRDs + controller) from official release manifests ──
 
 - name: "agent_sandbox | Apply core manifest (CRDs + controller)"
@@ -225,8 +258,6 @@
           register: kata_sandbox_template
           failed_when: kata_sandbox_template.resources | length == 0
 
-        # No readiness gate on the pool: a per-node virtualisation problem must not
-        # hang the stack deployment.
         - name: "agent_sandbox | Create kata SandboxWarmPool"
           kubernetes.core.k8s:
             state: present
@@ -252,6 +283,19 @@
               - "Template : {{ kata_sandbox_template_name }} (runtimeClassName={{ kata_template_runtime_class | trim }})"
               - "WarmPool : {{ kata_warm_pool_name }} (size={{ kata_warm_pool_size }})"
               - "Verify   : kubectl get sandbox,pod -n {{ agent_sandbox_namespace }} -l sandbox=kata"
+
+- name: "agent_sandbox | Wait for Agent Sandbox pods to be ready"
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ agent_sandbox_namespace }}"
+  register: _asb_pods
+  until: >-
+    _asb_pods.resources | default([]) | length > 0 and
+    (_asb_pods.resources | rejectattr('status.phase', 'in', ['Running', 'Succeeded']) | list | length == 0) and
+    (_asb_pods.resources | selectattr('status.phase', 'eq', 'Running')
+     | map(attribute='status.containerStatuses') | flatten | rejectattr('ready') | list | length == 0)
+  retries: 60
+  delay: 10
 
 - name: "agent_sandbox | Install complete"
   ansible.builtin.debug:
