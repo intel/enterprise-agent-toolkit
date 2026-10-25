@@ -2,14 +2,15 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 # Realm setup for the agent API, run with kcadm inside the Keycloak pod. Idempotent.
-# Arguments: realm admin-user admin-password api-client api-owner api-email audience
+# Arguments: realm admin-user api-client api-owner api-email audience; the admin password on stdin.
 set -eu
-REALM=$1 ADMIN=$2 PASS=$3 CLIENT=$4 OWNER=$5 EMAIL=$6 AUD=$7
+REALM=$1 ADMIN=$2 CLIENT=$3 OWNER=$4 EMAIL=$5 AUD=$6
+IFS= read -r KC_CLI_PASSWORD || :; export KC_CLI_PASSWORD
 KC=/opt/keycloak/bin/kcadm.sh
 CFG=/tmp/kcadm-agent-backend.config
 trap 'rm -f "$CFG"' EXIT
 k() { sub=$1; shift; "$KC" "$sub" --config "$CFG" -r "$REALM" "$@"; }
-"$KC" config credentials --config "$CFG" --server http://localhost:8080 --realm master --user "$ADMIN" --password "$PASS" >/dev/null
+"$KC" config credentials --config "$CFG" --server http://localhost:8080 --realm master --user "$ADMIN" >/dev/null
 
 # Roles, each a composite of the one below: agent-viewer < agent-editor < agent-admin < platform-admin.
 prev=""
