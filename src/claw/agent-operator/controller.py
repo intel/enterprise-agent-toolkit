@@ -115,6 +115,8 @@ GW_GATEWAY = {"name": os.environ.get("GW_GATEWAY_NAME", "eg-gateway"),
 GW_OIDC_CLIENT_ID = os.environ.get("GW_OIDC_CLIENT_ID", "agent-console")
 GW_OIDC_SECRET = os.environ.get("GW_OIDC_SECRET", "agent-console-oidc")
 GW_AUDIENCE = os.environ.get("GW_AUDIENCE", "agent-backend")
+# The least realm role the API needs to read agents; Keycloak lists composite roles in the token too.
+GW_ROLE = "agent-viewer"
 # Envoy authorizes a dashboard websocket only when it opens, so it is closed after this long
 # and the dashboard reconnects through the policy: the most a revoked user keeps it.
 GW_DASHBOARD_SESSION = os.environ.get("GW_DASHBOARD_SESSION", "5m")
@@ -688,7 +690,9 @@ def _gw_objects(name, spec):
                 "principal": {"jwt": {"provider": "keycloak", "scopes": ["agent:converse"],
                                       # Keycloak's email_verified is a boolean, which this policy cannot match.
                                       "claims": [{"name": "email", "values": _gw_allowed(name, spec)},
-                                                 {"name": "email_verified_string", "values": ["true"]}]}}}]}}}
+                                                 {"name": "email_verified_string", "values": ["true"]},
+                                                 {"name": "realm_access.roles", "valueType": "StringArray",
+                                                  "values": [GW_ROLE]}]}}}]}}}
     session = {
         "apiVersion": "gateway.envoyproxy.io/v1alpha1", "kind": "BackendTrafficPolicy", "metadata": meta,
         "spec": {"targetRefs": [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute", "name": agent_ns,

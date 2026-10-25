@@ -190,9 +190,11 @@ them for a limited time; and opens each agent's chat and OpenClaw dashboard.
 
 The dashboard and chat are the agent's own gateway, at `/gw/<owner ns>/<name>/` on the same
 host. The platform gateway signs the user in, verifies the token, and admits only the owner and
-users with a live `converse` grant; everyone else gets `403`. It passes the verified email to the
-agent as `x-gw-user`, and never forwards the user's token or cookies. A grant or revocation takes
-effect within seconds; an expired grant within half a minute. Scripts can call
+users with a live `converse` grant, and only while they hold the `agent-viewer` role or higher;
+everyone else gets `403`. It passes the verified email to the agent as `x-gw-user`, and never
+forwards the user's token or cookies. A grant or revocation takes effect on the next request
+within seconds, and an expired grant within half a minute; a dashboard already open is closed
+within `claw_dashboard_session` (5 minutes by default) and must reconnect. Scripts can call
 `/gw/<owner ns>/<name>/v1/chat/completions` with a bearer token from the `agent-api` client (for
 agents it owns).
 
@@ -308,7 +310,7 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
   console, and the API holds no agent credential.
 - **Browsers and dashboards.** Sign-in is the platform gateway's OpenID Connect flow (PKCE, one
   client, encrypted session cookies). Each agent's route admits only its owner and `converse`
-  grantees whose token carries `agent:converse`. The agent gateway runs in trusted-proxy mode:
+  grantees whose token carries `agent:converse` and the `agent-viewer` role or higher. The agent gateway runs in trusted-proxy mode:
   it takes the user from `x-gw-user`, which the platform gateway sets from the verified token.
   Its relay only accepts traffic the NetworkPolicy admits: the platform gateway and the agent's
   own namespace.
