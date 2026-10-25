@@ -7,7 +7,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import { HttpError } from "./lib/identity.js";
 import { errResponse, statusOf, parseIfMatch, etagFor } from "./lib/http.js";
-import { requestIdMiddleware, authenticate, requireCtx } from "./lib/security/context.js";
+import { requestIdMiddleware, crossSiteMiddleware, authenticate, requireCtx } from "./lib/security/context.js";
 import { assertAuthnConfig, authnConfigSummary, authnConfigPublicSummary } from "./lib/security/authn.js";
 import { audit, auditPreflight, auditPersistenceEnabled, type Outcome } from "./lib/audit.js";
 import {
@@ -37,6 +37,7 @@ app.set("etag", false); // ETags are resourceVersions, set per route
 app.set("trust proxy", false);
 app.disable("x-powered-by");
 app.use(requestIdMiddleware);
+app.use(crossSiteMiddleware);
 app.use(express.json({ limit: "10mb" })); // workspace maps can be large
 
 declare global {

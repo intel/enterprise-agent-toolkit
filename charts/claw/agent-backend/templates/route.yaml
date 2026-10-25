@@ -47,6 +47,8 @@ spec:
     clientSecret: {name: {{ $.Values.console.oidcSecret }}}
     redirectURL: {{ printf "https://%s/oauth2/callback" . | quote }}
     logoutPath: /oauth2/logout
+    # Envoy leaves SameSite unset, and some browsers then send the session on cross-site posts.
+    cookieConfig: {sameSite: Lax}
     forwardAccessToken: true
     refreshToken: true
     passThroughAuthHeader: true

@@ -6,6 +6,7 @@ import { sanitizeWorkspace, normalizeWebFetchAllowlist } from "../lib/workspace.
 import { validateAgentNaming, agentNamespace } from "../lib/k8s.js";
 import { ownerNamespace } from "../lib/identity.js";
 import { parseIfMatch } from "../lib/http.js";
+import { crossSiteRefusal } from "../lib/security/context.js";
 
 test("workspace keys follow the Agent CRD rule; others are dropped", () => {
   const out = sanitizeWorkspace({
@@ -36,4 +37,15 @@ test("If-Match: one strong or weak version; * and absent are none unless require
   assert.equal(parseIfMatch("*", false), undefined);
   assert.throws(() => parseIfMatch(undefined, true), (e: any) => e.status === 428);
   assert.throws(() => parseIfMatch('"1", "2"', false), (e: any) => e.status === 400);
+});
+
+test("state changes from another site are refused; scripts and same-site calls pass", () => {
+  const host = "agents.example.com";
+  // A form on another site: the browser sends the session cookie and its own Origin.
+  assert.match(crossSiteRefusal("POST", { host, origin: "https://evil.example" }) ?? "", /cross-site/);
+  assert.match(crossSiteRefusal("DELETE", { host, origin: "null" }) ?? "", /cross-site/);
+  assert.match(crossSiteRefusal("PATCH", { host, "sec-fetch-site": "cross-site" }) ?? "", /cross-site/);
+  assert.equal(crossSiteRefusal("POST", { host, origin: `https://${host}` }), null); // the console
+  assert.equal(crossSiteRefusal("POST", { host }), null); // a script: no Origin
+  assert.equal(crossSiteRefusal("GET", { host, origin: "https://evil.example" }), null); // reads change nothing
 });

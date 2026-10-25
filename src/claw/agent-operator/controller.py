@@ -668,6 +668,8 @@ def _gw_objects(name, spec):
                              "tokenEndpoint": f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/token"},
                 "clientID": GW_OIDC_CLIENT_ID, "clientSecret": {"name": GW_OIDC_SECRET},
                 "redirectURL": f"https://{GW_HOSTNAME}{path}/oauth2/callback",
+                # Strict would drop the cookie on the return from Keycloak, so Lax.
+                "cookieConfig": {"sameSite": "Lax"},
                 "forwardAccessToken": True, "refreshToken": True,
                 # A script's bearer token skips the browser sign-in; the checks below still apply.
                 "passThroughAuthHeader": True,

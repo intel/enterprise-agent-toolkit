@@ -64,6 +64,7 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(p["jwt"]["providers"][0]["audiences"], ["agent-backend"])
         self.assertEqual(p["oidc"]["redirectURL"], "https://agents.example.com/gw/user-alice/lab/oauth2/callback")
         self.assertTrue(p["oidc"]["passThroughAuthHeader"])
+        self.assertEqual(p["oidc"]["cookieConfig"], {"sameSite": "Lax"})
 
     def test_only_this_route_may_reach_only_this_service(self):
         self.assertEqual(self.grant["metadata"]["namespace"], "agent-alice-lab")
