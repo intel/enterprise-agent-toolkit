@@ -52,6 +52,12 @@ mappers=$(k get "clients/$cid/protocol-mappers/models" --fields name --format cs
   -s protocol=openid-connect -s protocolMapper=oidc-hardcoded-claim-mapper -s 'config."claim.name"=owner_username' \
   -s "config.\"claim.value\"=$OWNER" -s 'config."jsonType.label"=String' -s 'config."access.token.claim"=true' \
   -s 'config."id.token.claim"=false' -s 'config."userinfo.token.claim"=false' >/dev/null
+# email_verified as a string: the agent dashboards' gateway policy can match only string claims.
+[ -n "$(has_line "$mappers" email-verified-string)" ] || k create "clients/$cid/protocol-mappers/models" \
+  -s name=email-verified-string -s protocol=openid-connect -s protocolMapper=oidc-usermodel-property-mapper \
+  -s 'config."user.attribute"=emailVerified' -s 'config."claim.name"=email_verified_string' \
+  -s 'config."jsonType.label"=String' -s 'config."access.token.claim"=true' \
+  -s 'config."id.token.claim"=false' -s 'config."userinfo.token.claim"=false' >/dev/null
 for s in agent:read agent:write agent:converse agent:token agent:grant; do
   k update "clients/$cid/optional-client-scopes/$(scope_id "$s")" >/dev/null
 done
