@@ -2,8 +2,9 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Claw end-to-end walkthrough
 
-Step-by-step checks for claw, with the output to expect. Run them from the
-root of your AI Solutions checkout. Background and configuration are in [claw.md](claw.md).
+For whoever installs claw and wants to confirm each part works: step-by-step checks, with
+the output to expect. Run them from the root of your AI Solutions checkout. What claw is,
+how to configure it, and its security model are in [claw.md](claw.md).
 
 ```bash
 export KUBECONFIG=$PWD/env/<env>/kubeconfig.yaml
@@ -33,7 +34,11 @@ The validate summary ends with:
 
 ### 2. Check the inference gateway
 
-The agent calls the in-cluster `ai-gateway`. From any pod in a mesh-enrolled namespace:
+The agent calls the inference layer's gateway, the `ai-gateway` Service in
+`envoy-gateway-system`. The URL is set per instance, in `models.providers.ai-gateway.baseUrl`
+of [the example](examples/openclaw-instance.yaml); change it there (and the egress rule under
+`security.networkPolicy`) if your gateway has another name or namespace. From any pod in a
+mesh-enrolled namespace:
 
 ```bash
 curl -s http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1/models
@@ -74,8 +79,8 @@ curl -s localhost:18789/v1/chat/completions \
  "usage":{"prompt_tokens":19507,"completion_tokens":11,"total_tokens":19518}}
 ```
 
-The first word takes about 30 seconds on CPU inference: the model reads the agent's
-roughly 19,500-token prompt before it answers. To watch the answer arrive, add
+The model reads the agent's roughly 19,500-token prompt before the first word, so the
+answer can take a while to start. To watch the answer arrive, add
 `"stream": true` to the request body and pass `-N` to `curl`; the response is a stream of
 `data:` chunks ending with `data: [DONE]`.
 

@@ -25,6 +25,12 @@ spec:
   shareProcessNamespace: false  # CRD default true lets same-UID containers read each other's env
   autoUpdate:
     enabled: false  # stay on the pinned runtime
+  # To run the agent on particular nodes, select them by node label (and tolerate their taints):
+  # availability:
+  #   nodeSelector:
+  #     node-role.example.com/agents: "true"
+  #   tolerations:
+  #     - {key: dedicated, operator: Equal, value: agents, effect: NoSchedule}
   config:
     mergeMode: merge  # keep state the runtime writes across restarts
     raw:

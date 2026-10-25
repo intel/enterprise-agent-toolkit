@@ -6,6 +6,10 @@ Claw runs [OpenClaw](https://github.com/openclaw/openclaw) agents as long-lived 
 workloads on the Agent Toolkit, answered by the models the inference layer serves. It is
 off by default (`claw_enabled: false`).
 
+This is the reference for platform operators: what claw installs, how to enable and
+configure it, and its security model. To check an install step by step, with the expected
+output, follow [claw-e2e.md](claw-e2e.md).
+
 **Contents:** [Components](#components) · [Enable](#enable) ·
 [Run an OpenClaw instance](#run-an-openclaw-instance) · [Configuration](#configuration) ·
 [Security](#security) · [Validate and remove](#validate-and-remove) ·
@@ -56,7 +60,9 @@ working instance. It creates the namespace `claw-demo` and one `OpenClawInstance
   `http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1`, and the model
   `qwen2-5-coder-14b` with its served context window (32768 tokens);
 - joins the ambient mesh, which the platform requires for in-cluster traffic;
-- adds one egress rule to the operator's network policy, for the gateway pods.
+- adds one egress rule to the operator's network policy, for the gateway pods;
+- shows, commented out, how to place the agent on particular nodes by node label
+  (`availability.nodeSelector`, `affinity`, `tolerations`).
 
 Run from the root of your AI Solutions checkout:
 
@@ -75,10 +81,9 @@ well above that. Keep `compaction.reserveTokens` small enough that
 `contextWindow - reserveTokens` stays above that prompt; otherwise OpenClaw summarises the
 conversation after every turn, which costs one extra model call each time.
 
-**Response time.** Each turn sends the full agent prompt to the model. On CPU inference the
-first word therefore takes tens of seconds (about 30 s for the default 14B model on one
-24-core NUMA node); the answer then streams at a few words per second. Send
-`"stream": true` to see it arrive.
+**Response time.** Each turn sends the full agent prompt to the model, so the first word
+waits until the model has read it; how long that takes depends on the model and the
+hardware. Send `"stream": true` to see the answer arrive.
 
 ---
 
