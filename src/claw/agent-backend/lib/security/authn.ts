@@ -92,6 +92,10 @@ export function contextFromClaims(p: JWTPayload, requestId: string): SecurityCon
   const email = claimStr(p, "email").toLowerCase();
   // Ownership is keyed by email, so a token without one cannot be scoped.
   if (!email) throw new HttpError(401, "unauthenticated: token has no 'email' claim (add an email mapper to the client)");
+  // ...and must be one the realm has verified, or a user could take over another's address.
+  if (p.email_verified !== true) {
+    throw new HttpError(401, "unauthenticated: the token's email is not verified (verify it in Keycloak, or turn on email verification in the realm)");
+  }
   const roles = extractRoles(p);
   return {
     subject: claimStr(p, "sub"),

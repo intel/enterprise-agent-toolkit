@@ -29,7 +29,7 @@ before(async () => {
 after(() => server.close());
 
 const sign = (claims: Record<string, unknown>, k = key, alg = "RS256") =>
-  new SignJWT({ email: "alice@example.com", preferred_username: "alice", scope: "openid agent:read",
+  new SignJWT({ email: "alice@example.com", email_verified: true, preferred_username: "alice", scope: "openid agent:read",
     realm_access: { roles: ["agent-editor"] }, ...claims })
     .setProtectedHeader({ alg, kid: "k1" }).setIssuer(String(claims.iss ?? ISS)).setSubject("sub-1")
     .setIssuedAt().setExpirationTime((claims.exp as number | undefined) ?? "5m").sign(k);
@@ -56,6 +56,14 @@ test("forged, misdirected and expired tokens are 401", async () => {
 test("a token without an email cannot be scoped and is refused", async () => {
   const claims = await authn.verifyToken(await sign({ aud: "agent-backend", email: "" }));
   assert.throws(() => authn.contextFromClaims(claims, "r1"), (e: any) => e.status === 401);
+});
+
+test("a token whose email is not verified is refused", async () => {
+  // Ownership and grants match on email, which users can usually edit themselves.
+  for (const email_verified of [false, undefined, "true"]) {
+    const claims = await authn.verifyToken(await sign({ aud: "agent-backend", email_verified }));
+    assert.throws(() => authn.contextFromClaims(claims, "r1"), (e: any) => e.status === 401 && /not verified/.test(e.message));
+  }
 });
 
 test("only the bearer header carries the token", () => {

@@ -185,7 +185,8 @@ is set. An allowlist edit takes effect within a minute, without a restart.
 `agent-toolkit` for audience `agent-backend`; the gateway and the API both verify it. For
 scripts, the installer creates the confidential client `agent-api`. Its secret is in
 `agent-operator-system/agent-api-client`, and the agents it creates are owned by user
-`automation`.
+`automation`. Owners and grantees are matched by the token's email, so the API refuses a token
+whose `email_verified` is not `true`: verify users' emails, or turn on email verification in the realm.
 
 ```bash
 TOKEN=$(curl -s https://keycloak.<base_domain_name>/realms/agent-toolkit/protocol/openid-connect/token \
