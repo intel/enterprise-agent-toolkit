@@ -49,6 +49,14 @@ def _ref(ref):
     return ref
 
 
+def _path(path):
+    """A file path in the repository, quoted per segment: `..` would otherwise reach another API path."""
+    parts = (path or "").strip("/").split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise ValueError(f"invalid file path '{path}'")
+    return "/".join(urllib.parse.quote(p, safe="") for p in parts)
+
+
 def _headers():
     """The caller's own PAT from its identity proxy, else the shared token."""
     token = get_http_headers(include={PAT_HEADER}).get(PAT_HEADER) or SHARED_TOKEN
@@ -146,9 +154,9 @@ def list_repo_tree(owner: str, repo: str, ref: str = "") -> str:
 @mcp.tool(description="Read a file from a repository at a branch or SHA (default branch if omitted)")
 def get_file_contents(owner: str, repo: str, path: str, ref: str = "") -> str:
     def run(azp):
-        r = _repo(owner, repo)
+        r, p = _repo(owner, repo), _path(path)
         at = _ref(ref or _default_branch(r))
-        data = _api("GET", f"/repos/{r}/contents/{urllib.parse.quote(path.lstrip('/'))}", params={"ref": at})
+        data = _api("GET", f"/repos/{r}/contents/{p}", params={"ref": at})
         _audit(azp, "get_file_contents", repo=r, path=path, ref=at)
         if data.get("encoding") != "base64":
             return f"Error: '{path}' is not a file"
@@ -172,7 +180,7 @@ def create_branch(owner: str, repo: str, branch: str, from_ref: str = "") -> str
 def commit_file(owner: str, repo: str, branch: str, path: str, content: str, message: str) -> str:
     def run(azp):
         r, b = _repo(owner, repo), _ref(branch)
-        url = f"/repos/{r}/contents/{urllib.parse.quote(path.lstrip('/'))}"
+        url = f"/repos/{r}/contents/{_path(path)}"
         payload = {"message": message, "branch": b, "content": base64.b64encode(content.encode()).decode()}
         try:
             payload["sha"] = _api("GET", url, params={"ref": b})["sha"]

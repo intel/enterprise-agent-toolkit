@@ -6,6 +6,8 @@ import os
 import types
 import unittest
 
+import requests
+
 import github
 from testlib import AuthCase, token
 
@@ -77,6 +79,21 @@ class RequestTest(GithubCase):
         self.as_agent()
         github.get_file_contents("octo", "demo", "dir/a b?.py", ref="main")
         self.assertTrue(self.calls[-1][1].endswith("/contents/dir/a%20b%3F.py"))
+
+    def test_file_paths_that_would_reach_another_api_path_are_refused(self):
+        # requests collapses dot segments, so "contents/../../../../repos/o/r/pulls/1/merge"
+        # would be sent as PUT /repos/o/r/pulls/1/merge.
+        self.as_agent()
+        for path in ("../../../../repos/octo/demo/pulls/1/merge", "dir/../../x", "./a", "a//b", "", "/"):
+            self.assertIn("invalid file path", github.get_file_contents("octo", "demo", path))
+            self.assertIn("invalid file path", github.commit_file("octo", "demo", "fix", path, "x", "m"))
+        self.assertEqual(self.calls, [])
+
+    def test_encoded_dots_stay_inside_the_repository(self):
+        self.as_agent()
+        github.get_file_contents("octo", "demo", "%2e%2e/x", ref="main")
+        url = requests.Request("GET", self.calls[-1][1]).prepare().url
+        self.assertTrue(url.startswith("https://api.github.com/repos/octo/demo/contents/"), url)
 
 
 class ScopeTest(GithubCase):
