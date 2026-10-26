@@ -109,9 +109,7 @@ export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx   # HuggingFace token (required to pull 
 
 **Estimated time:** 20–40 minutes on a fresh node.
 
-All output is also written to `deploy.log` in the repo root.
-
-> **Note:** not available in this release.
+Output is also written to `env/local/logs/install-agent-toolkit-<timestamp>.log`.
 
 ---
 
@@ -167,9 +165,9 @@ Semantic routing automatically directs queries to the most appropriate model bas
 - Step 1 complete and base stack verified
 - At least one model deployed (you'll add an embedding model for routing and a second model to route to)
 
-### 1. Deploy an Embedding Model for Semantic Matching and a Second Model
+### 1. Deploy a Second Model and an Embedding Model
 
-Semantic routing requires an embedding model to generate vector representations of user queries and match them against predefined utterances. A Text Embedding Inference (TEI) service with **BAAI/bge-base-en-v1.5** will be deployed using the deploy script.
+The hybrid router spreads requests over the deployed chat models, so deploy a second one. **BAAI/bge-base-en-v1.5** (`bge-base-en`) is added as well, as the embedding model for your agents.
 
 A second larger model i.e. **Qwen/Qwen3-Coder-30B-A3B-Instruct** with better capabilities will also be deployed alongside your existing one.
 
@@ -181,17 +179,9 @@ llm_services_autodeploy_models: ["qwen2-5-coder-14b", "bge-base-en", "qwen3-code
 
 **Deploy the model:**
 
-*Important:* For single-node deployments, the NRI balloon policy will use remaining CPUs to deploy models. Because the first model has already been deployed, there will not be enough CPUs to deploy additional models. To address this, the variable `nri_total_reserved_cpus` inside [core/inventory/metadata/vars/inference_llm_models.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/inventory/metadata/vars/inference_llm_models.yml) needs to be adjusted.
+*Important:* With the NRI balloon policy, the default model (`cpu: auto`) takes the free physical cores of one NUMA node. When no NUMA node has enough free cores left, a further deploy stops with `NRI pre-flight failed: not enough physical cores`. To make room, set an explicit `cpu:` for each model in `env/local/models.yaml` (see [xeon-model-configuration.md](xeon-model-configuration.md)). For a sizing guide, refer to the Intel AI Performance Advisor for [cloud instances](https://xeonprocessoradvisor.intel.com/csp-ai-performance-advisor) and [on-prem servers](https://xeonprocessoradvisor.intel.com/on-prem-ai-performance-advisor).
 
-> **Note:** not available in this release.
-
-The following formula can be used to calculate the value of `nri_total_reserved_cpus`. `total_cpus` depends on your system and `desired_vllm_cpus` should be large enough based on the model size. For a sizing guide, refer to the Intel AI Performance Advisor for [cloud instances](https://xeonprocessoradvisor.intel.com/csp-ai-performance-advisor) and [on-prem servers](https://xeonprocessoradvisor.intel.com/on-prem-ai-performance-advisor).
-
-```bash
-nri_total_reserved_cpus = total_cpus - desired_vllm_cpus_per_model
-```
-
-After updating `inference_llm_models.yml`, it is **highly recommended** to uninstall the existing model first before proceeeding with re-running the deploy script. This will re-install all 3 models using the new NRI balloon policy to ensure there are enough CPU cores.
+After updating `models.yaml`, undeploy the existing model first, then re-run the install so all 3 models are placed with the new sizes.
 
 ```bash
 kubectl get llminferenceservices,inferenceservices -n llm-inference   # see list of vllm deployments
@@ -208,16 +198,10 @@ Follow the steps to [re-verify the base stack](#verify-the-base-stack) to ensure
 
 ### 2. Access the LiteLLM UI
 
-The LiteLLM admin UI is not published at the edge. Port-forward the LiteLLM Service:
+Open `https://litellm.<base_domain_name>/ui` in your browser (the gateway IP must be in `/etc/hosts` for that name, as in the quick-start). Without the hosts entry, port-forward the LiteLLM Service and open `http://localhost:4000/ui`:
 
 ```bash
 kubectl port-forward -n litellm svc/litellm 4000:4000
-```
-
-Then navigate to the LiteLLM UI in your browser:
-
-```
-http://localhost:4000/ui
 ```
 
 Login credentials:
@@ -234,56 +218,9 @@ The embedding model is automatically registered in LiteLLM when deployed via `es
 2. Look for `bge-base-en` in the models list
 3. Note the model name - you'll use it in the next step (typically `bge-base-en`)
 
-**Step 3b - Configure the Auto Router:**
+**Step 3b - The hybrid router:**
 
-> **Note:** not available in this release.
-
-Navigate to: **Models+Endpoints** → **Add Model** → **Auto Router** Tab.
-For **Router Type**, select `Semantic Router`.
-
-**Configure the following required fields:**
-
-| Field | Value | Description |
-|-------|-------|-------------|
-| **Auto Router Name** | `hybrid-router` | The model name developers will use in API requests (you can choose any name) |
-| **Default Model** | `qwen2-5-coder-14b` | Fallback model when no route matches (your smaller/faster model) |
-| **Embedding Model** | `bge-base-en` | The embedding model deployed in Step 2 (auto-registered) |
-
-**Configure Routes:**
-
-Click **Add Route** to create routing rules. Configure at least two routes:
-
-**Route 1 - Simple Queries (Smaller/Faster Model):**
-- **Target Model:** `qwen2-5-coder-14b`
-- **Description:** Simple queries and basic coding tasks
-- **Score Threshold:** `0.5`
-- **Utterances:**
-  ```
-  what is [topic]
-  define [term]
-  explain [concept] simply
-  hello
-  write a simple [language] function
-  ```
-
-**Route 2 - Complex Queries (More Powerful Model):**
-- **Target Model:** `qwen3-coder-30b` (larger CPU model)
-- **Description:** Complex coding tasks and system design
-- **Score Threshold:** `0.5`
-- **Utterances:**
-  ```
-  design a [system] architecture
-  optimize this [language] code for performance
-  debug this complex [issue]
-  refactor this codebase to use [pattern]
-  implement a distributed [system]
-  create a production-ready [application]
-  how to code a program in [language]
-  can you explain this [language] code
-  can you convert this [language] code to [target_language]
-  ```
-
-Click **Add Auto Router** to activate the semantic router. To view it, refresh the page and go back to the **Models+Endpoints** → **All Models** tab.
+This release creates the `hybrid-router` model at install (`hybrid_router_enabled: true`, the default), so there is no UI step. It sorts each request by complexity and sends it to one of the deployed chat models. Models deployed after the install join it when you re-run `./es_auto_installer.sh install agent-toolkit`. Tiers and model lists: [hybrid-router.md](hybrid-router.md).
 
 ### 4. Verify Semantic Routing
 
@@ -331,18 +268,7 @@ Go inside the `default` project. Under **Tracing**, select the most recent `lite
 
 ### How It Works
 
-1. When a request comes in with `model="hybrid-router"` (or your chosen router name), LiteLLM generates embeddings for the input message
-2. It compares these embeddings against the utterances defined in your routes
-3. If a route's similarity score exceeds the threshold, the request is routed to that model
-4. If no route matches, the request goes to the default model
-
-### Routing Configuration Tips
-
-- **Adjust score_threshold:** Lower values (0.3-0.4) route more queries to that model, higher values (0.6-0.7) require closer matches
-- **Add more utterances:** Include domain-specific examples that represent your actual workload patterns
-- **Use placeholders:** `[variable]` in utterances creates flexible matching patterns (e.g., `[language]`, `[system]`)
-- **Monitor in Langfuse:** Track which queries route where and adjust thresholds based on actual usage
-- **Test thoroughly:** Send diverse queries to understand routing behavior before production use
+Requests to `hybrid-router` are classified by complexity (simple, medium, complex, reasoning) and sent to a model of that tier; a bandit then picks among the models of a tier by observed cost and latency. Details and settings: [hybrid-router.md](hybrid-router.md).
 
 ---
 
@@ -350,7 +276,7 @@ Go inside the `default` project. Under **Tracing**, select the most recent `lite
 
 Redis is the **common memory backend** for all agentic workloads in this stack — deploy it before any use-case agent (MCP agents, etc.).
 
-The `core/helm-charts/redis` chart deploys **Redis Stack** (includes RediSearch) into its own `redis` namespace as a single persistent instance shared across all agents.
+The `charts/redis-stack` chart deploys **Redis Stack** (includes RediSearch) into its own `redis` namespace as a single persistent instance shared across all agents.
 
 **Automated deployment (recommended):**
 
@@ -367,26 +293,6 @@ Then re-run `es_auto_installer.sh`:
 ```
 
 The deployment script generates the password into the `redis-stack-server-credentials` Kubernetes Secret and passes it to the chart, so no manual credential setup is needed.
-
-**Manual deployment (alternative / standalone):**
-
-> **Note:** not available in this release.
-
-A password is mandatory — the chart refuses to render without one.
-
-```bash
-# 1. Resolve Helm chart dependencies (fetches the redis-stack-server subchart)
-helm dependency build core/helm-charts/redis
-
-# 2. Deploy into the `redis` namespace with a password
-_redis_pw=$(grep '^redis_stack_password:' core/inventory/metadata/vault.yml | awk -F'"' '{print $2}')
-helm upgrade --install redis core/helm-charts/redis \
-  --namespace redis \
-  --create-namespace \
-  --set-string "redis-stack-server.redis_stack_server.auth.password=${_redis_pw}" \
-  --wait --timeout 5m
-unset _redis_pw
-```
 
 **Verify it is running:**
 
@@ -418,16 +324,8 @@ kubectl get secret redis-stack-server-credentials -n redis \
 
 - **Authentication is mandatory.** The chart fails to render if no password is supplied. Redis with `nopass` allows any client that can reach the port to read and modify all agent session data and to execute arbitrary Lua and JavaScript (via RedisGears) on the server.
 - **The Service is `ClusterIP`**, reachable only from inside the cluster. Do not change it to `NodePort` or `LoadBalancer` — that publishes Redis on every node IP in the 30000-32767 range. If you need external access, use `kubectl port-forward` instead.
-- **A NetworkPolicy is applied by default.** It admits any in-cluster pod unless you list namespaces. To restrict Redis to only the workloads that need it:
-
-  ```bash
-  --set "redis-stack-server.redis_stack_server.networkPolicy.allowedNamespaces={litellm,agent-sandbox-system}"
-  ```
-
-  NetworkPolicy requires a CNI that enforces it (Calico, the default here, does).
-- **Rotate the password** by updating `redis_stack_password` in `vault.yml` and re-running the deployment; restart dependent workloads so they pick up the new Secret.
-
-  > **Note:** not available in this release.
+- **Mesh-only access.** Redis runs in the ambient mesh: namespaces in the mesh reach it, plaintext clients from outside are refused.
+- **Password rotation** is not automated in this release.
 
 ---
 
@@ -557,12 +455,7 @@ agent_sandbox_enabled: true
 openshell_enabled: true
 ```
 
-```yaml
-# core/inventory/metadata/vars/inference_openshell.yml — single-admin mode
-openshell_allow_unauthenticated_clusterip_only: true
-```
-
-> **Note:** not available in this release.
+Without `openshell_oidc_issuer`, OpenShell runs in single-admin mode (ClusterIP only, reached through `kubectl port-forward` with Kubernetes RBAC); no extra setting is needed.
 
 ```bash
 ./es_auto_installer.sh install agent-toolkit

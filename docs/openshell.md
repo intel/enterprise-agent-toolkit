@@ -209,7 +209,7 @@ openshell_oidc_issuer: ""   # empty = single-admin via kubectl port-forward
 ./es_auto_installer.sh install agent-toolkit
 ```
 
-The Ansible playbook (`core/playbooks/deploy-openshell.yml`) runs 4 task groups:
+The `openshell` role runs 4 task groups:
 
 | Task Group | Action |
 |---|---|

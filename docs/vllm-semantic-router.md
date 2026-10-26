@@ -101,10 +101,7 @@ For example: `https://vllm-sr.example.com/`
 
 The dashboard serves root paths (`/login`, `/api`, `/assets`, ...) and cannot
 run under a sub-path, so it gets its own host instead of sharing `litellm.<base_domain_name>`
-with the GenAI Gateway (LiteLLM) UI. The router API stays on
-`https://<cluster_url>/v1/route`.
-
-> **Note:** not available in this release.
+with the GenAI Gateway (LiteLLM) UI. The router API (`/v1/route`) is not published at the gateway in this release; send requests to the `vllm-sr/auto` model through LiteLLM instead.
 
 Prerequisites for the dashboard host:
 

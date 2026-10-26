@@ -8,6 +8,10 @@
 # that seeded copy: edit the copy to change an existing environment.
 # =============================================================================
 
+# --- Node preflight ---
+# Node readiness checks (playbooks/preflight-check.yml) at the start of install; report only
+node_preflight_enabled: true
+
 # --- API access (inference layer) ---
 # The toolkit serves agents through the LiteLLM gateway: virtual keys per agent or
 # sandbox, the content-safety guardrail, Langfuse tracing and the OpenShell provider.
@@ -18,17 +22,8 @@ auth_type: "litellm_vkey"
 guardrails_enabled: "{{ (auth_provider == 'litellm') if auth_provider is defined else ((auth_type | default('jwt')) == 'litellm_vkey') }}"
 # LiteLLM model "hybrid-router"
 hybrid_router_enabled: true
-# Model API paths published on LiteLLM's route
-litellm_public_paths:
-  - /v1/chat/completions
-  - /v1/completions
-  - /v1/embeddings
-  - /v1/models
-  - /health/liveliness
-  - /v1/responses
-  - /v1/rerank
-  - /v1/audio/transcriptions
-  - /v1/audio/speech
+# Paths published on LiteLLM's route; empty = all, so the admin UI and key API are reachable (LiteLLM keeps its auth)
+litellm_public_paths: []
 
 # --- Default model (inference layer, applied only where this layer is provisioned) ---
 # Deployed on install.

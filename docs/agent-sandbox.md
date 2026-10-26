@@ -657,9 +657,7 @@ immediately and refills the pool in the background.
 | `agent_sandbox_enabled: true` on a running stack | Ansible playbook is idempotent; manifests are re-applied with `kubectl apply` (safe for upgrades) |
 | Namespace already exists | Ansible creates namespace with `state: present` (idempotent) |
 | Controller already running | Kubernetes applies manifests declaratively (no duplication) |
-| Resume mode | If `agent-sandbox-system` namespace exists, `_auto_skip_deployed_components()` sets `deploy_agent_sandbox=off` for that run |
-
-> **Note:** resume mode is not available in this release.
+| Re-run | `./es_auto_installer.sh install agent-toolkit` again re-applies everything in place; running components are kept |
 
 ---
 
