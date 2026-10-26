@@ -41,6 +41,8 @@ wrong for its architecture (missing tool-call parser, wrong chat template, etc).
 
 This lets smaller models (like Llama-8B with `tp=1`) use a full NUMA node's worth of cores instead of a hardcoded minimum.
 
+On a node with a single NUMA node (for example one 36-core socket), `cpu: auto` on the default model leaves no balloon cores for further models, and `model-manager deploy` stops with `NRI pre-flight failed: not enough physical cores`. To deploy more models there, set an explicit `cpu:` for the default model in `env/<name>/models.yaml`.
+
 When picking `cpu` for a new entry, keep it a multiple of
 `--tensor-parallel-size` (vLLM shards evenly across TP ranks) and within a single socket's
 core count — spanning multiple NUMA nodes is unsupported for CPU deployments and can crash

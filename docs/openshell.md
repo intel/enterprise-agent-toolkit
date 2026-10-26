@@ -174,6 +174,7 @@ openshell_release_tag: "v0.0.116"
 | `openshell_genai_key_models` | `[]` | Models the key may use (empty = all) |
 | `openshell_genai_key_max_budget` | `50` | LiteLLM budget for the key |
 | `openshell_cli_dir` | `""` | Where the playbook keeps the CLI; empty = `~/.cache/eat/openshell-cli-<release tag>` (mode `0700`) |
+| `openshell_workspace_storage_class` | `""` | StorageClass for sandbox workspace volumes; empty = `local-path` when the cluster has it, else the default class. Multi-node NFS clusters get a non-default `local-path` class for this: seeding a workspace on NFS takes about 16 minutes |
 | `openshell_sandbox_network_policy` | `true` | Apply `eat-openshell-sandbox-pods` |
 | `openshell_upstream_proxy_cidrs` | RFC 1918 ranges | Where the corporate proxy may live (proxy port only) |
 | `openshell_sandbox_egress_cidrs` | `[]` | Extra private CIDRs that sandbox policies may target |

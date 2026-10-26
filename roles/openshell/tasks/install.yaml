@@ -36,6 +36,15 @@
     - "{{ openshell_namespace }}"
     - "{{ openshell_sandbox_namespace }}"
 
+# Seeding a workspace on NFS takes ~16 min (thousands of small files); a node-local class keeps sandbox start fast
+- name: "openshell | Find the node-local StorageClass for sandbox workspaces"
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: local-path
+  register: _openshell_local_sc
+  when: openshell_workspace_storage_class | length == 0
+
 # The chart overlay and the role settings go in as one values dict: an unchanged
 # release then compares equal to it and is not upgraded again.
 - name: "openshell | Install OpenShell Helm chart"
@@ -59,6 +68,11 @@
       {% endif %}
       server:
         sandboxNamespace: {{ openshell_sandbox_namespace | to_json }}
+      {% set _ws_sc = openshell_workspace_storage_class if openshell_workspace_storage_class | length > 0
+           else ('local-path' if (_openshell_local_sc.resources | default([]) | length > 0) else '') %}
+      {% if _ws_sc | length > 0 %}
+        workspaceStorageClass: {{ _ws_sc | to_json }}
+      {% endif %}
       {% if openshell_oidc_issuer | length > 0 %}
         oidc:
           issuer: {{ openshell_oidc_issuer | to_json }}
