@@ -188,6 +188,29 @@
          | replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent')
          | from_yaml_all | list }}
 
+# The controller's template NetworkPolicies select a label warm-pool sandboxes do not carry;
+# this applies the same egress rules to every warm-pool sandbox (python, Kata, custom pools)
+- name: "agent_sandbox | Warm-pool sandbox egress NetworkPolicy"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: eat-sandbox-pool-egress
+        namespace: "{{ agent_sandbox_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: agentic-ai-stack
+      spec:
+        podSelector:
+          matchExpressions:
+            - {key: agents.x-k8s.io/warm-pool-sandbox, operator: Exists}
+        policyTypes: [Egress]
+        egress:
+          - to:
+              - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}
+              - ipBlock: {cidr: "::/0", except: ["fc00::/7", "fe80::/10"]}
+
 # ── Default python warm pool (pre-warmed sandbox pods) ──────────────────────
 
 - name: "agent_sandbox | Create default python SandboxWarmPool"

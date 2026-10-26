@@ -6,13 +6,10 @@
 #
 #   from k8s_agent_sandbox import SandboxClient
 #   client = SandboxClient()
-#   sandbox = client.create_sandbox(
-#       template="python-sandbox-template",
-#       namespace="agent-sandbox",
-#   )
+#   sandbox = client.create_sandbox(warmpool="python-pool", namespace="agent-sandbox-system")
 #
-# To extend with warm pools, create a SandboxWarmPool CR referencing this
-# template after the controller is running.
+# The install creates the python-pool SandboxWarmPool for this template; calls through the
+# router need its token (docs/agent-sandbox.md, "Router token").
 # ---------------------------------------------------------------------------
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
@@ -26,6 +23,10 @@ spec:
   # Required in v0.4.6+ for in-cluster DNS routing and SDK Tunnel mode.
   service: true
   podTemplate:
+    metadata:
+      labels:
+        # Outside the ambient mesh: mesh-redirected traffic bypasses the sandbox NetworkPolicy
+        istio.io/dataplane-mode: none
     spec:
       containers:
       - name: runtime

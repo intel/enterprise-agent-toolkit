@@ -165,13 +165,14 @@ kubectl get pod -n agent-sandbox-system -l sandbox=kata \
 
 ### Use it from the SDK
 
-Only the template name changes:
+Only the warm pool changes:
 
 ```python
 sandbox = client.create_sandbox(
-    template="kata-sandbox-template",
+    warmpool="kata-pool",
     namespace="agent-sandbox-system",
 )
+sandbox.connector.session.headers["Authorization"] = f"Bearer {token}"  # see Router token
 try:
     # A microVM has its own guest kernel — this differs from `uname -r` on the host
     print(sandbox.commands.run("uname -r").stdout)
@@ -382,6 +383,10 @@ metadata:
 spec:
   service: true
   podTemplate:
+    metadata:
+      labels:
+        # Keep sandboxes outside the ambient mesh, or their NetworkPolicy is not enforced
+        istio.io/dataplane-mode: none
     spec:
       containers:
       - name: runtime
@@ -411,11 +416,28 @@ kubectl get sandboxtemplate -n agent-sandbox-system
 
 ### 4. Use it from the SDK
 
+The v0.5.0 SDK starts sandboxes from a warm pool, so add one for the template:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: node-pool
+  namespace: agent-sandbox-system
+spec:
+  replicas: 1
+  sandboxTemplateRef:
+    name: node-sandbox-template
+EOF
+```
+
 ```python
 sandbox = client.create_sandbox(
-    template="node-sandbox-template",
+    warmpool="node-pool",
     namespace="agent-sandbox-system",
 )
+sandbox.connector.session.headers["Authorization"] = f"Bearer {token}"  # see Router token
 ```
 
 ---
@@ -432,6 +454,28 @@ pip install k8s-agent-sandbox==0.5.0
 
 Official documentation: https://github.com/kubernetes-sigs/agent-sandbox/tree/main/clients/python/agentic-sandbox-client
 
+### Router token
+
+The sandbox router accepts only calls that carry its token, and answers `401` to the rest. The install creates the token in the Secret `sandbox-router-auth`:
+
+```bash
+export ROUTER_AUTH_TOKEN=$(kubectl get secret sandbox-router-auth -n agent-sandbox-system \
+  -o jsonpath='{.data.ROUTER_AUTH_TOKEN}' | base64 -d)
+```
+
+SDK v0.5.0 has no setting for it. Add it to the sandbox's HTTP session right after `create_sandbox`, as the examples below do:
+
+```python
+token = os.environ["ROUTER_AUTH_TOKEN"]
+sandbox.connector.session.headers["Authorization"] = f"Bearer {token}"
+```
+
+`commands.run()` starts the command without a shell. For `&&`, `|` or redirects, wrap the command in `sh -c "..."`.
+
+### Network access from sandboxes
+
+Sandbox code reaches public addresses only. Private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`), the node, the Kubernetes API and cluster services are blocked, for Kata sandboxes too. Sandboxes resolve names through public DNS (`8.8.8.8`, `1.1.1.1`) and get no proxy settings, so on a network that blocks direct DNS or requires a proxy they have no outbound access.
+
 ### From outside the cluster (development / local testing)
 
 Use **Tunnel Mode** — the SDK opens a `kubectl port-forward` automatically, or
@@ -440,19 +484,22 @@ you can port-forward manually and use **Direct Mode**.
 **Option A — Tunnel Mode (auto port-forward):**
 
 ```python
+import os
+
 from k8s_agent_sandbox import SandboxClient
 from k8s_agent_sandbox.models import SandboxLocalTunnelConnectionConfig
 
 client = SandboxClient(
     connection_config=SandboxLocalTunnelConnectionConfig(
-        namespace="agent-sandbox-system"
+        router_namespace="agent-sandbox-system"
     )
 )
 
 sandbox = client.create_sandbox(
-    template="python-sandbox-template",
+    warmpool="python-pool",
     namespace="agent-sandbox-system",
 )
+sandbox.connector.session.headers["Authorization"] = f"Bearer {os.environ['ROUTER_AUTH_TOKEN']}"
 try:
     result = sandbox.commands.run("python3 --version")
     print(result.stdout)
@@ -468,6 +515,8 @@ kubectl port-forward -n agent-sandbox-system svc/sandbox-router-svc 8080:8080
 ```
 
 ```python
+import os
+
 from k8s_agent_sandbox import SandboxClient
 from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
@@ -478,14 +527,16 @@ client = SandboxClient(
 )
 
 sandbox = client.create_sandbox(
-    template="python-sandbox-template",
+    warmpool="python-pool",
     namespace="agent-sandbox-system",
 )
+sandbox.connector.session.headers["Authorization"] = f"Bearer {os.environ['ROUTER_AUTH_TOKEN']}"
 try:
     result = sandbox.commands.run("echo 'Hello from Agent Sandbox!'")
     print(result.stdout)    # Hello from Agent Sandbox!
 
-    result = sandbox.commands.run("pip install requests && python3 -c 'import requests; print(requests.__version__)'")
+    # No shell by default: wrap && in sh -c
+    result = sandbox.commands.run("sh -c \"pip install requests && python3 -c 'import requests; print(requests.__version__)'\"")
     print(result.stdout)
 finally:
     sandbox.terminate()
@@ -497,6 +548,8 @@ Use **Direct Mode** with the sandbox-router's in-cluster DNS URL.
 No RBAC changes are needed — the router handles all Kubernetes API calls.
 
 ```python
+import os
+
 from k8s_agent_sandbox import SandboxClient
 from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
@@ -507,9 +560,10 @@ client = SandboxClient(
 )
 
 sandbox = client.create_sandbox(
-    template="python-sandbox-template",
+    warmpool="python-pool",
     namespace="agent-sandbox-system",
 )
+sandbox.connector.session.headers["Authorization"] = f"Bearer {os.environ['ROUTER_AUTH_TOKEN']}"
 try:
     result = sandbox.commands.run("python3 -c \"print('Hello from in-cluster sandbox!')\"")
     print(result.stdout)
@@ -525,6 +579,8 @@ For agents that need state to persist across multiple tool invocations
 (installed packages, defined variables), create the sandbox once and reuse it:
 
 ```python
+import os
+
 from k8s_agent_sandbox import SandboxClient
 from k8s_agent_sandbox.models import SandboxDirectConnectionConfig
 
@@ -539,9 +595,10 @@ def get_sandbox():
     global _sandbox
     if _sandbox is None or not _sandbox.is_active:
         _sandbox = _client.create_sandbox(
-            template="python-sandbox-template",
+            warmpool="python-pool",
             namespace="agent-sandbox-system",
         )
+        _sandbox.connector.session.headers["Authorization"] = f"Bearer {os.environ['ROUTER_AUTH_TOKEN']}"
     return _sandbox
 
 # First call — installs package
