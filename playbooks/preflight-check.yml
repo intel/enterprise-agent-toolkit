@@ -16,7 +16,7 @@
 #
 # Run from the enterprise-ai-solutions checkout, after `init agent-toolkit` (any time, before or after install):
 #   .venv/bin/ansible-playbook -i env/<name>/inventory/hosts.yaml ext/enterprise.agent-toolkit/playbooks/preflight-check.yml
-# Reports: env/<name>/logs/health-report-latest.{json,html}. Cluster checks report PENDING until the cluster exists.
+# Reports: env/<name>/logs/health-report-latest.{json,html,txt}. Cluster checks report PENDING until the cluster exists.
 #
 # Reports only: the run does not stop on failures, so review the warning block and the report.
 
@@ -88,6 +88,7 @@
       ansible.builtin.set_fact:
         report_latest: "{{ inventory_meta_dir }}/health-report-latest.json"
         report_latest_html: "{{ inventory_meta_dir }}/health-report-latest.html"
+        report_latest_txt: "{{ inventory_meta_dir }}/health-report-latest.txt"
         report_file: "{{ inventory_meta_dir }}/health-report-{{ _report_ts }}.json"
 
     - name: Aggregate preflight results from all hosts
@@ -145,19 +146,21 @@
         dest: "{{ report_latest_html }}"
         mode: "0644"
 
-    - name: Print preflight report
-      ansible.builtin.script:
-        cmd: "preflight/report-renderer.sh {{ report_latest }}"
-      register: _preflight_output
+    - name: Render the text summary (latest)
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/preflight/templates/health-report.txt.j2', template_vars={'report': lookup('ansible.builtin.file', report_latest) | from_json}) }}\n"
+        dest: "{{ report_latest_txt }}"
+        mode: "0644"
 
     - name: Display preflight report
       ansible.builtin.debug:
-        msg: "{{ _preflight_output.stdout_lines }}"
+        msg: "{{ lookup('ansible.builtin.file', report_latest_txt).splitlines() }}"
 
     - name: Check for critical preflight failures
       ansible.builtin.set_fact:
         _critical_checks:
           - "Time sync"
+          - "Kubelet DNS file"
           - "Swap"
           - "Root disk headroom"
           - "Containerd disk headroom"

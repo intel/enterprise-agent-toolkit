@@ -16,7 +16,7 @@ This guide provides step-by-step instructions on how to deploy the Intel® AI fo
 ## Step 1 — Base Stack
 
 ```bash
-git clone https://github.com/intel/enterprise-ai-solutions.git
+git clone -b release-1.2 https://github.com/intel/enterprise-ai-solutions.git
 cd enterprise-ai-solutions
 ./es_auto_installer.sh configure
 ./es_auto_installer.sh init agent-toolkit          # creates env/local/ (env name defaults to "local")

@@ -4,6 +4,43 @@
 # layer-platform-health.yml — Cross-cutting platform checks (runs on all nodes)
 
 ---
+# Kubespray points kubelet at systemd-resolved's file on Ubuntu/Fedora; with no node running it, use /etc/resolv.conf
+- name: Detect nodes without systemd-resolved
+  ansible.builtin.shell: |
+    . /etc/os-release 2>/dev/null
+    case "$ID" in ubuntu|fedora) [ -f /run/systemd/resolve/resolv.conf ] && echo has || echo missing ;; *) echo n/a ;; esac
+  register: _dns_resolved
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether kubelet needs /etc/resolv.conf
+  ansible.builtin.set_fact:
+    _dns_states: "{{ ansible_play_hosts | map('extract', hostvars, ['_dns_resolved', 'stdout']) | list }}"
+    _dns_extra: "{{ (inventory_dir | dirname) ~ '/kubespray_extra.yml' }}"
+    _dns_override: "{{ (lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) | regex_search('(?m)^kube_resolv_conf:')) is not none }}"
+  run_once: true
+
+# A cluster-wide setting: only when no node runs systemd-resolved (on nodes that do, /etc/resolv.conf is its local stub)
+- name: Point kubelet at /etc/resolv.conf
+  ansible.builtin.lineinfile:
+    path: "{{ _dns_extra }}"
+    line: "{{ item }}"
+    regexp: "^{{ item.split(':')[0] }}:"
+    create: true
+    mode: "0644"
+  loop: ['kube_resolv_conf: "/etc/resolv.conf"', 'resolvconf_mode: "none"']
+  when: "'missing' in _dns_states and 'has' not in _dns_states and not _dns_override"
+  register: _dns_autofix
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Record the kubelet DNS setting (cluster-level)
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{'layer': 'platform-health', 'check': 'Kubelet DNS setting', 'status': 'OK', 'evidence': 'no node runs systemd-resolved: set kube_resolv_conf /etc/resolv.conf in ' ~ _dns_extra, 'hint': ''}] }}"
+  run_once: true
+  when: _dns_autofix is changed
+
 - name: Run platform health checks
   ansible.builtin.shell: |
     HN=$(hostname -s)
@@ -47,6 +84,17 @@
     kubelet_ver=$([ -n "$kubelet_bin" ] && "$kubelet_bin" --version 2>/dev/null | awk '{print $2}')
     kubelet_ver=${kubelet_ver:-not installed}
 
+    # Kubelet DNS file: Kubespray's Ubuntu/Fedora default is systemd-resolved's file
+    os_id=$(. /etc/os-release 2>/dev/null; echo "$ID")
+    if [ "$KS_RESOLV_OVERRIDE" = 1 ]; then rconf=/etc/resolv.conf
+    else rconf=$(awk '/^resolvConf:/{gsub(/"/,"",$2); print $2; exit}' /etc/kubernetes/kubelet-config.yaml /var/lib/kubelet/config.yaml 2>/dev/null)
+      [ -n "$rconf" ] || case "$os_id" in ubuntu|fedora) rconf=/run/systemd/resolve/resolv.conf ;; *) rconf=/etc/resolv.conf ;; esac; fi
+    rconf=${rconf:-/etc/resolv.conf}
+    dns_status="OK"; dns_state="present"; [ -f "$rconf" ] || { dns_status="FAIL"; dns_state="missing"; }
+    resolved=$(systemctl is-active systemd-resolved 2>/dev/null); resolved=${resolved:-unknown}
+    dns_hint="Kubernetes cannot start without it. Add to env/<name>/kubespray_extra.yml: kube_resolv_conf: /etc/resolv.conf and resolvconf_mode: none"
+    [ "$DNS_MIXED" = 1 ] && dns_hint="Some nodes run systemd-resolved and some do not. Make them the same (sudo apt install systemd-resolved on this node), then re-run the install"
+
     # Swap
     swap_total=$(free -m | awk '/Swap:/{print $2}')
     swap_used=$(free -m | awk '/Swap:/{print $3}')
@@ -87,6 +135,8 @@
          'evidence':'kernel=$kernel os=$os_name $os_ver','hint':'Kernel/OS mismatch across nodes'},
         {'layer':'platform-health','check':'Kubelet on $HN','status':'OK',
          'evidence':'kubelet=$kubelet_ver','hint':'Kubelet version mismatch — all nodes should match'},
+        {'layer':'platform-health','check':'Kubelet DNS file on $HN','status':'$dns_status',
+         'evidence':'resolvConf=$rconf $dns_state, systemd-resolved $resolved','hint':'$dns_hint'},
         {'layer':'platform-health','check':'Swap on $HN','status':'$swap_status',
          'evidence':'swap_total=${swap_total}MB swap_used=${swap_used}MB','hint':'Swap active — swapoff -a'},
         {'layer':'platform-health','check':'CPU governor on $HN','status':'$gov_status',
@@ -100,6 +150,9 @@
     " "$ntp_evidence"
   args:
     executable: /bin/bash
+  environment:
+    KS_RESOLV_OVERRIDE: "{{ '1' if (lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) | regex_search('(?m)^kube_resolv_conf:')) else '0' }}"
+    DNS_MIXED: "{{ '1' if ('missing' in _dns_states and 'has' in _dns_states) else '0' }}"
   register: _platform_results
   changed_when: false
   ignore_errors: true

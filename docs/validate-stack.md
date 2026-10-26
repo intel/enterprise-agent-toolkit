@@ -19,7 +19,7 @@ Intel® AI for Enterprise Agent Toolkit.
 
 | Check | When | Command | Output |
 |---|---|---|---|
-| Preflight | At the start of `./es_auto_installer.sh install`; standalone at any time | `ext/enterprise.agent-toolkit/playbooks/preflight-check.yml` | Report in `env/<name>/logs/health-report-latest.{json,html}` plus a terminal summary |
+| Preflight | At the start of `./es_auto_installer.sh install`; standalone at any time | `ext/enterprise.agent-toolkit/playbooks/preflight-check.yml` | Report in `env/<name>/logs/health-report-latest.{json,html,txt}`; the `.txt` summary is also printed |
 | Validate | After the install | `./es_auto_installer.sh validate <layer>` | Per-component checks in the run output; any failure stops the run with its reason |
 
 Components that are not enabled are skipped, not reported as failures.
@@ -28,11 +28,11 @@ Components that are not enabled are skipped, not reported as failures.
 
 ## Preflight Check — Pre-Install
 
-Checks node readiness on every host in the inventory. It only reports: no result stops the install.
+Checks node readiness on every host in the inventory. No result stops the install. The only change it makes is the Kubelet DNS setting (see [Troubleshooting](#preflight-fails-on-the-kubelet-dns-file)).
 
 | Status | Checks | Meaning |
 |---|---|---|
-| **FAIL** | Time sync, swap in use, root and containerd disk < 10% free, external DNS, gateway reachable | Fix these; they are also listed in the `PREFLIGHT WARNING` block |
+| **FAIL** | Time sync, Kubelet DNS file, swap in use, root and containerd disk < 10% free, external DNS, gateway reachable | Fix these; they are also listed in the `PREFLIGHT WARNING` block |
 | **WARN** | CPU governor not `performance`, THP=`always`, Hugging Face token invalid | Tuning or model access; the install works |
 | **PENDING** | Node resource pressure before the cluster exists; Hugging Face token not set | Checked on a later run: after the install, or with `HF_TOKEN` exported |
 | **OK** | Kernel and OS version, kubelet version (`not installed` before the cluster exists), NUMA topology | Informational, recorded in the report |
@@ -120,6 +120,13 @@ Ensure `chronyd` or `systemd-timesyncd` is running and synchronized on all nodes
 ```bash
 .venv/bin/ansible -i env/<name>/inventory/hosts.yaml all -b -m shell -a "timedatectl status | grep synchronized"
 ```
+
+### Preflight fails on the Kubelet DNS file
+
+On Ubuntu and Fedora, Kubespray points kubelet at `/run/systemd/resolve/resolv.conf`, which only exists while `systemd-resolved` runs; without it, Kubernetes cannot start.
+When no node runs `systemd-resolved`, the preflight writes `kube_resolv_conf: "/etc/resolv.conf"` and `resolvconf_mode: "none"` to `env/<name>/kubespray_extra.yml` (reported as **Kubelet DNS setting**) and the install continues.
+It reports FAIL when some nodes run `systemd-resolved` and others do not: one setting cannot serve both, so make the nodes the same, then re-run the install.
+With the preflight off (`node_preflight_enabled: false`), write the two lines yourself on such hosts.
 
 ### A model is still loading
 
