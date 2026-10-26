@@ -242,13 +242,21 @@
           - python
           - -c
           - |
-            import json, os, urllib.request
+            import json, os, urllib.error, urllib.request
+            def post(path, body):
+                req = urllib.request.Request("http://127.0.0.1:4000" + path, json.dumps(body).encode(),
+                    {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
+                return json.load(urllib.request.urlopen(req))
+            # A key with this alias can outlive the Secret (teardown agent-toolkit); aliases are unique
+            try:
+                post("/key/delete", {"key_aliases": ["{{ openshell_genai_key_alias }}"]})
+            except urllib.error.HTTPError as e:
+                if e.code not in (400, 404):
+                    raise
             body = {"key_alias": "{{ openshell_genai_key_alias }}",
                     "models": {{ openshell_genai_key_models | to_json }},
                     "max_budget": {{ openshell_genai_key_max_budget }}}
-            req = urllib.request.Request("http://127.0.0.1:4000/key/generate", json.dumps(body).encode(),
-                {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
-            print(json.load(urllib.request.urlopen(req))["key"])
+            print(post("/key/generate", body)["key"])
       register: vk_mint
       changed_when: true
       no_log: true

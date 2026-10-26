@@ -106,6 +106,20 @@
   retries: 60
   delay: 5
 
+- name: "kuberay | Wait for the Ray workers"
+  kubernetes.core.k8s_info:
+    api_version: ray.io/v1
+    kind: RayCluster
+    namespace: "{{ kuberay_namespace }}"
+  register: _ray_cluster
+  until:
+    - _ray_cluster.resources | default([]) | length > 0
+    - (_ray_cluster.resources[0].status | default({})).state | default('') == 'ready'
+    - ((_ray_cluster.resources[0].status | default({})).readyWorkerReplicas | default(0) | int)
+      >= ((_ray_cluster.resources[0].status | default({})).desiredWorkerReplicas | default(0) | int)
+  retries: 60
+  delay: 10
+
 # ── Ray Dashboard on the platform gateway ─────────────────────────────────
 
 - name: "kuberay | Check for the platform gateway"

@@ -60,6 +60,12 @@ spec:
               subPath: pgdata
             - name: init-scripts
               mountPath: /docker-entrypoint-initdb.d
+          # initdb on slow storage (NFS) can outlast the liveness window; a restart mid-init leaves a broken cluster
+          startupProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            periodSeconds: 10
+            failureThreshold: 90
           livenessProbe:
             exec:
               command: [pg_isready, -U, postgres]
