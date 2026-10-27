@@ -32,7 +32,7 @@ Checks node readiness on every host in the inventory. No result stops the instal
 
 | Status | Checks | Meaning |
 |---|---|---|
-| **FAIL** | Time sync, Kubelet DNS file, swap in use, root and containerd disk < 10% free, external DNS, gateway reachable | Fix these; they are also listed in the `PREFLIGHT WARNING` block |
+| **FAIL** | Time sync, Kubelet DNS file, unfinished Kubernetes install, node connection, swap in use, root and containerd disk < 10% free, external DNS, gateway reachable | Fix these; they are also listed in the `PREFLIGHT WARNING` block |
 | **WARN** | CPU governor not `performance`, THP=`always`, Hugging Face token invalid | Tuning or model access; the install works |
 | **PENDING** | Node resource pressure before the cluster exists; Hugging Face token not set | Checked on a later run: after the install, or with `HF_TOKEN` exported |
 | **OK** | Kernel and OS version, kubelet version (`not installed` before the cluster exists), NUMA topology | Informational, recorded in the report |
@@ -127,6 +127,18 @@ On Ubuntu and Fedora, Kubespray points kubelet at `/run/systemd/resolve/resolv.c
 When no node runs `systemd-resolved`, the preflight writes `kube_resolv_conf: "/etc/resolv.conf"` and `resolvconf_mode: "none"` to `env/<name>/kubespray_extra.yml` (reported as **Kubelet DNS setting**) and the install continues.
 It reports FAIL when some nodes run `systemd-resolved` and others do not: one setting cannot serve both, so make the nodes the same, then re-run the install.
 With the preflight off (`node_preflight_enabled: false`), write the two lines yourself on such hosts.
+
+### Preflight fails on an unfinished Kubernetes install
+
+An install that stopped during `kubeadm` leaves `/var/lib/kubelet/config.yaml` on the node. A plain re-run then skips `kubeadm init` and fails later (`secrets is forbidden` on `kubeadm token create`). Reset the nodes, then install again:
+```bash
+./es_auto_installer.sh teardown kubernetes
+./es_auto_installer.sh install agent-toolkit
+```
+
+### Preflight fails on a node connection
+
+The installer's playbook runs on the installer machine and runs some steps for each node on that node (Kata setup, CPU pinning). A node with no `ansible_connection` gets those steps run on the installer machine instead, so they report and configure the wrong machine. Add `ansible_connection: ssh` to every node reached over SSH, and `ansible_connection: local` to the machine running the installer, in `env/<name>/inventory/hosts.yaml`, then re-run the install.
 
 ### A model is still loading
 

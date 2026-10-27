@@ -81,6 +81,8 @@ Set `llm_services_autodeploy_models` in `config.agent-toolkit.yaml` to one value
 | `29` | `qwen3-coder-30b-specdec` | Qwen/Qwen3-Coder-30B-A3B-Instruct *(with speculative decoding)* |
 | `30` | `qwen3-6-35b-a3b` | Qwen/Qwen3.6-35B-A3B |
 
+> **Memory:** a node needs the `memory:` requests of its models (in `env/local/models.yaml`) plus about 17 GiB for the rest of the stack, and 16 GiB more for Qwen3Guard while the content-safety guardrail is on. The default install requests about 131 GiB (`qwen2-5-coder-14b` 96 GiB, Qwen3Guard 16 GiB, router 2 GiB, the rest 17 GiB), so it does not fit a 128 GB node: choose a 64 GiB model there (`qwen2-5-coder-7b`, `llama-3-1-8b`). `qwen3-coder-30b` requests 160 GiB.
+
 > **Note:** `meta-llama/Llama-3.1-8B-Instruct` does not support parallel tool calling. Only sequential tool calls are supported with this model.
 
 > **Note:** For how per-model CPU/memory sizing and vLLM flags are configured under the
@@ -118,6 +120,9 @@ Output is also written to `env/local/logs/install-agent-toolkit-<timestamp>.log`
 After Step 1 completes, verify all pods are healthy before proceeding to Step 2:
 
 ```bash
+# The installer writes the cluster's kubeconfig into the env
+export KUBECONFIG=$(pwd)/env/local/kubeconfig.yaml
+
 # All pods should be Running
 # (the vLLM pod may take an additional 10-15 min to pull the model weights)
 kubectl get pods -A
@@ -128,8 +133,12 @@ export LITELLM_MASTER_KEY=$(kubectl get secret litellm-master-key -n litellm -o 
 # (Optional) If behind a corporate proxy, update no_proxy to prevent the request from being intercepted by the proxy (replace <base_domain_name> with your base_domain_name)
 export no_proxy="${no_proxy},litellm.<base_domain_name>,langfuse.<base_domain_name>"
 
+# Gateway IP: map litellm.<base_domain_name> (and the other service names) to it in /etc/hosts
+kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
+
 # Confirm the model API is responding (replace <base_domain_name> with your base_domain_name;
-# TLS is self-signed by default, so use curl -k; add the gateway IP for litellm.<base_domain_name> to /etc/hosts):
+# TLS is self-signed by default, so use curl -k):
 # First, list registered models to confirm the model name:
 curl -k https://litellm.<base_domain_name>/v1/models \
   -H "Authorization: Bearer ${LITELLM_MASTER_KEY}"
@@ -264,7 +273,7 @@ https://langfuse.<base_domain_name>
 
 Login credentials: `kubectl get secret langfuse-secrets -n langfuse -o jsonpath='{.data.admin_email}' | base64 -d` and `... -o jsonpath='{.data.admin_password}' | base64 -d`; the project is `inference`.
 
-Go inside the `default` project. Under **Tracing**, select the most recent `litellm_request`, scroll down to **Metadata** → **attributes**. Look at the `llm.model_name` field to confirm routing decisions.
+Go inside the `inference` project. Under **Tracing**, select the most recent `litellm_request`, scroll down to **Metadata** → **attributes**. Look at the `llm.model_name` field to confirm routing decisions.
 
 ### How It Works
 

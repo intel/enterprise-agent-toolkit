@@ -1,3 +1,5 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Agent Toolkit Configuration — enterprise.agent-toolkit
@@ -6,6 +8,8 @@
 # Override any of them here.  `es_auto_installer.sh init agent-toolkit` seeds
 # this file into env/<env>/config.agent-toolkit.yaml and the installer loads
 # that seeded copy: edit the copy to change an existing environment.
+# It loads after config.inference.yaml, so guardrails_enabled, hybrid_router_enabled and
+# litellm_* set here override the inference layer's values.
 # =============================================================================
 
 # --- Node preflight ---
@@ -36,9 +40,6 @@ vllm_sr_dashboard_enabled: true
 # Client-facing name of the vLLM Semantic Router model in LiteLLM (litellm mode).
 vllm_sr_litellm_model_name: "vllm-sr/auto"
 
-# --- In-cluster image registry (platform; kubespray addon) ---
-kubernetes_registry_enabled: true
-
 # --- Redis Stack ---
 redis_stack_namespace: "redis"
 redis_stack_storage_class: ""          # empty = cluster default StorageClass
@@ -51,7 +52,7 @@ pgvector_username: "agentuser"
 pgvector_storage_size: "20Gi"
 
 # --- Agent Sandbox ---
-agent_sandbox_namespace: "agent-sandbox-system"
+agent_sandbox_namespace: "agent-sandbox-system"   # fixed: the upstream manifests and sandbox templates use this namespace
 agent_sandbox_version: "v0.5.0"
 
 # --- OpenShell  ---

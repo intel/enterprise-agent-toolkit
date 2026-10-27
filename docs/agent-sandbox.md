@@ -117,18 +117,15 @@ The thin-pool defaults to a 100 GB sparse data file; to back it with a real
 block device instead, pre-create a `containerd-thinpool` dm device and the
 playbook will reuse it.
 
-Missing prerequisites **never fail the stack run** — the playbook warns and
-skips:
+A missing prerequisite stops the Kata step with the fix in its message:
 
 | Situation | Behaviour |
 |---|---|
-| No node exposes `/dev/kvm` | Warn, install nothing, exit 0 |
-| `kata_runtime: "kata-fc"` but devmapper setup did not succeed on any node | Warn (with the fix), install nothing, exit 0 |
-| `kata_runtime: "both"` but devmapper setup did not succeed | Warn, install `kata-qemu` only |
-| `agent_sandbox_enabled: false` | Warn, skip Kata |
-| Invalid `kata_runtime` value | Warn listing valid values, skip Kata |
-
-> **Note:** warn-and-skip is not available in this release.
+| No node exposes `/dev/kvm` | Stops: enable VT-x, or set `kata_containers_enabled: false` |
+| `kata_runtime` is `kata-fc` or `both` but devmapper is not `ok` on any node | Stops: fix the thin-pool, or set `kata_runtime: kata-qemu` |
+| Firecracker is on and devmapper is not `ok` on some nodes | Those nodes are not labelled for Kata (a label left by an earlier run is removed); the run warns and names them |
+| `agent_sandbox_enabled: false` | Runtime classes are installed; no Kata sandbox template or pool |
+| Invalid `kata_runtime` value | Stops, listing the valid values |
 
 ### What gets installed
 
@@ -535,9 +532,9 @@ try:
     result = sandbox.commands.run("echo 'Hello from Agent Sandbox!'")
     print(result.stdout)    # Hello from Agent Sandbox!
 
-    # No shell by default: wrap && in sh -c
-    result = sandbox.commands.run("sh -c \"pip install requests && python3 -c 'import requests; print(requests.__version__)'\"")
-    print(result.stdout)
+    # No shell by default: wrap && and pipes in sh -c
+    result = sandbox.commands.run("sh -c \"echo shell-ok && echo piped | tr a-z A-Z\"")
+    print(result.stdout)    # shell-ok / PIPED
 finally:
     sandbox.terminate()
 ```

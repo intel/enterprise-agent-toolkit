@@ -5,22 +5,31 @@
 
 ---
 # Kubespray points kubelet at systemd-resolved's file on Ubuntu/Fedora; with no node running it, use /etc/resolv.conf
-- name: Detect nodes without systemd-resolved
+- name: Detect nodes without systemd-resolved, and each node's upstream DNS servers
   ansible.builtin.shell: |
     . /etc/os-release 2>/dev/null
     case "$ID" in ubuntu|fedora) [ -f /run/systemd/resolve/resolv.conf ] && echo has || echo missing ;; *) echo n/a ;; esac
+    f=/etc/resolv.conf; [ -f /run/systemd/resolve/resolv.conf ] && f=/run/systemd/resolve/resolv.conf
+    echo "dns: $(awk '$1 == "nameserver" && $2 !~ /^(127\.|::1$|169\.254\.)/ {print $2}' "$f" | paste -sd' ' -)"
   register: _dns_resolved
   changed_when: false
   failed_when: false
 
 - name: Decide whether kubelet needs /etc/resolv.conf
   ansible.builtin.set_fact:
-    _dns_states: "{{ ansible_play_hosts | map('extract', hostvars, ['_dns_resolved', 'stdout']) | list }}"
+    _dns_states: "{{ ansible_play_hosts | map('extract', hostvars, ['_dns_resolved', 'stdout_lines']) | map('first') | list }}"
+    _dns_upstreams: "{{ ansible_play_hosts | map('extract', hostvars, ['_dns_resolved', 'stdout_lines']) | flatten | select('match', '^dns:') | map('regex_replace', '^dns:\\s*', '') | map('split') | flatten | unique | list }}"
     _dns_extra: "{{ (inventory_dir | dirname) ~ '/kubespray_extra.yml' }}"
-    _dns_override: "{{ (lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) | regex_search('(?m)^kube_resolv_conf:')) is not none }}"
+    _dns_extra_text: "{{ lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) }}"
   run_once: true
 
-# A cluster-wide setting: only when no node runs systemd-resolved (on nodes that do, /etc/resolv.conf is its local stub)
+- name: Read the kubelet DNS settings already in kubespray_extra.yml
+  ansible.builtin.set_fact:
+    _dns_conf: "{{ _dns_extra_text | regex_search('(?m)^kube_resolv_conf:\\s*(\\S+)', '\\1') | default([''], true) | first | regex_replace('[\\x22\\x27]', '') }}"
+    _dns_has_upstream: "{{ _dns_extra_text | regex_search('(?m)^upstream_dns_servers:') is not none }}"
+    _dns_mixed: "{{ 'missing' in _dns_states and 'has' in _dns_states }}"
+  run_once: true
+
 - name: Point kubelet at /etc/resolv.conf
   ansible.builtin.lineinfile:
     path: "{{ _dns_extra }}"
@@ -29,17 +38,31 @@
     create: true
     mode: "0644"
   loop: ['kube_resolv_conf: "/etc/resolv.conf"', 'resolvconf_mode: "none"']
-  when: "'missing' in _dns_states and 'has' not in _dns_states and not _dns_override"
+  when: "'missing' in _dns_states and _dns_conf | length == 0 and (not _dns_mixed or _dns_upstreams | length > 0)"
   register: _dns_autofix
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+# Mixed nodes: /etc/resolv.conf is systemd-resolved's local stub there, so cluster DNS forwards to the nodes' real servers
+- name: Give cluster DNS the nodes' upstream servers (mixed nodes)
+  ansible.builtin.lineinfile:
+    path: "{{ _dns_extra }}"
+    line: "upstream_dns_servers: {{ _dns_upstreams | to_json }}"
+    regexp: "^upstream_dns_servers:"
+    create: true
+    mode: "0644"
+  when: _dns_mixed and _dns_upstreams | length > 0 and not _dns_has_upstream and _dns_conf in ['', '/etc/resolv.conf']
+  register: _dns_autofix_upstream
   delegate_to: localhost
   become: false
   run_once: true
 
 - name: Record the kubelet DNS setting (cluster-level)
   ansible.builtin.set_fact:
-    host_health_results: "{{ host_health_results | default([]) + [{'layer': 'platform-health', 'check': 'Kubelet DNS setting', 'status': 'OK', 'evidence': 'no node runs systemd-resolved: set kube_resolv_conf /etc/resolv.conf in ' ~ _dns_extra, 'hint': ''}] }}"
+    host_health_results: "{{ host_health_results | default([]) + [{'layer': 'platform-health', 'check': 'Kubelet DNS setting', 'status': 'OK', 'evidence': ('some nodes run systemd-resolved: set kube_resolv_conf /etc/resolv.conf and upstream_dns_servers ' ~ (_dns_upstreams | join(',')) if _dns_mixed else 'no node runs systemd-resolved: set kube_resolv_conf /etc/resolv.conf') ~ ' in ' ~ _dns_extra, 'hint': ''}] }}"
   run_once: true
-  when: _dns_autofix is changed
+  when: _dns_autofix is changed or _dns_autofix_upstream is changed
 
 - name: Run platform health checks
   ansible.builtin.shell: |
@@ -86,14 +109,21 @@
 
     # Kubelet DNS file: Kubespray's Ubuntu/Fedora default is systemd-resolved's file
     os_id=$(. /etc/os-release 2>/dev/null; echo "$ID")
-    if [ "$KS_RESOLV_OVERRIDE" = 1 ]; then rconf=/etc/resolv.conf
+    if [ -n "$KS_RESOLV_CONF" ]; then rconf=$KS_RESOLV_CONF
     else rconf=$(awk '/^resolvConf:/{gsub(/"/,"",$2); print $2; exit}' /etc/kubernetes/kubelet-config.yaml /var/lib/kubelet/config.yaml 2>/dev/null)
       [ -n "$rconf" ] || case "$os_id" in ubuntu|fedora) rconf=/run/systemd/resolve/resolv.conf ;; *) rconf=/etc/resolv.conf ;; esac; fi
     rconf=${rconf:-/etc/resolv.conf}
     dns_status="OK"; dns_state="present"; [ -f "$rconf" ] || { dns_status="FAIL"; dns_state="missing"; }
     resolved=$(systemctl is-active systemd-resolved 2>/dev/null); resolved=${resolved:-unknown}
     dns_hint="Kubernetes cannot start without it. Add to env/<name>/kubespray_extra.yml: kube_resolv_conf: /etc/resolv.conf and resolvconf_mode: none"
-    [ "$DNS_MIXED" = 1 ] && dns_hint="Some nodes run systemd-resolved and some do not. Make them the same (sudo apt install systemd-resolved on this node), then re-run the install"
+    [ "$DNS_MIXED" = 1 ] && dns_hint="Some nodes run systemd-resolved and some do not, and no upstream DNS server was found on the nodes. Set upstream_dns_servers in env/<name>/kubespray_extra.yml, then re-run the install"
+
+    # Unfinished Kubernetes install: kubelet config left on the node, but the installer never wrote the env kubeconfig
+    left_status="OK"; left_evidence="no leftovers"
+    if [ -f /var/lib/kubelet/config.yaml ]; then
+      left_evidence="/var/lib/kubelet/config.yaml present, env kubeconfig present"
+      [ "$ENV_KUBECONFIG" = 1 ] || { left_status="FAIL"; left_evidence="/var/lib/kubelet/config.yaml present, env kubeconfig missing"; }
+    fi
 
     # Swap
     swap_total=$(free -m | awk '/Swap:/{print $2}')
@@ -137,6 +167,8 @@
          'evidence':'kubelet=$kubelet_ver','hint':'Kubelet version mismatch — all nodes should match'},
         {'layer':'platform-health','check':'Kubelet DNS file on $HN','status':'$dns_status',
          'evidence':'resolvConf=$rconf $dns_state, systemd-resolved $resolved','hint':'$dns_hint'},
+        {'layer':'platform-health','check':'Unfinished Kubernetes install on $HN','status':'$left_status',
+         'evidence':'$left_evidence','hint':'A previous install stopped during kubeadm; a re-run skips kubeadm and fails. Run ./es_auto_installer.sh teardown kubernetes, then install again'},
         {'layer':'platform-health','check':'Swap on $HN','status':'$swap_status',
          'evidence':'swap_total=${swap_total}MB swap_used=${swap_used}MB','hint':'Swap active — swapoff -a'},
         {'layer':'platform-health','check':'CPU governor on $HN','status':'$gov_status',
@@ -151,8 +183,9 @@
   args:
     executable: /bin/bash
   environment:
-    KS_RESOLV_OVERRIDE: "{{ '1' if (lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) | regex_search('(?m)^kube_resolv_conf:')) else '0' }}"
+    KS_RESOLV_CONF: "{{ lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) | regex_search('(?m)^kube_resolv_conf:\\s*(\\S+)', '\\1') | default([''], true) | first | regex_replace('[\\x22\\x27]', '') }}"
     DNS_MIXED: "{{ '1' if ('missing' in _dns_states and 'has' in _dns_states) else '0' }}"
+    ENV_KUBECONFIG: "{{ '1' if (preflight_kubeconfig | default(inventory_dir ~ '/../kubeconfig.yaml')) is file else '0' }}"
   register: _platform_results
   changed_when: false
   ignore_errors: true

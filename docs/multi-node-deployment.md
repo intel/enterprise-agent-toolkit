@@ -39,16 +39,19 @@ all:
       ansible_host: 10.0.0.1          # control-plane private IP
       ansible_user: ubuntu
       ansible_ssh_private_key_file: /home/ubuntu/.ssh/id_rsa
+      ansible_connection: ssh
       ansible_become: true
     worker1:
       ansible_host: 10.0.0.2          # worker node 1 private IP
       ansible_user: ubuntu
       ansible_ssh_private_key_file: /home/ubuntu/.ssh/id_rsa
+      ansible_connection: ssh
       ansible_become: true
     worker2:
       ansible_host: 10.0.0.3          # worker node 2 private IP
       ansible_user: ubuntu
       ansible_ssh_private_key_file: /home/ubuntu/.ssh/id_rsa
+      ansible_connection: ssh
       ansible_become: true
   children:
     kube_control_plane:
@@ -71,7 +74,7 @@ all:
 ```
 
 
-> **Note:** The node running `./es_auto_installer.sh install agent-toolkit` must be able to reach all other nodes via SSH using the key specified in `ansible_ssh_private_key_file`.
+> **Note:** The node running `./es_auto_installer.sh install agent-toolkit` must be able to reach all other nodes via SSH using the key specified in `ansible_ssh_private_key_file`. For the node you run it on, either set `ansible_connection: local` in place of the SSH settings, or make sure that node can SSH to itself with the same key. Keep `ansible_connection: ssh` on every other node: the installer's playbook runs locally, and steps it runs for a node without that line (Kata, CPU pinning) would run on the installer machine instead.
 
 ---
 
@@ -81,6 +84,10 @@ Open `env/<name>/global_config.yaml` and `env/<name>/config.agent-toolkit.yaml` 
 
 ```yaml
 # ---- env/<name>/global_config.yaml ----
+
+# Required on multi-node: shared storage that every node can mount. nfs provisions an NFS server on the
+# first control-plane node at /data/nfs (ceph and netapp-trident also work); local-path is single-node only
+storage_backend: nfs
 
 # Your cluster FQDN — this becomes the base URL for all services
 base_domain_name: "example.com"
@@ -137,6 +144,8 @@ Set `llm_services_autodeploy_models` in `config.agent-toolkit.yaml` to one value
 | `29` | `qwen3-coder-30b-specdec` | Qwen/Qwen3-Coder-30B-A3B-Instruct *(with speculative decoding)* |
 | `30` | `qwen3-6-35b-a3b` | Qwen/Qwen3.6-35B-A3B |
 
+> **Memory:** a node needs the `memory:` requests of its models (in `env/<name>/models.yaml`) plus about 17 GiB for the rest of the stack, and 16 GiB more for Qwen3Guard while the content-safety guardrail is on. The default install requests about 131 GiB (`qwen2-5-coder-14b` 96 GiB, Qwen3Guard 16 GiB, router 2 GiB, the rest 17 GiB); each model runs on one node, so one node must have room for it. On 128 GB nodes choose a 64 GiB model (`qwen2-5-coder-7b`, `llama-3-1-8b`). `qwen3-coder-30b` requests 160 GiB.
+
 > **Note:** `meta-llama/Llama-3.1-8B-Instruct` does not support parallel tool calling. Only sequential tool calls are supported with this model.
 
 > **Note:** For how per-model CPU/memory sizing and vLLM flags are configured under the
@@ -176,6 +185,9 @@ Kubespray will use `env/<name>/inventory/hosts.yaml` to provision Kubernetes acr
 After deployment, confirm all nodes joined the cluster and all pods are healthy:
 
 ```bash
+# The installer writes the cluster's kubeconfig into the env
+export KUBECONFIG=$(pwd)/env/<name>/kubeconfig.yaml
+
 # All nodes should show Ready
 kubectl get nodes -o wide
 
@@ -188,6 +200,10 @@ export LITELLM_MASTER_KEY=$(kubectl get secret litellm-master-key -n litellm -o 
 
 # (Optional) If behind a corporate proxy, update no_proxy to prevent the request from being intercepted by the proxy (replace <base_domain_name> with your base_domain_name)
 export no_proxy="${no_proxy},litellm.<base_domain_name>,langfuse.<base_domain_name>"
+
+# Gateway IP: map litellm.<base_domain_name> (and the other service names) to it in /etc/hosts
+kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
 
 # List registered models to confirm the model name (replace <base_domain_name> with your base_domain_name)
 curl -k https://litellm.<base_domain_name>/v1/models \
@@ -296,7 +312,7 @@ Check routing decisions in Langfuse at `https://langfuse.<base_domain_name>`.
 
 Login credentials: the Langfuse login and password are generated into the `langfuse-secrets` Secret in the `langfuse` namespace (keys `admin_email` / `admin_password`).
 
-Go inside the `default` project. Under **Tracing**, select the most recent `litellm_request`, scroll down to **Metadata** → **attributes**. Look at the `llm.model_name` field to confirm routing decisions.
+Go inside the `inference` project. Under **Tracing**, select the most recent `litellm_request`, scroll down to **Metadata** → **attributes**. Look at the `llm.model_name` field to confirm routing decisions.
 
 ---
 

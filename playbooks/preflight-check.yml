@@ -36,6 +36,12 @@
         path: /tmp/validate-stack-host-results.jsonl
         state: absent
 
+    - name: Read the node's machine id over its own connection
+      ansible.builtin.command: cat /etc/machine-id
+      register: _machine_id
+      changed_when: false
+      failed_when: false
+
     - name: Clean previous fetched results on the controller
       ansible.builtin.file:
         path: "{{ item }}"
@@ -91,10 +97,32 @@
         report_latest_txt: "{{ inventory_meta_dir }}/health-report-latest.txt"
         report_file: "{{ inventory_meta_dir }}/health-report-{{ _report_ts }}.json"
 
+    # The installer's playbook also runs locally and delegates node-level steps (Kata, CPU pinning) to the
+    # nodes; for a node without its own connection setting they would run on this machine instead
+    - name: Read each node's machine id through delegation, as the installer does
+      ansible.builtin.command: cat /etc/machine-id
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['all'] | default([]) }}"
+      register: _delegated_ids
+      changed_when: false
+      failed_when: false
+
+    - name: Compare delegated and direct machine ids
+      ansible.builtin.set_fact:
+        _connection_results: >-
+          {%- set out = [] -%}
+          {%- for r in _delegated_ids.results | default([]) if (hostvars[r.item]._machine_id.stdout | default('')) -%}
+          {%- set ok = (r.stdout | default('')) == hostvars[r.item]._machine_id.stdout -%}
+          {%- set _ = out.append({'layer': 'platform-health', 'check': 'Node connection for ' ~ r.item, 'status': 'OK' if ok else 'FAIL',
+               'evidence': 'installer steps for this node run on this node' if ok else 'installer steps for this node would run on the installer machine',
+               'hint': 'Add ansible_connection: ssh to this node in env/<name>/inventory/hosts.yaml (ansible_connection: local for the machine running the installer)'}) -%}
+          {%- endfor -%}
+          {{ out }}
+
     - name: Aggregate preflight results from all hosts
       ansible.builtin.set_fact:
         _raw_results: >-
-          {%- set out = groups['all'] | default([]) | map('extract', hostvars, 'host_health_results') | select('defined') | flatten | list -%}
+          {%- set out = (groups['all'] | default([]) | map('extract', hostvars, 'host_health_results') | select('defined') | flatten | list) + _connection_results | default([]) -%}
           {%- for f in query('ansible.builtin.fileglob', '/tmp/preflight-results-*.jsonl') -%}
           {%- for line in lookup('ansible.builtin.file', f).splitlines() if line | trim -%}
           {%- set _ = out.extend(line | from_json) -%}
@@ -161,6 +189,8 @@
         _critical_checks:
           - "Time sync"
           - "Kubelet DNS file"
+          - "Unfinished Kubernetes install"
+          - "Node connection"
           - "Swap"
           - "Root disk headroom"
           - "Containerd disk headroom"
