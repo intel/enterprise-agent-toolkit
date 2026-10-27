@@ -1,5 +1,7 @@
 # Rack-Scale Deployment — AI Fabric Mode
 
+> **Note:** not available with the unified installer in this release.
+
 This guide covers deploying the Intel® AI for Enterprise Agent Toolkit on a
 high-performance rack with a **high-speed Ethernet AI fabric** (100G, 200G, 400G, or 800G),
 Intel® E810-C or compatible NICs, and NVMe Ceph storage — using the `rack_scale_mode` deployment path.
@@ -118,7 +120,7 @@ rack-profile-parser.sh     (generates all derived config)
         └──▶ core/inventory/metadata/vars/ceph-storage.yml  (Ceph OSD vars)
                 │
                 ▼
-        ./deploy-agentic-stack.sh
+        ./es_auto_installer.sh install agent-toolkit
                 │
                 ├──▶ deploy-netplan.yml     → applies fabric IPs to the NICs
                 ├──▶ deploy-ecmp-sysctl.yml → star hub forwarding (star only)
@@ -519,8 +521,8 @@ MoE (Mixture of Experts) models activate only a fraction of parameters per token
 ## Step 5 — Deploy
 
 ```bash
-chmod +x deploy-agentic-stack.sh
-./deploy-agentic-stack.sh
+./es_auto_installer.sh init agent-toolkit
+./es_auto_installer.sh install agent-toolkit
 ```
 
 Expected phases:

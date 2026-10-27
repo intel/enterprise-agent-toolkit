@@ -1,0 +1,222 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# preflight-check.yml
+#
+# Pre-installation health check — validates node readiness BEFORE deployment
+# begins. Catches environmental issues that would cause kubespray or component
+# installs to fail after wasting 30+ minutes.
+#
+# Critical (flagged in a warning block): NTP out of sync, swap enabled, disk <10% free,
+#   DNS resolution failure, gateway unreachable.
+# Warnings (report only): CPU governor not performance, THP=always.
+# Informational: kernel/OS version, kubelet version, NUMA topology.
+#
+# Results merge into one cumulative report across runs.
+#
+# Run from the enterprise-ai-solutions checkout, after `init agent-toolkit` (any time, before or after install):
+#   .venv/bin/ansible-playbook -i env/<name>/inventory/hosts.yaml ext/enterprise.agent-toolkit/playbooks/preflight-check.yml
+# Reports: env/<name>/logs/health-report-latest.{json,html,txt}. Cluster checks report PENDING until the cluster exists.
+#
+# Reports only: the run does not stop on failures, so review the warning block and the report.
+
+---
+- name: "Preflight Check — Node Readiness"
+  hosts: all
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Initialize per-host results
+      ansible.builtin.set_fact:
+        host_health_results: []
+        _my_hostname: "{{ inventory_hostname }}"
+
+    - name: Clean previous host results file
+      ansible.builtin.file:
+        path: /tmp/validate-stack-host-results.jsonl
+        state: absent
+
+    - name: Read the node's machine id over its own connection
+      ansible.builtin.command: cat /etc/machine-id
+      register: _machine_id
+      changed_when: false
+      failed_when: false
+
+    - name: Clean previous fetched results on the controller
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ query('ansible.builtin.fileglob', '/tmp/preflight-results-*.jsonl') }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+  tasks:
+    - name: "Preflight: Network connectivity"
+      ansible.builtin.include_tasks:
+        file: preflight/layer-network.yml
+
+    - name: "Preflight: Platform health"
+      ansible.builtin.include_tasks:
+        file: preflight/layer-platform-health.yml
+
+    # The node checks write here (see the layer files); collected as validate-stack does
+    - name: Fetch per-host results to the controller
+      ansible.builtin.fetch:
+        src: /tmp/validate-stack-host-results.jsonl
+        dest: "/tmp/preflight-results-{{ inventory_hostname }}.jsonl"
+        flat: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Play 2 — Aggregate, merge into cumulative report, and gate on critical checks
+# ═══════════════════════════════════════════════════════════════════════════════
+- name: "Preflight Check — Report & Gate"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # env/<name>/logs, next to the inventory the run used
+    inventory_meta_dir: "{{ preflight_report_dir | default((hostvars[groups['all'][0]].inventory_dir | default(lookup('env', 'PWD'))) ~ '/../logs') }}"
+
+  tasks:
+    - name: Create the report directory
+      ansible.builtin.file:
+        path: "{{ inventory_meta_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Pin timestamps
+      ansible.builtin.set_fact:
+        _report_ts: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+        _check_iso: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Set report file paths
+      ansible.builtin.set_fact:
+        report_latest: "{{ inventory_meta_dir }}/health-report-latest.json"
+        report_latest_html: "{{ inventory_meta_dir }}/health-report-latest.html"
+        report_latest_txt: "{{ inventory_meta_dir }}/health-report-latest.txt"
+        report_file: "{{ inventory_meta_dir }}/health-report-{{ _report_ts }}.json"
+
+    # The installer's playbook also runs locally and delegates node-level steps (Kata, CPU pinning) to the
+    # nodes; for a node without its own connection setting they would run on this machine instead
+    - name: Read each node's machine id through delegation, as the installer does
+      ansible.builtin.command: cat /etc/machine-id
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['all'] | default([]) }}"
+      register: _delegated_ids
+      changed_when: false
+      failed_when: false
+
+    - name: Compare delegated and direct machine ids
+      ansible.builtin.set_fact:
+        _connection_results: >-
+          {%- set out = [] -%}
+          {%- for r in _delegated_ids.results | default([]) if (hostvars[r.item]._machine_id.stdout | default('')) -%}
+          {%- set ok = (r.stdout | default('')) == hostvars[r.item]._machine_id.stdout -%}
+          {%- set _ = out.append({'layer': 'platform-health', 'check': 'Node connection for ' ~ r.item, 'status': 'OK' if ok else 'FAIL',
+               'evidence': 'installer steps for this node run on this node' if ok else 'installer steps for this node would run on the installer machine',
+               'hint': 'Add ansible_connection: ssh to this node in env/<name>/inventory/hosts.yaml (ansible_connection: local for the machine running the installer)'}) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Aggregate preflight results from all hosts
+      ansible.builtin.set_fact:
+        _raw_results: >-
+          {%- set out = (groups['all'] | default([]) | map('extract', hostvars, 'host_health_results') | select('defined') | flatten | list) + _connection_results | default([]) -%}
+          {%- for f in query('ansible.builtin.fileglob', '/tmp/preflight-results-*.jsonl') -%}
+          {%- for line in lookup('ansible.builtin.file', f).splitlines() if line | trim -%}
+          {%- set _ = out.extend(line | from_json) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Stamp and dedup
+      ansible.builtin.set_fact:
+        _current_results: "{{ _raw_results | unique | map('combine', {'checked_at': _check_iso}) | list }}"
+
+    - name: Get layers checked
+      ansible.builtin.set_fact:
+        _current_layers: "{{ _current_results | map(attribute='layer') | unique | list }}"
+
+    - name: Check for an existing report
+      ansible.builtin.stat:
+        path: "{{ report_latest }}"
+      register: _existing_stat
+
+    - name: Read existing latest report for merge
+      ansible.builtin.slurp:
+        src: "{{ report_latest }}"
+      register: _existing_raw
+      when: _existing_stat.stat.exists
+
+    - name: Merge with existing report
+      ansible.builtin.set_fact:
+        all_results: >-
+          {{ _current_results
+             + ((_existing_raw.content | b64decode | from_json).get('results', []) | rejectattr('layer', 'in', _current_layers) | list)
+             if _existing_raw.content is defined else _current_results }}
+
+    - name: Write merged JSON (latest)
+      ansible.builtin.copy:
+        content: "{{ {'timestamp': _report_ts, 'checked_at': _check_iso, 'current_layers': _current_layers, 'endpoints': {}, 'internal_services': {}, 'results': all_results} | to_nice_json }}"
+        dest: "{{ report_latest }}"
+        mode: "0644"
+
+    - name: Write JSON archive
+      ansible.builtin.copy:
+        content: "{{ {'timestamp': _report_ts, 'checked_at': _check_iso, 'current_layers': _current_layers, 'results': all_results} | to_nice_json }}"
+        dest: "{{ report_file }}"
+        mode: "0644"
+
+    - name: Render HTML (latest)
+      ansible.builtin.template:
+        src: preflight/templates/health-report.html.j2
+        dest: "{{ report_latest_html }}"
+        mode: "0644"
+
+    - name: Render the text summary (latest)
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.template', playbook_dir ~ '/preflight/templates/health-report.txt.j2', template_vars={'report': lookup('ansible.builtin.file', report_latest) | from_json}) }}\n"
+        dest: "{{ report_latest_txt }}"
+        mode: "0644"
+
+    - name: Display preflight report
+      ansible.builtin.debug:
+        msg: "{{ lookup('ansible.builtin.file', report_latest_txt).splitlines() }}"
+
+    - name: Check for critical preflight failures
+      ansible.builtin.set_fact:
+        _critical_checks:
+          - "Time sync"
+          - "Kubelet DNS file"
+          - "Unfinished Kubernetes install"
+          - "Node connection"
+          - "Swap"
+          - "Root disk headroom"
+          - "Containerd disk headroom"
+          - "Gateway reachable"
+          - "External DNS"
+
+    - name: Find critical failures
+      ansible.builtin.set_fact:
+        _critical_failures: >-
+          {{ _current_results
+             | selectattr('status', 'equalto', 'FAIL')
+             | selectattr('check', 'search', _critical_checks | join('|'))
+             | list }}
+
+    - name: Warn on critical failures
+      ansible.builtin.debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════════╗
+          ║  PREFLIGHT WARNING — {{ _critical_failures | length }} issue(s) detected                  ║
+          ╚══════════════════════════════════════════════════════════════╝
+          {% for f in _critical_failures %}
+          ✗ [{{ f.layer }}] {{ f.check }}
+            Evidence: {{ f.evidence }}
+            Fix: {{ f.hint }}
+          {% endfor %}
+
+          Deployment will continue but may encounter failures.
+          Review the health report for details.
+      when: _critical_failures | length > 0

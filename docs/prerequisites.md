@@ -62,14 +62,14 @@ Log in as a non-root user with `sudo` privileges. Using `root` or a password-bas
 
    If a bastion host is used, ensure the Ansible control machine can reach the cluster nodes through it.
 
-5. **Configure the Ansible inventory** (`core/inventory/hosts.yaml`) with your node IPs and SSH user. Example templates are provided for both deployment topologies:
+5. **Configure the Ansible inventory** (`env/<name>/inventory/hosts.yaml`) with your node IPs and SSH user. Example templates are provided for both deployment topologies:
 
    | Topology | Example inventory |
    |---|---|
    | Single node (all-in-one) | [examples/single-node/hosts.yaml](examples/single-node/hosts.yaml) |
    | Multi-node (3 control-plane + N workers) | [examples/multi-node/hosts.yaml](examples/multi-node/hosts.yaml) |
 
-   Copy the appropriate template to `core/inventory/hosts.yaml` and replace `ansible_user`, `ansible_host`, and `ansible_ssh_private_key_file` with your actual values.
+   Copy the appropriate template to `env/<name>/inventory/hosts.yaml` and replace `ansible_user`, `ansible_host`, and `ansible_ssh_private_key_file` with your actual values.
 
 ## DNS and SSL/TLS Setup
 
@@ -77,23 +77,23 @@ Log in as a non-root user with `sudo` privileges. Using `root` or a password-bas
 
 - Use a registered domain name with DNS records pointing to your server or load balancer.
 - Obtain an SSL/TLS certificate from a trusted Certificate Authority (CA) and install it on your system.
-- The certificate must cover the base domain **and all use-case subdomains**. For a `cluster_url` of `api.example.com` the following FQDNs need to be covered:
+- The certificate must cover the base domain **and all use-case subdomains**. For a `base_domain_name` of `api.example.com` the following FQDNs need to be covered:
 
   | FQDN | Purpose |
   |---|---|
-  | `api.example.com` | GenAI Gateway (LiteLLM) |
-  | `trace-api.example.com` | Langfuse trace UI |
-  | `coding-agent-api.example.com` | Coding Agent UI |
-  | `vllm-sr-api.example.com` | vLLM Semantic Router dashboard |
+  | `litellm.api.example.com` | GenAI Gateway (LiteLLM) |
+  | `langfuse.api.example.com` | Langfuse trace UI |
+  | `coding-agent-api.example.com` | Coding Agent UI. **Note:** not available in this release. |
+  | `vllm-sr.api.example.com` | vLLM Semantic Router dashboard |
 
 
-  Request a **multi-SAN** or **wildcard** (`*.example.com`) certificate from your CA that includes all of the above.
+  Request a **multi-SAN** or **wildcard** (`*.api.example.com`) certificate from your CA that includes all of the above.
 - Set up automatic renewal or calendar reminders before certificates expire.
 - Ensure required firewall ports (e.g., port 80 for HTTP validation) are open during certificate issuance.
 
 ### Development Environment
 
-For local testing, `api.example.com` can be mapped to `localhost` or the node's private IP.
+For local testing, `litellm.api.example.com` can be mapped to the gateway IP.
 
 1. **Add entries to `/etc/hosts`** for every subdomain the stack uses:
 
@@ -101,36 +101,36 @@ For local testing, `api.example.com` can be mapped to `localhost` or the node's 
    # Get the private IP of the machine
    hostname -I
 
-   # Add all stack subdomains to /etc/hosts (replace 127.0.0.1 with the node IP if needed)
-   # Replace api.example.com with your actual cluster_url
+   # Add all stack subdomains to /etc/hosts (replace <GATEWAY_IP> with the gateway IP)
+   # Replace api.example.com with your actual base_domain_name
    sudo bash -c 'cat >> /etc/hosts <<EOF
-   127.0.0.1 api.example.com
-   127.0.0.1 trace-api.example.com
+   <GATEWAY_IP> litellm.api.example.com
+   <GATEWAY_IP> langfuse.api.example.com
    127.0.0.1 coding-agent-api.example.com
-   127.0.0.1 vllm-sr-api.example.com
+   <GATEWAY_IP> vllm-sr.api.example.com
    EOF'
    ```
 
-   The subdomains follow this pattern for a `cluster_url` of `api.example.com`:
+   The subdomains follow this pattern for a `base_domain_name` of `api.example.com`:
 
    | Host entry | Service |
    |---|---|
-   | `api.example.com` | GenAI Gateway (LiteLLM) |
-   | `trace-api.example.com` | Langfuse trace UI |
-   | `coding-agent-api.example.com` | Coding Agent UI |
-   | `vllm-sr-api.example.com` | vLLM Semantic Router dashboard |
+   | `litellm.api.example.com` | GenAI Gateway (LiteLLM) |
+   | `langfuse.api.example.com` | Langfuse trace UI |
+   | `coding-agent-api.example.com` | Coding Agent UI. **Note:** not available in this release. |
+   | `vllm-sr.api.example.com` | vLLM Semantic Router dashboard |
 
 
 2. **Generate a self-signed SSL certificate** covering all subdomains:
 
    ```bash
-   # Replace api.example.com with your actual cluster_url
+   # Replace api.example.com with your actual base_domain_name
    DOMAIN="api.example.com"
 
    mkdir -p ~/certs && cd ~/certs && \
    openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
      -subj "/CN=${DOMAIN}" \
-     -addext "subjectAltName = DNS:${DOMAIN}, DNS:trace-${DOMAIN}, DNS:coding-agent-${DOMAIN}, DNS:vllm-sr-${DOMAIN}"
+     -addext "subjectAltName = DNS:${DOMAIN}, DNS:litellm.${DOMAIN}, DNS:langfuse.${DOMAIN}, DNS:coding-agent-${DOMAIN}, DNS:vllm-sr.${DOMAIN}"
    ```
 
    > **Note:** The `-addext` option requires OpenSSL ≥ 1.1.1. If you add more use cases later, regenerate the cert with the additional `DNS:` entries.

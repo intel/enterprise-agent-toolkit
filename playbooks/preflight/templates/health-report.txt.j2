@@ -1,0 +1,55 @@
+{#- Text summary of a health report (expects `report`, the parsed health-report JSON) -#}
+{%- set results = report.results | default([]) -%}
+{%- set current_layers = report.current_layers | default([]) -%}
+{%- set layer_order = ['e2e-inference', 'fabric', 'network', 'proxy', 'kubernetes', 'storage', 'ai-stack', 'wiring', 'gpu', 'kuberay', 'sandbox', 'flowise', 'platform-health', 'burn-quick', 'burn-extended'] -%}
+{%- set names = {'e2e-inference': 'End-to-end inference', 'fabric': 'Fabric verified', 'network': 'Network connectivity', 'proxy': 'Proxy configuration', 'kubernetes': 'Kubernetes cluster', 'storage': 'Storage (Ceph)', 'ai-stack': 'AI Stack services', 'wiring': 'Inter-component wiring', 'gpu': 'GPU readiness', 'kuberay': 'KubeRay', 'sandbox': 'Agent Sandbox', 'flowise': 'Agentic AI Plugin', 'platform-health': 'Platform health', 'burn-quick': 'Quick burn (infra)', 'burn-extended': 'Extended burn'} -%}
+{%- set prio = {'FAIL': 0, 'WARN': 1, 'PENDING': 2, 'OK': 3} -%}
+{%- set ns = namespace(lines=[], layers=[]) -%}
+{%- set st = {} -%}{%- set ev = {} -%}
+{%- for r in results if r.layer not in ns.layers -%}{%- set ns.layers = ns.layers + [r.layer] -%}{%- endfor -%}
+{%- for l in ns.layers -%}
+  {%- set w = namespace(s='OK', e=[]) -%}
+  {%- for c in results if c.layer == l and prio.get(c.status | default('OK'), 3) < prio.get(w.s, 3) -%}{%- set w.s = c.status -%}{%- endfor -%}
+  {%- for c in results if c.layer == l and (c.status | default('OK')) == w.s and c.evidence | default('') -%}{%- set w.e = w.e + [c.evidence] -%}{%- endfor -%}
+  {%- set _ = st.update({l: w.s}) -%}{%- set _ = ev.update({l: w.e[:2] | join('; ')}) -%}
+{%- endfor -%}
+{%- macro fmt(s, e='') -%}
+{%- if s == 'OK' -%}[ OK ]{{ ('  (' ~ e[:50] ~ ')') if e else '' }}
+{%- else -%}[ {{ s if s in ['PENDING', 'WARN'] else 'FAIL' }} ]{{ (' ' ~ e[:50]) if e else '' }}
+{%- endif -%}
+{%- endmacro -%}
+{%- set all_layers = (layer_order | select('in', st) | list) + (st.keys() | reject('in', layer_order) | sort) -%}
+{%- set current = (all_layers | select('in', current_layers) | list) if current_layers else all_layers -%}
+{%- set previous = (all_layers | reject('in', current_layers) | list) if current_layers else [] -%}
+{%- set bar = '=' * 60 -%}{%- set rule = '-' * 60 -%}
+{%- set ns.lines = [bar, '  Intel® AI for Enterprise — Stack Health Report', bar] -%}
+{%- for l in current -%}
+  {%- set n = names.get(l, l) -%}
+  {%- set ns.lines = ns.lines + ['  ' ~ n ~ ' ' * ([1, 38 - n | length] | max) ~ fmt(st[l], ev[l])] -%}
+{%- endfor -%}
+{%- if previous -%}
+  {%- set ns.lines = ns.lines + [rule, '  Previous results:'] -%}
+  {%- for l in previous -%}
+    {%- set n = names.get(l, l) -%}
+    {%- set at = results | selectattr('layer', 'equalto', l) | selectattr('checked_at', 'defined') | map(attribute='checked_at') | select | first | default('') -%}
+    {%- set ns.lines = ns.lines + ['  ' ~ n ~ ' ' * ([1, 38 - n | length] | max) ~ fmt(st[l]) ~ ((' (' ~ at[:16] ~ ')') if at else '')] -%}
+  {%- endfor -%}
+{%- endif -%}
+{%- set ns.lines = ns.lines + [rule] -%}
+{%- set pend = results | selectattr('status', 'equalto', 'PENDING') | list -%}
+{%- if pend -%}
+  {%- for i in pend if i.hint | default('') -%}{%- set ns.lines = ns.lines + ['  ' ~ (i.check | default(i.layer | default(''))) ~ ': ' ~ i.hint] -%}{%- endfor -%}
+  {%- set ns.lines = ns.lines + [''] -%}
+{%- endif -%}
+{%- for kind in [('WARN', 'WARNING:'), ('FAIL', 'FAILED: ')] -%}
+  {%- set items = results | selectattr('status', 'equalto', kind[0]) | list -%}
+  {%- if items -%}
+    {%- for i in items -%}{%- set ns.lines = ns.lines + ['  ' ~ kind[1] ~ (' ' if kind[0] == 'WARN' else '') ~ '[' ~ (i.layer | default('unknown')) ~ '] ' ~ (i.check | default('unknown')), '          Hint: ' ~ (i.hint | default('No remediation hint available'))] -%}{%- endfor -%}
+    {%- set ns.lines = ns.lines + [''] -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set cnt = namespace(p=0, w=0, n=0, f=0) -%}
+{%- for s in st.values() -%}{%- if s == 'OK' -%}{%- set cnt.p = cnt.p + 1 -%}{%- elif s == 'WARN' -%}{%- set cnt.w = cnt.w + 1 -%}{%- elif s == 'PENDING' -%}{%- set cnt.n = cnt.n + 1 -%}{%- elif s == 'FAIL' -%}{%- set cnt.f = cnt.f + 1 -%}{%- endif -%}{%- endfor -%}
+{%- set parts = (([cnt.p ~ ' PASSED'] if cnt.p else []) + ([cnt.w ~ ' WARNING'] if cnt.w else []) + ([cnt.n ~ ' PENDING'] if cnt.n else []) + ([cnt.f ~ ' FAILED'] if cnt.f else [])) -%}
+{%- set ns.lines = ns.lines + [bar, ('  RESULT: ALL CHECKS PASSED' if not (cnt.f or cnt.n or cnt.w) else '  RESULT: ' ~ st | length ~ ' layers — ' ~ parts | join(', ')), bar] -%}
+{{ ns.lines | join('\n') }}

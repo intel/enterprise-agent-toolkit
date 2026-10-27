@@ -1,0 +1,52 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# KubeRay Role Defaults
+# =============================================================================
+# Ray distributed compute for parallel tool execution in agentic workloads.
+#
+# In-cluster addresses after deployment:
+#   Ray Client API : ray://ray-cluster-head-svc.{{ kuberay_namespace }}.svc.cluster.local:10001
+#   Dashboard      : http://ray-cluster-head-svc.{{ kuberay_namespace }}.svc.cluster.local:8265
+# =============================================================================
+
+kuberay_namespace: "ray-system"
+kuberay_release_name: "ray-cluster"
+kuberay_operator_version: "1.3.0"
+kuberay_operator_release_name: "kuberay-operator"
+kuberay_ray_image: "rayproject/ray:2.40.0-py312"
+
+# Cluster sizing
+kuberay_worker_replicas: 2
+kuberay_worker_min_replicas: 1
+kuberay_worker_max_replicas: 4
+
+# Worker resources
+kuberay_worker_cpu_request: "500m"
+kuberay_worker_cpu_limit: "2"
+kuberay_worker_memory_request: "2Gi"
+kuberay_worker_memory_limit: "4Gi"
+
+# Head resources
+kuberay_head_cpu_request: "500m"
+kuberay_head_cpu_limit: "2"
+kuberay_head_memory_request: "2Gi"
+kuberay_head_memory_limit: "4Gi"
+
+# Prefer platform nodes; tolerate the control-plane taint
+kuberay_affinity:
+  nodeAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        preference:
+          matchExpressions:
+            - {key: workload-class, operator: In, values: ["platform"]}
+kuberay_tolerations:
+  - {key: "node-role.kubernetes.io/control-plane", operator: "Exists", effect: "NoSchedule"}
+  - {key: "node-role.kubernetes.io/master", operator: "Exists", effect: "NoSchedule"}
+
+# Ray Dashboard at https://ray.<domain>/ behind basic auth (Secret ray-dashboard-auth)
+kuberay_dashboard_enabled: true
+kuberay_dashboard_hostname: "ray.{{ base_domain_name | default('example.com') }}"
+kuberay_dashboard_basic_auth: true

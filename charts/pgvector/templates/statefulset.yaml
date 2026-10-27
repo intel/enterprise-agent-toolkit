@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "pgvector.fullname" . }}
+  labels:
+    {{- include "pgvector.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "pgvector.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "pgvector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pgvector.selectorLabels" . | nindent 8 }}
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: pgvector
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.postgresql.parameters }}
+          # Each parameter becomes postgres -c key=value
+          args:
+            {{- range $k, $v := . }}
+            - "-c"
+            - "{{ $k }}={{ $v }}"
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pgvector.fullname" . }}-credentials
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pgvector.fullname" . }}-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pgvector.fullname" . }}-credentials
+                  key: POSTGRES_DB
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pgvector.fullname" . }}-credentials
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          # initdb on slow storage (NFS) can outlast the liveness window; a restart mid-init leaves a broken cluster
+          startupProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            periodSeconds: 10
+            failureThreshold: 90
+          livenessProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: {{ include "pgvector.fullname" . }}-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.persistence.storageClassName }}
+        storageClassName: {{ .Values.persistence.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

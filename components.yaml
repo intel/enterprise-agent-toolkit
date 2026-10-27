@@ -1,0 +1,49 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Component Registry — Agent Toolkit Layer
+# =============================================================================
+# Merged into the core component registry by ai-solutions preflight.yaml.
+# Cross-layer dependencies (platform, inference) are resolved automatically
+# via layer ordering in the core components.yaml.
+#
+# Same-layer depends_on only — cross-layer handled by layer order.
+# =============================================================================
+
+layers:
+  - name: agent-toolkit
+    enabled: "{{ agent_toolkit_enabled | default(true) | bool }}"
+    depends_on: [platform, inference]
+
+components:
+  # --- Agent Toolkit ---
+  - name: redis_stack
+    layer: agent-toolkit
+    enabled: "{{ redis_stack_enabled | default(true) | bool }}"
+    depends_on: []
+
+  - name: pgvector
+    layer: agent-toolkit
+    enabled: "{{ pgvector_enabled | default(true) | bool }}"
+    depends_on: []
+
+  - name: keycloak_agent_config
+    layer: agent-toolkit
+    enabled: "{{ keycloak_agent_config_enabled | default(keycloak_enabled | default((auth_provider | default('keycloak')) != 'litellm')) | bool }}"
+    depends_on: []
+
+  - name: agent_sandbox
+    layer: agent-toolkit
+    enabled: "{{ agent_sandbox_enabled | default(true) | bool }}"
+    depends_on: []
+
+  - name: openshell
+    layer: agent-toolkit
+    enabled: "{{ openshell_enabled | default(false) | bool }}"
+    depends_on: [agent_sandbox]
+
+  - name: kuberay
+    layer: agent-toolkit
+    enabled: "{{ kuberay_enabled | default(false) | bool }}"
+    depends_on: []

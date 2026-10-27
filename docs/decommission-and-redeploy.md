@@ -2,37 +2,35 @@
 
 > **Warning:** Decommissioning destroys the entire Kubernetes cluster and all workloads, data, and secrets. It cannot be undone.
 
-## Step 1 — Decommission via the interactive menu
+## Step 1 — Decommission the cluster
 
 ```bash
-./deploy-agentic-stack.sh --menu
-# Select option 2 — "Decommission Existing Cluster"
-# Confirm the prompt — this runs the full cluster purge playbook
+./es_auto_installer.sh teardown infrastructure
+# removes the cluster and everything on it
 ```
 
 What the decommission does:
 - Runs Kubespray's `reset.yml` to remove all Kubernetes components from the node
-- Removes all Helm releases and namespaces (`genai-gateway`, `redis`, `observability`, etc.)
+- Removes all Helm releases and namespaces (`litellm`, `redis`, `monitoring`, etc.)
 - Cleans up container images injected into containerd
 - Removes the generated `hosts.yaml` inventory
+  > **Note:** not available in this release.
 
-> The `core/inventory/agentic-config.cfg` file is **not** deleted — your settings are preserved for the next run.
+> The `env/<name>/global_config.yaml`, `config.agent-toolkit.yaml` and `config.inference.yaml` files are **not** deleted — your settings are preserved for the next run.
 
 ## Step 2 — Redeploy from scratch
 
-After decommission completes, set the components you want back to `on` in `agentic-config.cfg`, then run:
+After decommission completes, set the components you want back to `true` in `env/<name>/global_config.yaml` and `env/<name>/config.agent-toolkit.yaml`, then run:
 
 ```bash
-# Edit core/inventory/agentic-config.cfg and turn components back on:
-#   deploy_kubernetes_fresh=on
-#   deploy_ingress_controller=on
-#   deploy_genai_gateway=on
-#   deploy_observability=on
-#   deploy_llm_models=on
-#   deploy_redis=on
-#   deploy_pgvector=off
+# Edit env/<name>/global_config.yaml and env/<name>/config.agent-toolkit.yaml and turn components back on:
+#   auth_provider: "litellm"                                (global_config.yaml)
+#   observability_enabled: true                             (global_config.yaml)
+#   llm_services_autodeploy_models: ["qwen2-5-coder-14b"]   (config.agent-toolkit.yaml)
+#   redis_stack_enabled: true                               (config.agent-toolkit.yaml)
+#   pgvector_enabled: false                                 (config.agent-toolkit.yaml)
 
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 ```
 
-The script will deploy everything from scratch. Components are automatically set to `off` in the config once deployed, so subsequent re-runs skip already-running components.
+The script will deploy everything from scratch. Re-running `install agent-toolkit` is idempotent and applies config changes.

@@ -1,12 +1,12 @@
 # Backend Connection Reference — Intel® AI for Enterprise Agent Toolkit
 
-All shared backends are deployed into their own namespaces and are reachable from any workload namespace in the cluster.
+All shared backends are deployed into their own namespaces and are reachable from any workload namespace in the cluster labelled `istio.io/dataplane-mode=ambient` (the toolkit namespaces run in the Istio ambient mesh with strict mTLS).
 
 ## Redis (Session Memory & Caching)
 
 | Instance | Kubernetes Service | URL | Scope |
 |---|---|---|---|
-| **Redis Stack** (`deploy_redis=on`) | `redis-stack-server.redis.svc.cluster.local:6379` (ClusterIP) | `redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379` | All namespaces (in-cluster only) |
+| **Redis Stack** (`redis_stack_enabled: true`) | `redis-stack-server.redis.svc.cluster.local:6379` (ClusterIP) | `redis://default:<password>@redis-stack-server.redis.svc.cluster.local:6379` | All namespaces (in-cluster only) |
 
 Redis requires a password. The credentials and the full URL are stored in the `redis-stack-server-credentials` Secret:
 
@@ -30,25 +30,25 @@ kubectl exec -n redis redis-stack-server-0 -- sh -c \
 
 ## Agent Sandbox (Sandboxed Execution)
 
-Enabled with `deploy_agent_sandbox=on`. See [agent-sandbox.md](agent-sandbox.md) for full details.
+Enabled with `agent_sandbox_enabled: true` (default) in `env/<name>/config.agent-toolkit.yaml`. See [agent-sandbox.md](agent-sandbox.md) for full details.
 
 | Resource | Value |
 |---|---|
-| **Namespace** | `agent-sandbox` |
-| **Router service** | `sandbox-router-svc.agent-sandbox.svc.cluster.local:8080` |
+| **Namespace** | `agent-sandbox-system` |
+| **Router service** | `sandbox-router-svc.agent-sandbox-system.svc.cluster.local:8080` |
 | **SDK** | `pip install k8s-agent-sandbox` |
-| **Default template** | `python-sandbox-template` (namespace: `agent-sandbox`) |
+| **Default template** | `python-sandbox-template` (namespace: `agent-sandbox-system`) |
 
 ```bash
 # Quick health check (requires port-forward or in-cluster)
-kubectl port-forward -n agent-sandbox svc/sandbox-router-svc 8080:8080 &
+kubectl port-forward -n agent-sandbox-system svc/sandbox-router-svc 8080:8080 &
 curl -s http://localhost:8080/healthz
 # {"status":"ok"}
 ```
 
 ## OpenShell (Policy-Enforced Sandboxes)
 
-Enabled with `deploy_openshell=on` (requires `deploy_agent_sandbox=on`). See [openshell.md](openshell.md) for full details.
+Enabled with `openshell_enabled: true` (requires `agent_sandbox_enabled: true`). See [openshell.md](openshell.md) for full details.
 
 | Resource | Value |
 |---|---|
@@ -66,7 +66,7 @@ kubectl port-forward -n openshell-system svc/openshell 8080:8080 &
 
 ## PostgreSQL + pgvector (Vector Store & Long-Term Memory)
 
-Enabled with `deploy_pgvector=on`. See [README.md](README.md#step-2b--postgresql--pgvector-vector-store--long-term-memory) for deployment details.
+Enabled with `pgvector_enabled: true` (default). See [README.md](README.md#step-2b--postgresql--pgvector-vector-store--long-term-memory) for deployment details.
 
 | Resource | Value |
 |---|---|
@@ -80,11 +80,11 @@ Enabled with `deploy_pgvector=on`. See [README.md](README.md#step-2b--postgresql
 
 ## KubeRay (Distributed Computing)
 
-Enabled with `deploy_kuberay=on`. Tuned via `core/inventory/kuberay-config.yaml`. See [kuberay.md](kuberay.md) for the full guide.
+Enabled with `kuberay_enabled: true`. Tuned via the `kuberay_*` settings in `env/<name>/config.agent-toolkit.yaml` (e.g. `kuberay_worker_replicas`). See [kuberay.md](kuberay.md) for the full guide.
 
 | Resource | Value |
 |---|---|
-| **Namespace** | `ray-system` *(default; set via `kuberay-config.yaml`)* |
+| **Namespace** | `ray-system` *(default; set via `kuberay_namespace`)* |
 | **Ray Client API** | `ray://ray-cluster-head-svc.ray-system.svc.cluster.local:10001` |
 | **Ray Dashboard** | `http://ray-cluster-head-svc.ray-system.svc.cluster.local:8265` |
 | **Dashboard (local)** | `kubectl port-forward svc/ray-cluster-head-svc 8265:8265 -n ray-system` |
@@ -103,18 +103,4 @@ print(ray.cluster_resources())
 
 ## Flowise (Agent Builder)
 
-Enabled with `deploy_flowise=on`. See [flowise.md](flowise.md) for the full guide.
-
-| Resource | Value |
-|---|---|
-| **Namespace** | `flowise` |
-| **Flowise service** | `flowise.flowise.svc.cluster.local:3000` |
-| **Flowise admin UI** | `https://flowise-<cluster_url>` |
-
-```bash
-# Check pods
-kubectl get pods -n flowise
-
-# Retrieve the Flowise API key
-grep '^flowise_api_key:' core/inventory/metadata/vault.yml | awk -F'"' '{print $2}'
-```
+Flowise is not part of this release.

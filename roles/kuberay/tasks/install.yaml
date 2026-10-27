@@ -1,0 +1,222 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# KubeRay — Install (Operator + RayCluster)
+# =============================================================================
+
+- name: "kuberay | Create namespace"
+  kubernetes.core.k8s:
+    kind: Namespace
+    name: "{{ kuberay_namespace }}"
+    state: present
+
+- name: "kuberay | Enrol namespace in the ambient mesh"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ kuberay_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when: istio_enabled | default(false) | bool
+
+# helm upgrade --install cannot recover a failed first release
+- name: "kuberay | Check for existing releases"
+  kubernetes.core.helm_info:
+    name: "{{ item }}"
+    release_namespace: "{{ kuberay_namespace }}"
+  loop: ["{{ kuberay_operator_release_name }}", "{{ kuberay_release_name }}"]
+  register: _kuberay_releases
+  failed_when: false
+
+- name: "kuberay | Remove failed releases"
+  kubernetes.core.helm:
+    name: "{{ item.item }}"
+    release_namespace: "{{ kuberay_namespace }}"
+    state: absent
+    wait: true
+  loop: "{{ _kuberay_releases.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: ((item.status | default({}, true)).status | default('') | lower) == 'failed'
+
+# ── Step 1: KubeRay operator ──────────────────────────────────────────────
+
+- name: "kuberay | Add Helm repository"
+  kubernetes.core.helm_repository:
+    name: kuberay
+    repo_url: "https://ray-project.github.io/kuberay-helm/"
+
+- name: "kuberay | Install operator v{{ kuberay_operator_version }}"
+  kubernetes.core.helm:
+    name: "{{ kuberay_operator_release_name }}"
+    chart_ref: kuberay/kuberay-operator
+    chart_version: "{{ kuberay_operator_version }}"
+    release_namespace: "{{ kuberay_namespace }}"
+    create_namespace: true
+    wait: true
+    timeout: "5m0s"
+    values:
+      affinity: "{{ kuberay_affinity }}"
+      tolerations: "{{ kuberay_tolerations }}"
+
+# ── Step 2: RayCluster ────────────────────────────────────────────────────
+
+- name: "kuberay | Deploy RayCluster"
+  kubernetes.core.helm:
+    name: "{{ kuberay_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/kuberay"
+    release_namespace: "{{ kuberay_namespace }}"
+    wait: true
+    timeout: "10m0s"
+    values:
+      cluster:
+        name: "{{ kuberay_release_name }}"
+        rayImage: "{{ kuberay_ray_image }}"
+        head:
+          cpuRequest: "{{ kuberay_head_cpu_request }}"
+          cpuLimit: "{{ kuberay_head_cpu_limit }}"
+          memoryRequest: "{{ kuberay_head_memory_request }}"
+          memoryLimit: "{{ kuberay_head_memory_limit }}"
+        worker:
+          replicas: "{{ kuberay_worker_replicas }}"
+          minReplicas: "{{ kuberay_worker_min_replicas }}"
+          maxReplicas: "{{ kuberay_worker_max_replicas }}"
+          cpuRequest: "{{ kuberay_worker_cpu_request }}"
+          cpuLimit: "{{ kuberay_worker_cpu_limit }}"
+          memoryRequest: "{{ kuberay_worker_memory_request }}"
+          memoryLimit: "{{ kuberay_worker_memory_limit }}"
+      affinity: "{{ kuberay_affinity }}"
+      tolerations: "{{ kuberay_tolerations }}"
+
+# ── Wait for head pod ────────────────────────────────────────────────────
+
+- name: "kuberay | Wait for Ray head pod"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ kuberay_namespace }}"
+    label_selectors:
+      - ray.io/node-type=head
+  register: _ray_head
+  until:
+    - _ray_head.resources | default([]) | length > 0
+    - _ray_head.resources | selectattr('status.phase', 'eq', 'Running') | list | length > 0
+  retries: 60
+  delay: 5
+
+- name: "kuberay | Wait for the Ray workers"
+  kubernetes.core.k8s_info:
+    api_version: ray.io/v1
+    kind: RayCluster
+    namespace: "{{ kuberay_namespace }}"
+  register: _ray_cluster
+  until:
+    - _ray_cluster.resources | default([]) | length > 0
+    - (_ray_cluster.resources[0].status | default({})).state | default('') == 'ready'
+    - ((_ray_cluster.resources[0].status | default({})).readyWorkerReplicas | default(0) | int)
+      >= ((_ray_cluster.resources[0].status | default({})).desiredWorkerReplicas | default(0) | int)
+  retries: 60
+  delay: 10
+
+# ── Ray Dashboard on the platform gateway ─────────────────────────────────
+
+- name: "kuberay | Check for the platform gateway"
+  kubernetes.core.k8s_info:
+    api_version: gateway.networking.k8s.io/v1
+    kind: Gateway
+    name: "{{ gateway_name | default('eg-gateway') }}"
+    namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+  register: _ray_gateway
+  when: kuberay_dashboard_enabled | bool
+
+- name: "kuberay | Publish the Ray Dashboard"
+  when: kuberay_dashboard_enabled | bool and (_ray_gateway.resources | default([]) | length > 0)
+  block:
+    - name: "kuberay | Read the dashboard auth Secret"
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: ray-dashboard-auth
+        namespace: "{{ kuberay_namespace }}"
+      register: _ray_auth
+      no_log: true
+
+    # Created once; re-runs keep the password
+    - name: "kuberay | Create the dashboard auth Secret"
+      when: kuberay_dashboard_basic_auth | bool and (_ray_auth.resources | length == 0)
+      block:
+        - name: "kuberay | Generate the dashboard password"
+          ansible.builtin.set_fact:
+            _ray_pw: "{{ lookup('ansible.builtin.password', '/dev/null', length=24, chars=['ascii_letters', 'digits']) }}"
+          no_log: true
+
+        - name: "kuberay | Hash the dashboard password (htpasswd SHA)"
+          ansible.builtin.command:
+            cmd: python3 -c 'import sys, hashlib, base64; print(base64.b64encode(hashlib.sha1(sys.stdin.read().encode()).digest()).decode())'
+            stdin: "{{ _ray_pw }}"
+            stdin_add_newline: false
+          register: _ray_pw_sha
+          changed_when: false
+          no_log: true
+
+        - name: "kuberay | Store the dashboard password"
+          kubernetes.core.k8s:
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: ray-dashboard-auth
+                namespace: "{{ kuberay_namespace }}"
+              type: Opaque
+              stringData:
+                username: ray
+                password: "{{ _ray_pw }}"
+                .htpasswd: "ray:{SHA}{{ _ray_pw_sha.stdout }}"
+          no_log: true
+
+    - name: "kuberay | Route the dashboard host to the Ray head"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: ray-dashboard
+            namespace: "{{ kuberay_namespace }}"
+          spec:
+            parentRefs:
+              - name: "{{ gateway_name | default('eg-gateway') }}"
+                namespace: "{{ gateway_namespace | default('envoy-gateway-system') }}"
+                sectionName: https
+            hostnames: ["{{ kuberay_dashboard_hostname }}"]
+            rules:
+              - backendRefs:
+                  - name: "{{ kuberay_release_name }}-head-svc"
+                    port: 8265
+
+    # Basic auth on this route, or none when turned off
+    - name: "kuberay | Dashboard auth policy"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: gateway.envoyproxy.io/v1alpha1
+          kind: SecurityPolicy
+          metadata:
+            name: ray-dashboard-auth
+            namespace: "{{ kuberay_namespace }}"
+          spec: >-
+            {{ {'targetRefs': [{'group': 'gateway.networking.k8s.io', 'kind': 'HTTPRoute', 'name': 'ray-dashboard'}]}
+               | combine({'basicAuth': {'users': {'name': 'ray-dashboard-auth'}}} if kuberay_dashboard_basic_auth | bool else {}) }}
+
+- name: "kuberay | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "KubeRay deployed in namespace '{{ kuberay_namespace }}'"
+      - "Ray Client: ray://{{ kuberay_release_name }}-head-svc.{{ kuberay_namespace }}.svc.cluster.local:10001"
+      - "Dashboard: http://{{ kuberay_release_name }}-head-svc.{{ kuberay_namespace }}.svc.cluster.local:8265"
+      - "{{ ('Dashboard (gateway): https://' ~ kuberay_dashboard_hostname ~ '/' ~ ('  user ray, password: kubectl get secret ray-dashboard-auth -n ' ~ kuberay_namespace ~ ' -o jsonpath={.data.password} | base64 -d' if kuberay_dashboard_basic_auth | bool else ''))
+          if kuberay_dashboard_enabled | bool and (_ray_gateway.resources | default([]) | length > 0) else 'Dashboard (gateway): not published' }}"

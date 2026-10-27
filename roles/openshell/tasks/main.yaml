@@ -1,0 +1,8 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: "openshell | Dispatch action: {{ component_action | default('install') }}"
+  ansible.builtin.include_tasks: "{{ component_action | default('install') }}.yaml"
+  when: >-
+    (component_action | default('install')) != 'install' or
+    (openshell_enabled | default(false) | bool)

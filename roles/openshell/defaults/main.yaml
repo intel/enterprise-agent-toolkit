@@ -1,0 +1,81 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# OpenShell Role Defaults
+# =============================================================================
+# NVIDIA OpenShell (https://github.com/NVIDIA/OpenShell) on top of Agent
+# Sandbox: a gateway that creates policy-enforced sandboxes as
+# agents.x-k8s.io Sandbox CRs (egress default-deny, L7 policy, Landlock,
+# seccomp, credential isolation) and a GenAI Gateway provider so sandboxes
+# reach LiteLLM with a placeholder key only.
+#
+# In-cluster address after deployment:
+#   Gateway : {{ openshell_release_name }}.{{ openshell_namespace }}.svc.cluster.local:8080 (mTLS)
+# =============================================================================
+
+# --- Versions ---
+openshell_chart_version: "0.0.116"   # oci://ghcr.io/nvidia/openshell/helm-chart version
+openshell_image_tag: "0.0.116"
+openshell_release_tag: "v0.0.116"    # GitHub release providing the openshell CLI
+
+# StorageClass for sandbox workspace PVCs; empty = `local-path` when the cluster has it, else the default
+openshell_workspace_storage_class: ""
+
+# NVIDIA OpenShell configuration (policy-enforced sandboxes on top of Agent Sandbox)
+openshell_namespace: "openshell-system"             # gateway (holds provider credentials)
+openshell_sandbox_namespace: "openshell-sandboxes"  # sandbox workload + supervisor pods
+openshell_release_name: "openshell"
+openshell_chart_ref: "oci://ghcr.io/nvidia/openshell/helm-chart"
+helm_charts_base_openshell: "{{ role_path }}/../../charts/openshell"
+
+# CLI used from the control plane to register the GenAI Gateway provider
+openshell_cli_url: "https://github.com/NVIDIA/OpenShell/releases/download/{{ openshell_release_tag }}/openshell-x86_64-unknown-linux-musl.tar.gz"
+# Empty = ~/.cache/eat/openshell-cli-<release tag> of the deploying user (mode 0700): private,
+# and versioned so a release bump fetches a matching CLI.
+openshell_cli_dir: ""
+
+# User authentication: OIDC when openshell_oidc_issuer is set; otherwise single-admin, with the
+# gateway ClusterIP-only and reached via `kubectl port-forward` (Kubernetes RBAC on openshell_namespace).
+openshell_oidc_issuer: ""
+openshell_oidc_audience: "openshell-cli"
+
+# Pod-level NetworkPolicy for sandbox pods the chart leaves unselected (all-in-one pods of
+# chart <= 0.0.116; split supervisor/workload pods of newer charts carry their own policies).
+# Egress: DNS, gateway, GenAI Gateway, upstream proxy, public internet; add private CIDRs
+# that sandbox policies may target.
+openshell_sandbox_network_policy: true
+openshell_sandbox_egress_cidrs: []
+# Resolver CIDRs sandboxes may reach on port 53 besides the kube-dns pods. Empty = use the
+# NodeLocal DNSCache addresses (-localip of DaemonSet kube-system/nodelocaldns or
+# kube-system/node-local-dns); the kube-dns pods only when neither is found.
+openshell_sandbox_dns_cidrs: []
+openshell_upstream_proxy_cidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]  # proxy port only
+
+# GenAI Gateway (LiteLLM) provider: sandboxes see a placeholder, the supervisor injects a
+# per-deployment LiteLLM virtual key only toward the gateway service.
+# The gateway is the inference layer's LiteLLM, which runs when auth_type is litellm_vkey
+# or litellm_enabled is true.
+openshell_genai_provider_enabled: true
+openshell_genai_namespace: "{{ litellm_namespace | default('litellm') }}"
+openshell_genai_deployment: "litellm"
+openshell_genai_service_host: "litellm.{{ openshell_genai_namespace }}.svc.cluster.local"
+openshell_genai_service_port: 4000
+openshell_genai_provider_name: "genai-gateway"
+openshell_genai_key_alias: "openshell-sandboxes"
+openshell_genai_key_models: []          # empty = all models the gateway serves
+openshell_genai_key_max_budget: 50
+
+# --- Deployment settings ---
+openshell_upstream_proxy: "{{ https_proxy | default('') }}"
+openshell_upstream_no_proxy: "{{ no_proxy | default('') }}"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
+openshell_client_tls_secret: "openshell-client-tls"
+# CLI talks to 127.0.0.1 via port-forward; never route that through a corporate proxy.
+# Keeps no_proxy so kubectl (port-forward) still reaches the API server directly.
+openshell_cli_no_proxy: "127.0.0.1,localhost{{ (',' ~ no_proxy) if no_proxy | default('') | length > 0 else '' }}"
+openshell_cli_env:
+  XDG_CONFIG_HOME: "{{ openshell_cli_path }}/config"
+  NO_PROXY: "{{ openshell_cli_no_proxy }}"
+  no_proxy: "{{ openshell_cli_no_proxy }}"
+  OPENSHELL_GATEWAY: "eat"

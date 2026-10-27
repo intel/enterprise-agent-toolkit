@@ -1,0 +1,44 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+image:
+  repository: pgvector/pgvector
+  tag: pg16
+  pullPolicy: IfNotPresent
+
+auth:
+  # Required: set via --set or a custom values file. Do not use defaults in production.
+  postgresPassword: ""
+  username: "agentuser"
+  password: ""
+  database: "agentdb"
+
+persistence:
+  size: 10Gi
+  storageClassName: ""
+
+service:
+  type: ClusterIP
+  port: 5432
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# PostgreSQL server settings (postgres -c key=value); empty keeps the image defaults
+postgresql:
+  parameters: {}
+
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "node-role.kubernetes.io/master"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+# Placement is left to the scheduler: no node affinity is required.
+affinity: {}

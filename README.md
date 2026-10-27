@@ -11,6 +11,30 @@
 
 **Keywords:** agentic AI platform · enterprise AI agents · open source AI agent stack · Kubernetes AI deployment · LLM inference on CPU · Intel Xeon AI · LiteLLM gateway · AI agent memory RAG · on-premise LLM deployment · private AI infrastructure · AI agent observability · MCP server Kubernetes · vLLM sglang Intel · Enterprise Agnet Toolkit 
 
+> **Installing this release.** The Agent Toolkit installs through the [Intel® AI for Enterprise Solutions](https://github.com/intel/enterprise-ai-solutions) installer. Run the commands in these docs from an `enterprise-ai-solutions` checkout:
+>
+> ```bash
+> git clone https://github.com/intel/enterprise-ai-solutions.git && cd enterprise-ai-solutions
+> ./es_auto_installer.sh configure
+> ./es_auto_installer.sh init agent-toolkit       # creates env/local/
+> ./es_auto_installer.sh install agent-toolkit
+> export KUBECONFIG=$PWD/env/local/kubeconfig.yaml   # the kubectl commands in these docs use it
+> ```
+>
+> The `agentic-config.cfg` switches these docs mention are settings in `env/<name>/`:
+>
+> | Classic switch | Setting | File |
+> |---|---|---|
+> | `deploy_agent_sandbox`, `deploy_redis`, `deploy_pgvector` | `agent_sandbox_enabled`, `redis_stack_enabled`, `pgvector_enabled` (on) | `config.agent-toolkit.yaml` |
+> | `deploy_openshell`, `deploy_kuberay` | `openshell_enabled`, `kuberay_enabled` (off) | `config.agent-toolkit.yaml` |
+> | `deploy_genai_gateway`, `deploy_guardrails` | `auth_provider: "litellm"` (set by `init agent-toolkit`); `guardrails_enabled` | `global_config.yaml`; `config.agent-toolkit.yaml` |
+> | `deploy_vllm_sr` | `vllm_sr_enabled` | `config.inference.yaml` |
+> | `deploy_kata_containers` | `kata_containers_enabled`, `kata_runtime` | `global_config.yaml` |
+> | `deploy_llm_models`, `models=` | `llm_services_autodeploy_models`; `./model-manager deploy <name>` | `config.agent-toolkit.yaml` |
+> | `deploy_istio`, `deploy_observability`, `deploy_ceph`, `deploy_kubernetes_fresh` | `istio_enabled`, `observability_enabled`, `storage_backend`, `existing_kubernetes` | `global_config.yaml` |
+>
+> Remove the toolkit with `./es_auto_installer.sh teardown agent-toolkit`, or the whole cluster with `teardown infrastructure`. Not in this release: the Flowise plugin, Intel® Arc™ (XPU) deployment and rack-scale networking.
+
 ---
 
 ## Table of Contents
@@ -110,11 +134,11 @@ Gives agents the ability to take actions in the world — call APIs, run code, q
 ---
 
 ### Code Execution & Sandbox
-Enables agents to safely execute code and run arbitrary actions in isolated environments, preventing runaway agents from affecting production systems. Each sandbox is a fully self-contained ephemeral Kubernetes pod with its own filesystem and process tree. Policy controls limit the blast radius of any single agent action. For untrusted code, microVM-level isolation is available as an opt-in — set `deploy_kata_containers=on` to run sandboxes on Kata Containers with Firecracker (`kata-fc`) or QEMU (`kata-qemu`), giving each sandbox its own guest kernel instead of sharing the host's.
+Enables agents to safely execute code and run arbitrary actions in isolated environments, preventing runaway agents from affecting production systems. Each sandbox is a fully self-contained ephemeral Kubernetes pod with its own filesystem and process tree. Policy controls limit the blast radius of any single agent action. For untrusted code, microVM-level isolation is available as an opt-in — set `kata_containers_enabled: true` in `global_config.yaml` to run sandboxes on Kata Containers with Firecracker (`kata-fc`) or QEMU (`kata-qemu`), giving each sandbox its own guest kernel instead of sharing the host's.
 
 **Default provider:** `kubernetes-sigs/agent-sandbox`
 
-**Optional provider:** [NVIDIA OpenShell](docs/openshell.md) — policy-enforced sandboxes on top of Agent Sandbox (egress default-deny, L7 rules, Landlock, credential isolation with GenAI Gateway keys). Enable with `deploy_openshell=on`.
+**Optional provider:** [NVIDIA OpenShell](docs/openshell.md) — policy-enforced sandboxes on top of Agent Sandbox (egress default-deny, L7 rules, Landlock, credential isolation with GenAI Gateway keys). Enable with `openshell_enabled: true` in `config.agent-toolkit.yaml`.
 
 ---
 
@@ -201,7 +225,7 @@ Production-grade orchestration with Helm charts, designed for:
 
 **Deploy with:**
 ```bash
-./deploy-agentic-stack.sh 
+./es_auto_installer.sh install agent-toolkit 
 ```
 
 See [Kubernetes Deployment](#kubernetes-deployment) below for full setup.
@@ -216,7 +240,7 @@ Simplified single-node deployment with Docker containers, designed for:
 
 **Deploy with:**
 ```bash
-./deploy-agentic-stack.sh --docker
+./docker/deploy.sh    # from an enterprise-agent-toolkit checkout
 ```
 
 See [`docker/README.md`](docker/README.md) for comprehensive Docker deployment guide, including [Multi-Model Deployment](docker/README.md#multi-model-deployment).
@@ -240,8 +264,9 @@ See [`docker/README.md`](docker/README.md) for comprehensive Docker deployment g
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/intel/enterprise-agent-toolkit.git
-cd enterprise-agent-toolkit
+git clone https://github.com/intel/enterprise-ai-solutions.git
+cd enterprise-ai-solutions
+./es_auto_installer.sh configure
 ```
 
 ### 2. Complete prerequisites
@@ -271,6 +296,8 @@ To tear down the cluster and redeploy from scratch, see **[Decommission and Rede
 ## Rack-Scale AI Fabric Mode
 
 For deployments on a **high-speed AI fabric** (100G, 200G, 400G, or 800G — Arista Clos or equivalent) with Intel® E810-C or compatible NICs, dual-homed nodes, and NVMe Ceph storage, the toolkit ships a dedicated rack-scale deployment path driven by a single declarative `rack-profile.yaml`.
+
+> **Note:** not available in this release.
 
 - **Zero-encapsulation pod networking** — Calico native BGP, no IPIP/VXLAN, wire-speed L3 routing via leaf switches at any link speed
 - **Ceph storage on fabric** — OSDs bind to fabric IPs, not management NICs; NVMe drives are the bottleneck, not the network
@@ -322,7 +349,7 @@ Yes — this is the core design principle. The toolkit is built on the Provider 
 LangGraph, CrewAI, Flowwise, OpenClaw, and any Python-based or OpenAI-compatible orchestration framework.
 
 **How do I get started?**
-Clone the repo, run `./deploy-agentic-stack.sh`, and follow the [Quick Start Guide](docs/README.md).
+Clone `enterprise-ai-solutions`, run `./es_auto_installer.sh configure`, `./es_auto_installer.sh init agent-toolkit` and `./es_auto_installer.sh install agent-toolkit`, and follow the [Quick Start Guide](docs/README.md).
 
 
 **License:** Apache 2.0 · **Primary languages:** Shell (88%), Jinja (10%), Go Template (2%)

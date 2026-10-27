@@ -1,0 +1,18 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# OpenShell — Validate
+# =============================================================================
+
+- name: "openshell | validate | Verify OpenShell gateway is ready"
+  ansible.builtin.command: >
+    kubectl rollout status statefulset/{{ openshell_release_name }}
+    -n {{ openshell_namespace }} --timeout=60s
+  register: _val_gateway
+  changed_when: false
+
+- name: "openshell | validate | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "Gateway: {{ 'OK' if _val_gateway.rc == 0 else 'FAIL' }} (statefulset/{{ openshell_release_name }} in {{ openshell_namespace }})"
