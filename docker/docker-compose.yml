@@ -259,7 +259,7 @@ services:
       start_period: 120s
 
   minio:
-    image: bitnamilegacy/minio:2024.12.18
+    image: soldevelo/minio:2024.12.18
     container_name: agentic-minio
     restart: unless-stopped
     profiles: [observability]
