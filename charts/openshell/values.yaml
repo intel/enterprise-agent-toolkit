@@ -20,6 +20,12 @@ server:
 workspaceResources:
   enabled: false
 
+gatewayConfig:
+  openshell.drivers.kubernetes:
+    # Sandboxes in the ambient mesh opt out of ztunnel's DNS capture, which the sandbox
+    # runtime's DNS self-check rejects (the agent operator sets it on openshell agents).
+    allowed_pod_annotations: ["ambient.istio.io/dns-capture"]
+
 # Agent Sandbox CRDs/controller come from deploy_agent_sandbox; fail fast if absent.
 agentSandbox:
   preflight:

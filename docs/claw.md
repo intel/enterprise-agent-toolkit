@@ -203,7 +203,9 @@ is how the agent process is confined:
   sandbox, so the `sandbox` MCP is not used; the agent installs packages into a venv under
   `/sandbox`.
 - **The agent namespace is the sandbox's namespace** (an OpenShell workspace). Its quota,
-  LimitRange and Pod Security level apply to the sandbox pods too.
+  LimitRange and Pod Security level apply to the sandbox pods too. In the ambient mesh, the
+  sandbox stays meshed but opts out of DNS capture, and may use the mesh tunnel between its
+  two pods (see [Network isolation](openshell.md#network-isolation)).
 
 Enable it with OpenShell (which needs Agent Sandbox) and claw:
 

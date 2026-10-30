@@ -586,6 +586,16 @@ OpenShell creates the sandbox NetworkPolicies itself:
 - **SSH** (`openshell sandbox connect`/`exec`) reaches sandbox pods only from the gateway
   (`openshell-workspace` chart).
 
+In a workspace namespace that is in the Istio ambient mesh (claw agent namespaces are), two
+things are needed, and the agent operator adds both for `openshell` agents:
+
+- the workload pod carries `ambient.istio.io/dns-capture: "false"`. ztunnel's DNS proxy answers
+  the sandbox runtime's DNS self-check in a way it rejects (`TCP DNS probe response is
+  malformed`), and the sandbox never becomes Ready. The gateway allowlists this one annotation
+  key (`allowed_pod_annotations` in `charts/openshell/values.yaml`);
+- a NetworkPolicy lets the workload and supervisor pods use the mesh tunnel port `15008`, since
+  OpenShell's own policies allow only `5500` between them.
+
 The toolkit adds `openshell-gateway-ingress` on the gateway. In 0.1.x client certificates are
 optional on the gateway port and only the RPCs check identity, while sandbox service routes
 (`openshell service expose`) do no authentication: anything that can connect to the port

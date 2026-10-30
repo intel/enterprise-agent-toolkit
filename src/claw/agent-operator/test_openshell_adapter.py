@@ -136,11 +136,11 @@ def _ctx(name="oss", username="vkumar4", skills=("shell", "github"), allowlist=(
         spec={"webFetchAllowlist": list(allowlist)}, logger=_Logger())
 
 
-def _adapter(env=None, client=None, workspaces=None):
+def _adapter(env=None, client=None, workspaces=None, mesh=False):
     k8s = _K8s()
     routes_applied = []
     core = types.SimpleNamespace(
-        k8s=types.SimpleNamespace(client=k8s), tools=lambda: TOOLS,
+        k8s=types.SimpleNamespace(client=k8s), tools=lambda: TOOLS, mesh_ambient=mesh,
         identity_proxy_port_base=8901, identity_proxy_port_span=16,
         web_fetch_proxy_enabled=False, web_fetch_proxy_port=8888,
         apply_identity_proxy=lambda name, ns, routes, logger, tool_credentials=None: routes_applied.append(routes))
@@ -255,6 +255,24 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(list(made["spec"].providers), ["genai-gateway"])
         self.assertNotIn(KEY, str(made["spec"]))  # the key never enters the sandbox spec
         self.assertEqual(made["service_exposures"][0].target_port, oa.SERVICE_PORT)
+
+    def test_in_the_ambient_mesh_dns_capture_is_off_and_the_tunnel_is_allowed(self):
+        a, client, k8s, _ = _adapter(mesh=True)
+        a.create(_ctx())
+        tmpl = client.created[0]["spec"].template
+        self.assertEqual(dict(tmpl.annotations), {oa.DNS_CAPTURE_ANNOTATION: "false"})
+        policy = next(args[1] for name, args in k8s.calls
+                      if name == "create_namespaced_network_policy" and args[1]["metadata"]["name"] == oa.MESH_POLICY)
+        self.assertEqual(policy["spec"]["pod_selector"]["match_labels"], {"openshell.ai/boundary-role": "workload"})
+        for rule in policy["spec"]["ingress"] + policy["spec"]["egress"]:
+            self.assertEqual([p["port"] for p in rule["ports"]], [oa.MESH_TUNNEL_PORT])
+
+    def test_outside_the_mesh_neither_is_added(self):
+        a, client, k8s, _ = _adapter(mesh=False)
+        a.create(_ctx())
+        self.assertEqual(dict(client.created[0]["spec"].template.annotations), {})
+        self.assertFalse(any(name == "create_namespaced_network_policy" and args[1]["metadata"]["name"] == oa.MESH_POLICY
+                             for name, args in k8s.calls))
 
     def test_an_existing_sandbox_and_workspace_are_kept(self):
         client = _Client(exists=True)

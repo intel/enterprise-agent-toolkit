@@ -33,6 +33,13 @@ NODE = "/usr/local/bin/node"
 PYPI_HOSTS = ["pypi.org", "files.pythonhosted.org"]
 # The image's interpreter; `*` within a segment is the only glob OpenShell 0.1.x accepts.
 PYTHON = "/usr/bin/python3*"
+# In the ambient mesh: ztunnel's DNS proxy answers the sandbox runtime's DNS self-check in a way
+# it rejects, so the workload pod opts out of DNS capture (the gateway allowlists this key), and
+# the mesh carries workload <-> supervisor traffic on its tunnel port, which OpenShell's own
+# NetworkPolicies (port 5500 only) do not allow.
+DNS_CAPTURE_ANNOTATION = "ambient.istio.io/dns-capture"
+MESH_TUNNEL_PORT = 15008
+MESH_POLICY = "openshell-sandbox-mesh"
 # Code runs with OpenClaw's own exec in the sandboxed pod, so the sandbox MCP is not wired.
 EXCLUDED_SKILLS = {"sandbox"}
 # The config is written once from the environment; later edits arrive as a file and a restart.
@@ -124,6 +131,7 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
     def __init__(self, core, config, client_factory=None):
         super().__init__(core, config)
         self.os_cfg = config["openshell"]
+        self.mesh_ambient = bool(getattr(core, "mesh_ambient", False))
         self._client_factory = client_factory or self._connect
         self._client = None
 
@@ -279,6 +287,17 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
                          pod_selector=c.V1LabelSelector(match_labels=self.os_cfg["gatewayPodLabels"]))],
                      ports=[c.V1NetworkPolicyPort(port=2222, protocol="TCP")])]))),
         ]
+        if self.mesh_ambient:
+            # Workload <-> its supervisor over the mesh tunnel; nothing else is opened.
+            peer = [c.V1NetworkPolicyPeer(pod_selector=c.V1LabelSelector(
+                match_labels={"openshell.ai/boundary-role": "supervisor"}))]
+            tunnel = [c.V1NetworkPolicyPort(port=MESH_TUNNEL_PORT, protocol="TCP")]
+            objects.append((net.create_namespaced_network_policy, net.replace_namespaced_network_policy, MESH_POLICY,
+                            c.V1NetworkPolicy(metadata=meta(MESH_POLICY), spec=c.V1NetworkPolicySpec(
+                                pod_selector=c.V1LabelSelector(match_labels={"openshell.ai/boundary-role": "workload"}),
+                                policy_types=["Ingress", "Egress"],
+                                ingress=[c.V1NetworkPolicyIngressRule(_from=peer, ports=tunnel)],
+                                egress=[c.V1NetworkPolicyEgressRule(to=peer, ports=tunnel)]))))
         for create, replace, name, body in objects:
             try:
                 create(ctx.namespace, body)
@@ -383,8 +402,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         pb, _ = self._pb()
         _, routes = self._mcp_wiring(ctx)
         config = self._config_json(ctx)
+        annotations = {DNS_CAPTURE_ANNOTATION: "false"} if self.mesh_ambient else {}
         spec = pb.SandboxSpec(
-            template=pb.SandboxTemplate(image=self.os_cfg["image"]),
+            template=pb.SandboxTemplate(image=self.os_cfg["image"], annotations=annotations),
             policy=self._policy(ctx, routes),
             providers=[self.os_cfg["providerName"]],
             environment={"HOME": "/sandbox", "OC_CONFIG": CONFIG_PATH,

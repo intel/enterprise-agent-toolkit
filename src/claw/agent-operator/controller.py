@@ -293,6 +293,7 @@ def configure(settings: kopf.OperatorSettings, logger, **_):
         identity_proxy_port_span=IDENTITY_PROXY_PORT_SPAN,
         web_fetch_proxy_enabled=WEB_FETCH_PROXY_ENABLED,
         web_fetch_proxy_port=WEB_FETCH_PROXY_PORT,
+        mesh_ambient=MESH_AMBIENT,
     )
     ADAPTERS["claw"] = claw_adapter.ClawAdapter(core, claw_adapter.config_from_env())
     if OPENSHELL_ENABLED:
