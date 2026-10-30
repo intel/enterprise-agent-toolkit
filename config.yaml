@@ -79,3 +79,11 @@ litellm_allowed_namespaces:
 # --- Keycloak ---
 # Optional in LiteLLM mode: set keycloak_enabled: true for the realm.
 keycloak_agent_realm: "agent-toolkit"
+
+# --- claw: persistent OpenClaw agents (optional — disabled by default) ---
+# Turns on the OpenClaw operator. See docs/claw.md.
+claw_enabled: false
+# Pinned release; bump the version and both digests together (see the role defaults).
+openclaw_operator_version: "0.38.3"
+openclaw_operator_digest: "sha256:a5c71a40098baac5e8fe5ffacf97bb9593c0b67712628b21af67b580929fa51a"
+openclaw_operator_image_digest: "sha256:ca7ad419da6cfa6de5d088be2ee4af3be0120f735741b30652676dadce2f690d"
