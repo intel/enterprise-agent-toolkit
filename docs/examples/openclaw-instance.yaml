@@ -1,0 +1,75 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# One OpenClaw agent on the inference layer's default model. Walkthrough: docs/claw-e2e.md.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: claw-demo
+  labels:
+    istio.io/dataplane-mode: ambient  # the platform's STRICT mTLS rejects pods outside the mesh
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: openclaw.rocks/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: demo
+  namespace: claw-demo
+spec:
+  image:
+    repository: ghcr.io/openclaw/openclaw
+    tag: "2026.7.1-1"
+    digest: sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf  # wins over the tag
+  shareProcessNamespace: false  # CRD default true lets same-UID containers read each other's env
+  autoUpdate:
+    enabled: false  # stay on the pinned runtime
+  # To run the agent on particular nodes, select them by node label (and tolerate their taints):
+  # availability:
+  #   nodeSelector:
+  #     node-role.example.com/agents: "true"
+  #   tolerations:
+  #     - {key: dedicated, operator: Equal, value: agents, effect: NoSchedule}
+  config:
+    mergeMode: merge  # keep state the runtime writes across restarts
+    raw:
+      agents:
+        defaults:
+          model:
+            primary: "ai-gateway/qwen2-5-coder-14b"
+          # Compact only when context > contextWindow - reserveTokens; the default 20000 floor
+          # would compact after every turn, as the agent prompt alone is ~19500 tokens.
+          compaction:
+            reserveTokensFloor: 0
+            reserveTokens: 6144
+      models:
+        providers:
+          ai-gateway:
+            api: "openai-completions"
+            baseUrl: "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1"  # in-cluster, no credential
+            request:
+              allowPrivateNetwork: true
+            models:
+              - id: "qwen2-5-coder-14b"
+                name: "Qwen2.5 Coder 14B"
+                contextWindow: 32768  # served max_model_len; OpenClaw otherwise assumes 200000
+      gateway:
+        http:
+          endpoints:
+            chatCompletions:
+              enabled: true
+  security:
+    networkPolicy:
+      # Adds the inference gateway to the operator's DNS + HTTPS egress. Mesh traffic uses HBONE port 15008.
+      additionalEgress:
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: envoy-gateway-system
+              podSelector:
+                matchLabels:
+                  gateway.envoyproxy.io/owning-gateway-name: ai-gateway
+          ports:
+            - protocol: TCP
+              port: 15008

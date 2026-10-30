@@ -1,0 +1,15 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Removing a release removes its Tool, and the operator unwires it from every agent.
+# Succeeds when nothing is installed.
+
+- name: "mcp_servers | teardown | Uninstall the servers"
+  kubernetes.core.helm:
+    name: "mcp-{{ item.name }}-server"
+    release_namespace: "{{ agent_operator_namespace }}"
+    state: absent
+    wait: true
+  loop: "{{ mcp_servers }}"
+  loop_control:
+    label: "{{ item.name }}"

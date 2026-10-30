@@ -1,0 +1,9 @@
+kopf==1.45.1
+kubernetes==35.0.0
+requests==2.34.2
+Jinja2==3.1.6
+PyYAML==6.0.3
+fastmcp==4.1.1
+pyjwt[crypto]==2.15.1
+cryptography==50.0.2
+psycopg[binary]==3.3.6

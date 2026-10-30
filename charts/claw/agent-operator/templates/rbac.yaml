@@ -1,0 +1,85 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-operator
+  labels:
+    app.kubernetes.io/name: agent-operator
+rules:
+  - apiGroups: ["intel-stack.io"]
+    resources: ["agents", "agents/status"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Tools are read and given a phase, never created or edited: a Tool names a token recipient.
+  - apiGroups: ["intel-stack.io"]
+    resources: ["tools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["intel-stack.io"]
+    resources: ["tools/status"]
+    verbs: ["patch"]
+  - apiGroups: ["openclaw.rocks"]
+    resources: ["openclawinstances"]
+    verbs: ["get", "create", "patch", "delete"]
+  # kopf watches CRDs to notice API resources installed after it started.
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "create", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "create", "update"]
+  # Readiness waits and config rolls; exec is bound per agent namespace (agent-ns-exec).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["get", "create", "update"]
+  # `bind` on this one ClusterRole lets the operator grant exec it does not hold itself.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["agent-operator-agent-ns-exec"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-operator
+  labels:
+    app.kubernetes.io/name: agent-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-operator
+subjects:
+  - kind: ServiceAccount
+    name: agent-operator
+    namespace: {{ .Release.Namespace }}
