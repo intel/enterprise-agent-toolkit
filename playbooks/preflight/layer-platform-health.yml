@@ -1,0 +1,248 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# layer-platform-health.yml — Cross-cutting platform checks (runs on all nodes)
+
+---
+# Kubespray points kubelet at systemd-resolved's file on Ubuntu/Fedora; with no node running it, use /etc/resolv.conf
+- name: Detect nodes without systemd-resolved, and each node's upstream DNS servers
+  ansible.builtin.shell: |
+    . /etc/os-release 2>/dev/null
+    case "$ID" in ubuntu|fedora) [ -f /run/systemd/resolve/resolv.conf ] && echo has || echo missing ;; *) echo n/a ;; esac
+    f=/etc/resolv.conf; [ -f /run/systemd/resolve/resolv.conf ] && f=/run/systemd/resolve/resolv.conf
+    echo "dns: $(awk '$1 == "nameserver" && $2 !~ /^(127\.|::1$|169\.254\.)/ {print $2}' "$f" | paste -sd' ' -)"
+  register: _dns_resolved
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether kubelet needs /etc/resolv.conf
+  ansible.builtin.set_fact:
+    _dns_states: "{{ ansible_play_hosts | map('extract', hostvars, ['_dns_resolved', 'stdout_lines']) | map('first') | list }}"
+    _dns_upstreams: "{{ ansible_play_hosts | map('extract', hostvars, ['_dns_resolved', 'stdout_lines']) | flatten | select('match', '^dns:') | map('regex_replace', '^dns:\\s*', '') | map('split') | flatten | unique | list }}"
+    _dns_extra: "{{ (inventory_dir | dirname) ~ '/kubespray_extra.yml' }}"
+    _dns_extra_text: "{{ lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) }}"
+  run_once: true
+
+- name: Read the kubelet DNS settings already in kubespray_extra.yml
+  ansible.builtin.set_fact:
+    _dns_conf: "{{ _dns_extra_text | regex_search('(?m)^kube_resolv_conf:\\s*(\\S+)', '\\1') | default([''], true) | first | regex_replace('[\\x22\\x27]', '') }}"
+    _dns_has_upstream: "{{ _dns_extra_text | regex_search('(?m)^upstream_dns_servers:') is not none }}"
+    _dns_mixed: "{{ 'missing' in _dns_states and 'has' in _dns_states }}"
+  run_once: true
+
+- name: Point kubelet at /etc/resolv.conf
+  ansible.builtin.lineinfile:
+    path: "{{ _dns_extra }}"
+    line: "{{ item }}"
+    regexp: "^{{ item.split(':')[0] }}:"
+    create: true
+    mode: "0644"
+  loop: ['kube_resolv_conf: "/etc/resolv.conf"', 'resolvconf_mode: "none"']
+  when: "'missing' in _dns_states and _dns_conf | length == 0 and (not _dns_mixed or _dns_upstreams | length > 0)"
+  register: _dns_autofix
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+# Mixed nodes: /etc/resolv.conf is systemd-resolved's local stub there, so cluster DNS forwards to the nodes' real servers
+- name: Give cluster DNS the nodes' upstream servers (mixed nodes)
+  ansible.builtin.lineinfile:
+    path: "{{ _dns_extra }}"
+    line: "upstream_dns_servers: {{ _dns_upstreams | to_json }}"
+    regexp: "^upstream_dns_servers:"
+    create: true
+    mode: "0644"
+  when: _dns_mixed and _dns_upstreams | length > 0 and not _dns_has_upstream and _dns_conf in ['', '/etc/resolv.conf']
+  register: _dns_autofix_upstream
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Record the kubelet DNS setting (cluster-level)
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{'layer': 'platform-health', 'check': 'Kubelet DNS setting', 'status': 'OK', 'evidence': ('some nodes run systemd-resolved: set kube_resolv_conf /etc/resolv.conf and upstream_dns_servers ' ~ (_dns_upstreams | join(',')) if _dns_mixed else 'no node runs systemd-resolved: set kube_resolv_conf /etc/resolv.conf') ~ ' in ' ~ _dns_extra, 'hint': ''}] }}"
+  run_once: true
+  when: _dns_autofix is changed or _dns_autofix_upstream is changed
+
+- name: Run platform health checks
+  ansible.builtin.shell: |
+    HN=$(hostname -s)
+
+    # NTP check
+    ntp_status="FAIL"; ntp_evidence="NTP check failed"
+    if command -v chronyc &>/dev/null; then
+      OUT=$(chronyc tracking 2>/dev/null)
+      if echo "$OUT" | grep -q "Normal"; then
+        ntp_status="OK"; ntp_evidence=$(echo "$OUT" | grep -E 'Leap status|Last offset' | head -1)
+      fi
+    elif command -v timedatectl &>/dev/null; then
+      OUT=$(timedatectl status 2>/dev/null)
+      if echo "$OUT" | grep -qi "yes"; then
+        ntp_status="OK"; ntp_evidence=$(echo "$OUT" | grep -i 'synchronized' | head -1)
+      fi
+    fi
+
+    # Root disk
+    root_pct=$(df / --output=pcent 2>/dev/null | tail -1 | tr -d ' %' || echo "100")
+    root_free=$((100 - root_pct))
+    root_status="OK"; [ "$root_pct" -gt 90 ] && root_status="FAIL"
+
+    # Containerd disk
+    cdir="/var/lib/containerd"
+    if [ -d "$cdir" ]; then
+      ctd_pct=$(df "$cdir" --output=pcent 2>/dev/null | tail -1 | tr -d ' %' || echo "100")
+    else
+      ctd_pct=0
+    fi
+    ctd_free=$((100 - ctd_pct))
+    ctd_status="OK"; [ "$ctd_pct" -gt 90 ] && ctd_status="FAIL"
+
+    # Kernel/OS
+    kernel=$(uname -r)
+    os_name=$(grep '^NAME=' /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "?")
+    os_ver=$(grep '^VERSION_ID=' /etc/os-release 2>/dev/null | cut -d'"' -f2 || echo "?")
+
+    # Kubelet
+    kubelet_bin=$(command -v kubelet || systemctl show kubelet -p ExecStart 2>/dev/null | grep -o 'path=[^ ;]*' | cut -d= -f2)
+    kubelet_ver=$([ -n "$kubelet_bin" ] && "$kubelet_bin" --version 2>/dev/null | awk '{print $2}')
+    kubelet_ver=${kubelet_ver:-not installed}
+
+    # Kubelet DNS file: Kubespray's Ubuntu/Fedora default is systemd-resolved's file
+    os_id=$(. /etc/os-release 2>/dev/null; echo "$ID")
+    if [ -n "$KS_RESOLV_CONF" ]; then rconf=$KS_RESOLV_CONF
+    else rconf=$(awk '/^resolvConf:/{gsub(/"/,"",$2); print $2; exit}' /etc/kubernetes/kubelet-config.yaml /var/lib/kubelet/config.yaml 2>/dev/null)
+      [ -n "$rconf" ] || case "$os_id" in ubuntu|fedora) rconf=/run/systemd/resolve/resolv.conf ;; *) rconf=/etc/resolv.conf ;; esac; fi
+    rconf=${rconf:-/etc/resolv.conf}
+    dns_status="OK"; dns_state="present"; [ -f "$rconf" ] || { dns_status="FAIL"; dns_state="missing"; }
+    resolved=$(systemctl is-active systemd-resolved 2>/dev/null); resolved=${resolved:-unknown}
+    dns_hint="Kubernetes cannot start without it. Add to env/<name>/kubespray_extra.yml: kube_resolv_conf: /etc/resolv.conf and resolvconf_mode: none"
+    [ "$DNS_MIXED" = 1 ] && dns_hint="Some nodes run systemd-resolved and some do not, and no upstream DNS server was found on the nodes. Set upstream_dns_servers in env/<name>/kubespray_extra.yml, then re-run the install"
+
+    # Unfinished Kubernetes install: kubelet config left on the node, but the installer never wrote the env kubeconfig
+    left_status="OK"; left_evidence="no leftovers"
+    if [ -f /var/lib/kubelet/config.yaml ]; then
+      left_evidence="/var/lib/kubelet/config.yaml present, env kubeconfig present"
+      [ "$ENV_KUBECONFIG" = 1 ] || { left_status="FAIL"; left_evidence="/var/lib/kubelet/config.yaml present, env kubeconfig missing"; }
+    fi
+
+    # Swap
+    swap_total=$(free -m | awk '/Swap:/{print $2}')
+    swap_used=$(free -m | awk '/Swap:/{print $3}')
+    swap_status="OK"
+    [ "$swap_total" -ne 0 ] && [ "$swap_used" -ne 0 ] && swap_status="FAIL"
+
+    # CPU governor
+    gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "unavailable")
+    freq_cur=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo "0")
+    freq_max=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo "0")
+    [ "$freq_cur" != "0" ] && freq_mhz=$((freq_cur / 1000)) || freq_mhz="?"
+    [ "$freq_max" != "0" ] && max_mhz=$((freq_max / 1000)) || max_mhz="?"
+    gov_status="OK"
+    [ "$gov" != "performance" ] && [ "$gov" != "unavailable" ] && gov_status="WARN"
+
+    # NUMA
+    numa_nodes=$(lscpu 2>/dev/null | grep 'NUMA node(s)' | awk '{print $NF}' || echo "?")
+    cpus=$(nproc 2>/dev/null || echo "?")
+    sockets=$(lscpu 2>/dev/null | grep 'Socket(s)' | awk '{print $NF}' || echo "?")
+    mem_gb=$(free -g 2>/dev/null | awk '/Mem:/{print $2}' || echo "?")
+
+    # THP
+    thp_raw=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo "unknown")
+    thp_current=$(echo "$thp_raw" | grep -oP '\[\K[^\]]+' || echo "unknown")
+    thp_status="OK"
+    [ "$thp_current" = "always" ] && thp_status="WARN"
+
+    python3 -c "
+    import json, sys
+    results = [
+        {'layer':'platform-health','check':'Time sync on $HN','status':'$ntp_status',
+         'evidence':sys.argv[1],'hint':'NTP not synced — check: chronyc sources or timedatectl'},
+        {'layer':'platform-health','check':'Root disk headroom on $HN','status':'$root_status',
+         'evidence':'${root_free}% free','hint':'Root partition >90% full — clean up: journalctl --vacuum-size=500M'},
+        {'layer':'platform-health','check':'Containerd disk headroom on $HN','status':'$ctd_status',
+         'evidence':'${ctd_free}% free on /var/lib/containerd','hint':'Containerd partition >90% full — ctr image prune'},
+        {'layer':'platform-health','check':'Kernel on $HN','status':'OK',
+         'evidence':'kernel=$kernel os=$os_name $os_ver','hint':'Kernel/OS mismatch across nodes'},
+        {'layer':'platform-health','check':'Kubelet on $HN','status':'OK',
+         'evidence':'kubelet=$kubelet_ver','hint':'Kubelet version mismatch — all nodes should match'},
+        {'layer':'platform-health','check':'Kubelet DNS file on $HN','status':'$dns_status',
+         'evidence':'resolvConf=$rconf $dns_state, systemd-resolved $resolved','hint':'$dns_hint'},
+        {'layer':'platform-health','check':'Unfinished Kubernetes install on $HN','status':'$left_status',
+         'evidence':'$left_evidence','hint':'A previous install stopped during kubeadm; a re-run skips kubeadm and fails. Run ./es_auto_installer.sh teardown kubernetes, then install again'},
+        {'layer':'platform-health','check':'Swap on $HN','status':'$swap_status',
+         'evidence':'swap_total=${swap_total}MB swap_used=${swap_used}MB','hint':'Swap active — swapoff -a'},
+        {'layer':'platform-health','check':'CPU governor on $HN','status':'$gov_status',
+         'evidence':'governor=$gov freq=${freq_mhz}MHz max=${max_mhz}MHz','hint':'Set performance: cpupower frequency-set -g performance'},
+        {'layer':'platform-health','check':'Hardware on $HN','status':'OK',
+         'evidence':'numa_nodes=$numa_nodes sockets=$sockets cpus=$cpus memory=${mem_gb}GB','hint':'Verify consistent hardware'},
+        {'layer':'platform-health','check':'THP on $HN','status':'$thp_status',
+         'evidence':'thp=$thp_current ($thp_raw)','hint':'THP=always causes latency spikes — echo madvise > /sys/kernel/mm/transparent_hugepage/enabled'},
+    ]
+    print(json.dumps(results))
+    " "$ntp_evidence"
+  args:
+    executable: /bin/bash
+  environment:
+    KS_RESOLV_CONF: "{{ lookup('ansible.builtin.file', (inventory_dir | dirname) ~ '/kubespray_extra.yml', errors='ignore') | default('', true) | regex_search('(?m)^kube_resolv_conf:\\s*(\\S+)', '\\1') | default([''], true) | first | regex_replace('[\\x22\\x27]', '') }}"
+    DNS_MIXED: "{{ '1' if ('missing' in _dns_states and 'has' in _dns_states) else '0' }}"
+    ENV_KUBECONFIG: "{{ '1' if (preflight_kubeconfig | default(inventory_dir ~ '/../kubeconfig.yaml')) is file else '0' }}"
+  register: _platform_results
+  changed_when: false
+  ignore_errors: true
+
+- name: Append platform-health results to host results file
+  ansible.builtin.shell: "echo '{{ _platform_results.stdout | default(\"[]\") }}' >> /tmp/validate-stack-host-results.jsonl"
+  changed_when: false
+
+- name: Check no nodes reporting resource pressure (cluster-wide, run once)
+  ansible.builtin.shell: |
+    kubectl get nodes --request-timeout=20s >/dev/null 2>&1 || { echo "NOCLUSTER"; exit 0; }
+    kubectl get nodes --request-timeout=20s -o jsonpath='{range .items[*]}{.metadata.name} MemoryPressure={.status.conditions[?(@.type=="MemoryPressure")].status} DiskPressure={.status.conditions[?(@.type=="DiskPressure")].status}{"\n"}{end}' 2>/dev/null | grep 'True' || echo "NONE"
+  environment:
+    KUBECONFIG: "{{ preflight_kubeconfig | default(inventory_dir ~ '/../kubeconfig.yaml') }}"
+  register: _platform_pressure
+  changed_when: false
+  ignore_errors: true
+  run_once: true
+  delegate_to: localhost
+  become: false
+
+- name: Record node pressure (cluster-level, not per-host)
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'platform-health', 'check': 'No node resource pressure', 'status': 'PENDING' if ('NOCLUSTER' in (_platform_pressure.stdout | default(''))) else ('OK' if ('NONE' in (_platform_pressure.stdout | default('NONE'))) else 'FAIL'), 'evidence': 'no cluster reachable yet' if ('NOCLUSTER' in (_platform_pressure.stdout | default(''))) else (_platform_pressure.stdout | default('') | truncate(150)), 'hint': ('Re-run after the install to check the nodes' if ('NOCLUSTER' in (_platform_pressure.stdout | default(''))) else 'Nodes under pressure — check: kubectl describe node <name>') }] }}"
+  run_once: true
+
+# model-manager reads HF_TOKEN for gated models
+- name: Resolve the HuggingFace token
+  ansible.builtin.set_fact:
+    _preflight_hf_token: "{{ hugging_face_token | default(lookup('env', 'HF_TOKEN'), true) }}"
+  run_once: true
+  no_log: true
+
+- name: Check HuggingFace token validity
+  ansible.builtin.uri:
+    url: "https://huggingface.co/api/whoami-v2"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _preflight_hf_token }}"
+    return_content: true
+    timeout: 15
+  register: _platform_hf_token
+  ignore_errors: true
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+  when: _preflight_hf_token | length > 0
+
+- name: Record HuggingFace token (cluster-level)
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'platform-health', 'check': 'HuggingFace token valid', 'status': 'OK' if (_platform_hf_token.status | default(0) == 200) else 'WARN', 'evidence': 'token valid for user: ' + (_platform_hf_token.json.name | default('unknown')) if (_platform_hf_token.status | default(0) == 200) else 'HTTP ' + (_platform_hf_token.status | default(0) | string), 'hint': 'HuggingFace token revoked/expired — export a valid HF_TOKEN' }] }}"
+  run_once: true
+  when: _preflight_hf_token | length > 0
+
+- name: Record a missing HuggingFace token
+  ansible.builtin.set_fact:
+    host_health_results: "{{ host_health_results | default([]) + [{ 'layer': 'platform-health', 'check': 'HuggingFace token valid', 'status': 'PENDING', 'evidence': 'HF_TOKEN not set', 'hint': 'Gated models (Llama, Gemma) need it — export HF_TOKEN=<token> before ./model-manager deploy' }] }}"
+  run_once: true
+  when: _preflight_hf_token | length == 0

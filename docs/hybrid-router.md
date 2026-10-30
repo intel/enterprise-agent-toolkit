@@ -231,7 +231,7 @@ master key. First retrieve the key the same way as the other guides:
 # Retrieve the LiteLLM master key from its Secret
 export LITELLM_MASTER_KEY=$(kubectl get secret litellm-master-key -n litellm -o jsonpath='{.data.master_key}' | base64 -d)
 
-# The admin API is not published at the edge: use a port-forward
+# Admin API: https://litellm.<base_domain_name>, or a port-forward as here
 kubectl port-forward -n litellm svc/litellm 4000:4000 &
 curl -s --location 'http://localhost:4000/model/new' \
   --header "Authorization: Bearer ${LITELLM_MASTER_KEY}" \

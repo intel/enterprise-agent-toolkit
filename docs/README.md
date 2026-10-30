@@ -4,7 +4,7 @@
 > **Installing this release.** The Agent Toolkit installs through the [Intel® AI for Enterprise Solutions](https://github.com/intel/enterprise-ai-solutions) installer. Run the commands in these docs from an `enterprise-ai-solutions` checkout:
 >
 > ```bash
-> git clone https://github.com/intel/enterprise-ai-solutions.git && cd enterprise-ai-solutions
+> git clone -b release-1.2 https://github.com/intel/enterprise-ai-solutions.git && cd enterprise-ai-solutions
 > ./es_auto_installer.sh configure
 > ./es_auto_installer.sh init agent-toolkit       # creates env/local/
 > ./es_auto_installer.sh install agent-toolkit

@@ -103,20 +103,4 @@ print(ray.cluster_resources())
 
 ## Flowise (Agent Builder)
 
-Enabled with `deploy_flowise=on`.
-
-> **Note:** not available in this release.
-
-| Resource | Value |
-|---|---|
-| **Namespace** | `flowise` |
-| **Flowise service** | `flowise.flowise.svc.cluster.local:3000` |
-| **Flowise admin UI** | `https://flowise-<cluster_url>` |
-
-```bash
-# Check pods
-kubectl get pods -n flowise
-
-# Retrieve the Flowise API key
-grep '^flowise_api_key:' core/inventory/metadata/vault.yml | awk -F'"' '{print $2}'
-```
+Flowise is not part of this release.

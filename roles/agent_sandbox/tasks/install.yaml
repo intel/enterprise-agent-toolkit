@@ -1,3 +1,5 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Agent Sandbox — Install
@@ -187,6 +189,36 @@
          | replace('AGENT_SANDBOX_VERSION', agent_sandbox_version)
          | replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent')
          | from_yaml_all | list }}
+
+# The controller's template NetworkPolicies select a label warm-pool sandboxes never carry, and a
+# claimed sandbox loses its warm-pool label; sandbox-name-hash stays on every sandbox pod for its life.
+# Same rules as the template policies: ingress from the router only, egress to public addresses only.
+- name: "agent_sandbox | Sandbox NetworkPolicy (every sandbox pod, claimed or not)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: eat-sandbox-pool-egress
+        namespace: "{{ agent_sandbox_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: agentic-ai-stack
+      spec:
+        podSelector:
+          matchExpressions:
+            - {key: agents.x-k8s.io/sandbox-name-hash, operator: Exists}
+        policyTypes: [Ingress, Egress]
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels: {kubernetes.io/metadata.name: "{{ agent_sandbox_namespace }}"}
+                podSelector:
+                  matchLabels: {app: sandbox-router}
+        egress:
+          - to:
+              - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}
+              - ipBlock: {cidr: "::/0", except: ["fc00::/7", "fe80::/10"]}
 
 # ── Default python warm pool (pre-warmed sandbox pods) ──────────────────────
 

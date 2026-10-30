@@ -12,7 +12,7 @@ The Kubernetes layer is provisioned by **Kubespray**, which natively supports mu
 ## Table of Contents
 
 - [Step 1 — Configure `hosts.yaml`](#step-1--configure-hostsyaml)
-- [Step 2 — Configure agentic-config.cfg](#step-2--configure-agentic-configcfg)
+- [Step 2 — Configure the environment files](#step-2--configure-the-environment-files)
 - [Step 3 — Deploy](#step-3--deploy)
 - [Step 4 — Verify](#step-4--verify)
 - [Step 5 — Semantic Router (Intelligent Query Routing)](#step-5--semantic-router-intelligent-query-routing)
@@ -39,16 +39,19 @@ all:
       ansible_host: 10.0.0.1          # control-plane private IP
       ansible_user: ubuntu
       ansible_ssh_private_key_file: /home/ubuntu/.ssh/id_rsa
+      ansible_connection: ssh
       ansible_become: true
     worker1:
       ansible_host: 10.0.0.2          # worker node 1 private IP
       ansible_user: ubuntu
       ansible_ssh_private_key_file: /home/ubuntu/.ssh/id_rsa
+      ansible_connection: ssh
       ansible_become: true
     worker2:
       ansible_host: 10.0.0.3          # worker node 2 private IP
       ansible_user: ubuntu
       ansible_ssh_private_key_file: /home/ubuntu/.ssh/id_rsa
+      ansible_connection: ssh
       ansible_become: true
   children:
     kube_control_plane:
@@ -71,16 +74,20 @@ all:
 ```
 
 
-> **Note:** The node running `./es_auto_installer.sh install agent-toolkit` must be able to reach all other nodes via SSH using the key specified in `ansible_ssh_private_key_file`.
+> **Note:** The node running `./es_auto_installer.sh install agent-toolkit` must be able to reach all other nodes via SSH using the key specified in `ansible_ssh_private_key_file`. For the node you run it on, either set `ansible_connection: local` in place of the SSH settings, or make sure that node can SSH to itself with the same key. Keep `ansible_connection: ssh` on every other node: the installer's playbook runs locally, and steps it runs for a node without that line (Kata, CPU pinning) would run on the installer machine instead.
 
 ---
 
-## Step 2 — Configure `agentic-config.cfg`
+## Step 2 — Configure the environment files
 
 Open `env/<name>/global_config.yaml` and `env/<name>/config.agent-toolkit.yaml` and fill in your values:
 
 ```yaml
 # ---- env/<name>/global_config.yaml ----
+
+# Required on multi-node: shared storage that every node can mount. nfs provisions an NFS server on the
+# first control-plane node at /data/nfs (ceph and netapp-trident also work); local-path is single-node only
+storage_backend: nfs
 
 # Your cluster FQDN — this becomes the base URL for all services
 base_domain_name: "example.com"
@@ -137,6 +144,8 @@ Set `llm_services_autodeploy_models` in `config.agent-toolkit.yaml` to one value
 | `29` | `qwen3-coder-30b-specdec` | Qwen/Qwen3-Coder-30B-A3B-Instruct *(with speculative decoding)* |
 | `30` | `qwen3-6-35b-a3b` | Qwen/Qwen3.6-35B-A3B |
 
+> **Memory:** a node needs the `memory:` requests of its models (in `env/<name>/models.yaml`) plus about 17 GiB for the rest of the stack, and 16 GiB more for Qwen3Guard while the content-safety guardrail is on. The default install requests about 131 GiB (`qwen2-5-coder-14b` 96 GiB, Qwen3Guard 16 GiB, router 2 GiB, the rest 17 GiB); each model runs on one node, so one node must have room for it. On 128 GB nodes choose a 64 GiB model (`qwen2-5-coder-7b`, `llama-3-1-8b`). `qwen3-coder-30b` requests 160 GiB.
+
 > **Note:** `meta-llama/Llama-3.1-8B-Instruct` does not support parallel tool calling. Only sequential tool calls are supported with this model.
 
 > **Note:** For how per-model CPU/memory sizing and vLLM flags are configured under the
@@ -176,6 +185,9 @@ Kubespray will use `env/<name>/inventory/hosts.yaml` to provision Kubernetes acr
 After deployment, confirm all nodes joined the cluster and all pods are healthy:
 
 ```bash
+# The installer writes the cluster's kubeconfig into the env
+export KUBECONFIG=$(pwd)/env/<name>/kubeconfig.yaml
+
 # All nodes should show Ready
 kubectl get nodes -o wide
 
@@ -188,6 +200,10 @@ export LITELLM_MASTER_KEY=$(kubectl get secret litellm-master-key -n litellm -o 
 
 # (Optional) If behind a corporate proxy, update no_proxy to prevent the request from being intercepted by the proxy (replace <base_domain_name> with your base_domain_name)
 export no_proxy="${no_proxy},litellm.<base_domain_name>,langfuse.<base_domain_name>"
+
+# Gateway IP: map litellm.<base_domain_name> (and the other service names) to it in /etc/hosts
+kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway \
+  -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
 
 # List registered models to confirm the model name (replace <base_domain_name> with your base_domain_name)
 curl -k https://litellm.<base_domain_name>/v1/models \
@@ -224,9 +240,9 @@ Semantic routing automatically directs queries to the most appropriate model bas
 - Step 4 complete and base stack verified
 - At least one model deployed (you'll add a second model for routing)
 
-### 1. Deploy an Embedding Model for Semantic Matching and a Second Model
+### 1. Deploy a Second Model and an Embedding Model
 
-Semantic routing requires an embedding model to generate vector representations of user queries and match them against predefined utterances. A Text Embedding Inference (TEI) service with **BAAI/bge-base-en-v1.5** will be deployed using the deploy script.
+The hybrid router spreads requests over the deployed chat models, so deploy a second one. **BAAI/bge-base-en-v1.5** (`bge-base-en`) is added as well, as the embedding model for your agents.
 
 A second larger model i.e. **Qwen/Qwen3-Coder-30B-A3B-Instruct** with better capabilities will also be deployed alongside your existing one.
 
@@ -238,17 +254,7 @@ llm_services_autodeploy_models: ["qwen2-5-coder-14b", "bge-base-en", "qwen3-code
 
 **Deploy the model:**
 
-*Important:* For single-node deployments, the NRI balloon policy will use remaining CPUs to deploy models. Because the first model has already been deployed, there will not be enough CPUs to deploy additional models. To address this, the variable `nri_total_reserved_cpus` inside [core/inventory/metadata/vars/inference_llm_models.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/inventory/metadata/vars/inference_llm_models.yml) needs to be adjusted.
-
-> **Note:** not available in this release.
-
-The following formula can be used to calculate the value of `nri_total_reserved_cpus`. `total_cpus` depends on your system and `desired_vllm_cpus` should be large enough based on the model size. For a sizing guide, refer to the Intel AI Performance Advisor for [cloud instances](https://xeonprocessoradvisor.intel.com/csp-ai-performance-advisor) and [on-prem servers](https://xeonprocessoradvisor.intel.com/on-prem-ai-performance-advisor).
-
-```bash
-nri_total_reserved_cpus = total_cpus - desired_vllm_cpus_per_model
-```
-
-After updating `inference_llm_models.yml`, proceeed with re-running the deploy script. Components already running will be skipped, the existing model will be re-deployed, and the two new models will be deployed.
+*Important:* With the NRI balloon policy, the default model (`cpu: auto`) takes the free physical cores of one NUMA node. When no NUMA node has enough free cores left, a further deploy stops with `NRI pre-flight failed: not enough physical cores`. To make room, set an explicit `cpu:` for each model in `env/<name>/models.yaml` (see [xeon-model-configuration.md](xeon-model-configuration.md)), then re-run the install:
 
 ```bash
 ./es_auto_installer.sh install agent-toolkit
@@ -259,17 +265,15 @@ Restart the GenAI Gateway's Deployment:
 kubectl rollout restart deployment litellm -n litellm
 ```
 
-Follow the steps to [re-verify the base stack](#verify-the-base-stack) to ensure models can be accessed.
+Follow the steps to [re-verify the base stack](#step-4--verify) to ensure models can be accessed.
 
 ### 2. Access the LiteLLM UI
 
-Navigate to the LiteLLM UI in your browser (it is not published at the edge, so port-forward it first):
+Open `https://litellm.<base_domain_name>/ui` in your browser (the gateway IP must be in `/etc/hosts` for that name, as in the quick-start). Without the hosts entry, port-forward the LiteLLM Service and open `http://localhost:4000/ui`:
 
 ```
 kubectl port-forward -n litellm svc/litellm 4000:4000
 ```
-
-Then open `http://localhost:4000/ui`.
 
 Login credentials:
 - Username: default which is `admin`
@@ -282,52 +286,9 @@ Login credentials:
 1. Navigate to: **Models+Endpoints** → **All Models** tab
 2. Look for `bge-base-en` in the models list
 
-**Step 3b — Configure the Auto Router:**
+**Step 3b — The hybrid router:**
 
-> **Note:** not available in this release.
-
-Navigate to: **Models+Endpoints** → **Add Model** → **Auto Router** Tab.
-For **Router Type**, select `Semantic Router`.
-
-| Field | Value | Description |
-|-------|-------|-------------|
-| **Auto Router Name** | `hybrid-router` | The model name developers will use in API requests |
-| **Default Model** | `qwen2-5-coder-14b` | Fallback model when no route matches |
-| **Embedding Model** | `bge-base-en` | The embedding model deployed above |
-
-**Configure Routes:**
-
-Click **Add Route** to create routing rules. Configure at least two routes:
-
-**Route 1 — Simple Queries (Smaller/Faster Model):**
-- **Target Model:** `qwen2-5-coder-14b`
-- **Description:** Simple queries and basic coding tasks
-- **Score Threshold:** `0.5`
-- **Utterances:**
-  ```
-  what is [topic]
-  define [term]
-  explain [concept] simply
-  hello
-  write a simple [language] function
-  ```
-
-**Route 2 — Complex Queries (More Powerful Model):**
-- **Target Model:** `qwen3-coder-30b`
-- **Description:** Complex coding tasks and system design
-- **Score Threshold:** `0.5`
-- **Utterances:**
-  ```
-  design a [system] architecture
-  optimize this [language] code for performance
-  debug this complex [issue]
-  refactor this codebase to use [pattern]
-  implement a distributed [system]
-  create a production-ready [application]
-  how to code a program in [language]
-  ```
-
-Click **Add Auto Router** to activate the semantic router. To view it, refresh the page and go back to the **Models+Endpoints** → **All Models** tab.
+This release creates the `hybrid-router` model at install (`hybrid_router_enabled: true`, the default), so there is no UI step. It sorts each request by complexity and sends it to one of the deployed chat models. Models deployed after the install join it when you re-run `./es_auto_installer.sh install agent-toolkit`. Tiers and model lists: [hybrid-router.md](hybrid-router.md).
 
 ### 4. Verify Semantic Routing
 
@@ -351,15 +312,15 @@ Check routing decisions in Langfuse at `https://langfuse.<base_domain_name>`.
 
 Login credentials: the Langfuse login and password are generated into the `langfuse-secrets` Secret in the `langfuse` namespace (keys `admin_email` / `admin_password`).
 
-Go inside the `default` project. Under **Tracing**, select the most recent `litellm_request`, scroll down to **Metadata** → **attributes**. Look at the `llm.model_name` field to confirm routing decisions.
+Go inside the `inference` project. Under **Tracing**, select the most recent `litellm_request`, scroll down to **Metadata** → **attributes**. Look at the `llm.model_name` field to confirm routing decisions.
 
 ---
 
-## Step 5 — Redis (Shared Memory Backend)
+## Step 6 — Redis (Shared Memory Backend)
 
 Redis is the **common memory backend** for all agentic workloads in this stack — deploy it before any use-case agent (MCP agents, etc.).
 
-The `core/helm-charts/redis` chart deploys **Redis Stack** (includes RediSearch) into its own `redis` namespace as a single persistent instance shared across all agents.
+The `charts/redis-stack` chart deploys **Redis Stack** (includes RediSearch) into its own `redis` namespace as a single persistent instance shared across all agents.
 
 **Automated deployment (recommended):**
 
@@ -373,26 +334,6 @@ redis_stack_enabled: true
 Then re-run `es_auto_installer.sh`:
 ```bash
 ./es_auto_installer.sh install agent-toolkit
-```
-
-**Manual deployment (alternative / standalone):**
-
-> **Note:** not available in this release.
-
-A password is mandatory — the chart refuses to render without one.
-
-```bash
-# 1. Resolve Helm chart dependencies
-helm dependency build core/helm-charts/redis
-
-# 2. Deploy into the `redis` namespace with a password
-_redis_pw=$(grep '^redis_stack_password:' core/inventory/metadata/vault.yml | awk -F'"' '{print $2}')
-helm upgrade --install redis core/helm-charts/redis \
-  --namespace redis \
-  --create-namespace \
-  --set-string "redis-stack-server.redis_stack_server.auth.password=${_redis_pw}" \
-  --wait --timeout 5m
-unset _redis_pw
 ```
 
 **Verify it is running:**
@@ -422,17 +363,11 @@ Redis holds agent session state and is a code-execution surface (Lua, plus JavaS
 - **Authentication is mandatory** — the chart fails to render without a password.
 - **The Service is `ClusterIP`.** Do not switch it to `NodePort` or `LoadBalancer`. On a multi-node cluster a NodePort binds the 30000-32767 range on *every* node IP, so anything that can route to any node reaches Redis. This matters most when nodes have public addresses or sit in a permissive cloud security group.
 - **Firewall the NodePort range.** In addition to the inter-node ports listed above, restrict `30000-32767` to trusted sources at the host firewall or cloud security-group level. Do not expose it to the internet.
-- **Restrict Redis to the namespaces that need it** with the bundled NetworkPolicy (requires an enforcing CNI such as Calico):
-
-  ```bash
-  --set "redis-stack-server.redis_stack_server.networkPolicy.allowedNamespaces={litellm,agent-sandbox-system}"
-  ```
-
-  > **Note:** not available in this release.
+- **Mesh-only access.** Redis runs in the ambient mesh: namespaces in the mesh reach it, plaintext clients from outside are refused.
 
 ---
 
-## Step 6 — PostgreSQL + pgvector (Vector Store & Long-Term Memory)
+## Step 7 — PostgreSQL + pgvector (Vector Store & Long-Term Memory)
 
 PostgreSQL 16 with the **pgvector** extension gives every agentic workload a persistent, queryable vector store for long-term memory, RAG pipelines, semantic search, and structured state storage.
 
@@ -495,7 +430,7 @@ postgresql://agentuser:<password>@pgvector.pgvector.svc.cluster.local:5432/agent
 
 ---
 
-## Step 7 — Agent Sandbox (Sandboxed Code Execution)
+## Step 8 — Agent Sandbox (Sandboxed Code Execution)
 
 Agent Sandbox provides **isolated, ephemeral Kubernetes pods** for safe code execution. Every sandbox is a fully self-contained pod — the agent can run arbitrary code, install packages, and write files without touching the host or other workloads.
 
@@ -540,6 +475,8 @@ For the full guide — adding custom templates, WarmPools, and SDK usage — see
 
 ---
 
+## Adding a Worker Node to a Running Cluster
+
 To expand a running cluster with an additional worker node:
 
 > **Note:** not available in this release. The installer provisions Kubernetes only while `env/<name>/kubeconfig.yaml` does not exist, so list every node in `env/<name>/inventory/hosts.yaml` before the first `./es_auto_installer.sh install agent-toolkit`.
@@ -558,10 +495,9 @@ To expand a running cluster with an additional worker node:
 
 ## Notes
 
-- The **NGINX Ingress Controller** binds to the control-plane node by default. For HA deployments with multiple control-plane nodes, configure a load balancer in front and point `cluster_url` DNS to the LB IP.
-  > **Note:** not available in this release.
-- **Redis** runs as a single `StatefulSet` in the `redis` namespace. It is shared across all agent namespaces but is not clustered by default. For high-availability Redis, configure Redis Cluster or Redis Sentinel via the `core/helm-charts/redis` chart values.
-- **Model weights** are pulled onto whichever node the vLLM pod is scheduled. For multi-worker setups with PVC-backed model storage, see the `modelUsePVC` option in `core/helm-charts/vllm/values.yaml`.
+- The platform gateway is the `eg-gateway` LoadBalancer Service in `envoy-gateway-system`; MetalLB assigns its address. Point DNS for `*.<base_domain_name>` at that address.
+- **Redis** runs as a single `StatefulSet` in the `redis` namespace. It is shared across all agent namespaces but is not clustered by default. For high-availability Redis, configure Redis Cluster or Redis Sentinel via the `charts/redis-stack` chart values.
+- **Model weights** are downloaded once into the `model-store` PVC in `llm-inference` and reused by later deploys.
 - Ensure all required ports are open between nodes (Kubernetes API: 6443, etcd: 2379–2380, Calico: 179, kubelet: 10250).
 
 ---

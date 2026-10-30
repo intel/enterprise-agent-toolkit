@@ -1,3 +1,5 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
 ---
 # =============================================================================
 # Agent Toolkit Configuration — enterprise.agent-toolkit
@@ -6,7 +8,13 @@
 # Override any of them here.  `es_auto_installer.sh init agent-toolkit` seeds
 # this file into env/<env>/config.agent-toolkit.yaml and the installer loads
 # that seeded copy: edit the copy to change an existing environment.
+# It loads after config.inference.yaml, so guardrails_enabled, hybrid_router_enabled and
+# litellm_* set here override the inference layer's values.
 # =============================================================================
+
+# --- Node preflight ---
+# Node readiness checks (playbooks/preflight-check.yml) at the start of install; report only
+node_preflight_enabled: true
 
 # --- API access (inference layer) ---
 # The toolkit serves agents through the LiteLLM gateway: virtual keys per agent or
@@ -18,17 +26,8 @@ auth_type: "litellm_vkey"
 guardrails_enabled: "{{ (auth_provider == 'litellm') if auth_provider is defined else ((auth_type | default('jwt')) == 'litellm_vkey') }}"
 # LiteLLM model "hybrid-router"
 hybrid_router_enabled: true
-# Model API paths published on LiteLLM's route
-litellm_public_paths:
-  - /v1/chat/completions
-  - /v1/completions
-  - /v1/embeddings
-  - /v1/models
-  - /health/liveliness
-  - /v1/responses
-  - /v1/rerank
-  - /v1/audio/transcriptions
-  - /v1/audio/speech
+# Paths published on LiteLLM's route; empty = all, so the admin UI and key API are reachable (LiteLLM keeps its auth)
+litellm_public_paths: []
 
 # --- Default model (inference layer, applied only where this layer is provisioned) ---
 # Deployed on install.
@@ -42,9 +41,6 @@ vllm_sr_dashboard_enabled: true
 # Client-facing name of the vLLM Semantic Router model in LiteLLM (litellm mode).
 vllm_sr_litellm_model_name: "vllm-sr/auto"
 
-# --- In-cluster image registry (platform; kubespray addon) ---
-kubernetes_registry_enabled: true
-
 # --- Redis Stack ---
 redis_stack_namespace: "redis"
 redis_stack_storage_class: ""          # empty = cluster default StorageClass
@@ -57,7 +53,7 @@ pgvector_username: "agentuser"
 pgvector_storage_size: "20Gi"
 
 # --- Agent Sandbox ---
-agent_sandbox_namespace: "agent-sandbox-system"
+agent_sandbox_namespace: "agent-sandbox-system"   # fixed: the upstream manifests and sandbox templates use this namespace
 agent_sandbox_version: "v0.5.0"
 
 # --- OpenShell  ---

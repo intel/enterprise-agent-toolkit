@@ -1,0 +1,57 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# layer-network.yml — Validates network connectivity from each node
+# Results are written to /tmp/validate-stack-host-results.jsonl (one JSON array per layer)
+# to avoid Ansible's hostvars re-templating issue with ansible_connection: local.
+
+---
+- name: Run network checks
+  ansible.builtin.shell: |
+    set -o pipefail
+    HN=$(hostname -s)
+    GW="{{ ansible_default_ipv4.gateway | default('') }}"
+
+    gw_status="FAIL"; gw_evidence="no gateway configured"
+    if [ -n "$GW" ]; then
+      if ping -c 2 -W 3 "$GW" >/dev/null 2>&1; then
+        gw_status="OK"; gw_evidence="reachable via ICMP ping $GW"
+      elif bash -c "echo >/dev/tcp/$GW/22" 2>/dev/null; then
+        gw_status="OK"; gw_evidence="reachable via TCP/22 $GW (ICMP blocked)"
+      elif bash -c "echo >/dev/tcp/$GW/443" 2>/dev/null; then
+        gw_status="OK"; gw_evidence="reachable via TCP/443 $GW (ICMP blocked)"
+      else
+        gw_evidence="unreachable $GW"
+      fi
+    fi
+
+    # Internal DNS (kubernetes.default.svc.cluster.local) — skipped.
+    # Host OS does not need to resolve cluster DNS. Pods resolve via CoreDNS
+    # configured by kubelet. Tested in the Kubernetes layer (CoreDNS check) instead.
+
+    ext_status="FAIL"; ext_evidence="resolution failed"
+    if getent hosts huggingface.co >/dev/null 2>&1; then
+      ext_status="OK"; ext_evidence=$(getent hosts huggingface.co | head -1)
+    elif python3 -c "import socket; print(socket.gethostbyname('huggingface.co'))" 2>/dev/null; then
+      ext_status="OK"; ext_evidence=$(python3 -c "import socket; print(socket.gethostbyname('huggingface.co'))")
+    fi
+
+    python3 -c "
+    import json, sys
+    results = [
+        {'layer': 'network', 'check': 'Gateway reachable from $HN', 'status': '$gw_status',
+         'evidence': '$gw_evidence', 'hint': 'Check default route: ip route show default'},
+        {'layer': 'network', 'check': 'External DNS from $HN', 'status': '$ext_status',
+         'evidence': sys.argv[1], 'hint': 'Check upstream DNS or proxy config'},
+    ]
+    print(json.dumps(results))
+    " "$ext_evidence"
+  args:
+    executable: /bin/bash
+  register: _net_results
+  changed_when: false
+  ignore_errors: true
+
+- name: Append network results to host results file
+  ansible.builtin.shell: "echo '{{ _net_results.stdout | default(\"[]\") }}' >> /tmp/validate-stack-host-results.jsonl"
+  changed_when: false

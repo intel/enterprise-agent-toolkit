@@ -8,8 +8,8 @@ Two components:
 2. **A `custom_code` guardrail registered with the GenAI Gateway** — the screening logic itself, sandboxed Python stored in the gateway and run on LiteLLM's `pre_call` hook. It calls the guard vLLM directly over HTTP.
 
 The screening logic lives in one Ansible
-template, [qwen3guard_gen.py.j2](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/lib/guardrails/qwen3guard_gen.py.j2), which
-[deploy-guardrails.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/playbooks/deploy-guardrails.yml) renders (guard endpoint,
+template, `roles/litellm/templates/qwen3guard_gen.py.j2` (enterprise-inference), which
+`roles/litellm/tasks/install.yaml` (enterprise-inference) renders (guard endpoint,
 model id, policy) and registers through the gateway's `/guardrails` API. LiteLLM compiles it
 with RestrictedPython and calls its `apply_guardrail()` on every request.
 
@@ -94,7 +94,7 @@ both the model served by the guard vLLM and the code template that parses its ve
 | `qwen3guard` (`Qwen/Qwen3Guard-Gen-0.6B`) | `qwen3guard_gen.py.j2` | Supported (default) |
 
 The mapping is `guard_code_templates` in
-[deploy-guardrails.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/playbooks/deploy-guardrails.yml). A model with no entry
+`roles/litellm/tasks/install.yaml` (enterprise-inference). A model with no entry
 **fails the playbook before anything is deployed**, with the supported ids in the error —
 rather than deploying a guard whose verdicts nothing can parse.
 
@@ -204,8 +204,8 @@ cannot actually attend over.
 
 1. If the model reports verdicts in Qwen3Guard's `Safety:` / `Categories:` format, reuse the
    existing template: add one line to `guard_code_templates` in
-   [deploy-guardrails.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/playbooks/deploy-guardrails.yml).
-2. Otherwise add `core/lib/guardrails/<family>.py.j2` — copy the existing one and change the
+   `roles/litellm/tasks/install.yaml` (enterprise-inference).
+2. Otherwise add `roles/litellm/templates/<family>.py.j2` (enterprise-inference) — copy the existing one and change the
    prompt/parsing — and map the model id to it. Keep the sandbox rules (see the template's
    docstring): no `import`, no `class`, no leading-underscore names, no f-strings; use the
    injected primitives (`allow`, `block`, `trim`, `lower`, `contains`, `json_parse`,
@@ -243,24 +243,12 @@ Guardrails deploy after the GenAI Gateway in the deployment sequence
 
 ### Redeploy Guardrails Only
 
-The playbooks run from `core/kubespray`, not `core`: `deploy-guardrails.yml` loads
-`config/vault.yml` relative to the working directory, and `core/lib/system/setup-env.sh`
-copies `core/playbooks/` (including `templates/`) there on every stack deploy. Refresh that
-copy first if you have edited the playbooks:
-
-> **Note:** not available in this release.
+From the `enterprise-ai-solutions` checkout:
 
 ```bash
-cd /path/to/enterprise-ai-solutions
-
-./model-manager deploy qwen3guard --wait              # redeploy the guard model
-./es_auto_installer.sh install agent-toolkit          # re-render and re-register the guardrail
+./model-manager deploy qwen3guard --wait                              # redeploy the guard model
+./es_auto_installer.sh install litellm --env <name> --only --force   # re-render and re-register the guardrail
 ```
-
-`guardrails_repo_dir` is where the guardrail code template is read from — the repo, not the
-copy — so an edit to `core/lib/guardrails/*.j2` takes effect on the next run.
-
-> **Note:** not available in this release.
 
 Idempotent: re-running renders the code again and updates the existing registration in
 place.
@@ -462,7 +450,7 @@ LiteLLM compiles the registered code with RestrictedPython and calls
 forbids `import`, `class`, `exec`/`eval`, file I/O and leading-underscore names, and injects
 the primitives the code uses instead (`allow`, `block`, `regex_find_all`, `http_post`, …).
 
-[qwen3guard_gen.py.j2](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/lib/guardrails/qwen3guard_gen.py.j2) does:
+`roles/litellm/templates/qwen3guard_gen.py.j2` (enterprise-inference) does:
 
 1. take the **last user message** (falling back to the last non-empty `texts` entry for call
    types without structured messages) — one guard call per request; the sandbox has no
@@ -479,8 +467,8 @@ the primitives the code uses instead (`allow`, `block`, `regex_find_all`, `http_
 
 ### Registration
 
-[register-guardrail-genai-gateway.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/playbooks/register-guardrail-genai-gateway.yml)
-pipes [register-guardrail.py.j2](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/playbooks/templates/register-guardrail.py.j2) into
+`roles/litellm/tasks/install.yaml` (enterprise-inference)
+pipes `roles/litellm/templates/register-guardrail.py.j2` (enterprise-inference) into
 the gateway pod (`kubectl exec -i … -- python -`), which:
 
 1. compiles the code via `POST /guardrails/test_custom_code` and aborts on rejection
@@ -502,7 +490,7 @@ change `litellm_params`).
 ## Roadmap
 
 **Additional guard models.** Model-specific logic is isolated to one template per verdict
-format under `core/lib/guardrails/`, so a new guard model is a template plus a
+format under `roles/litellm/templates/` (enterprise-inference), so a new guard model is a template plus a
 `guard_code_templates` entry. Only `Qwen/Qwen3Guard-Gen-0.6B` is validated today;
 unmapped ids fail the deploy rather than being assumed compatible.
 
@@ -529,7 +517,7 @@ constraints need resolving first:
 - **vLLM Documentation:** https://docs.vllm.ai/
 - **Qwen3Guard Model:** https://huggingface.co/Qwen/Qwen3Guard-Gen-0.6B
 - **Deployment Playbooks:**
-  - [deploy-guardrails.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/playbooks/deploy-guardrails.yml)
-  - [register-guardrail-genai-gateway.yml](https://github.com/intel/enterprise-agent-toolkit/blob/release-1.1.0/core/playbooks/register-guardrail-genai-gateway.yml)
+  - `roles/litellm/tasks/install.yaml` (enterprise-inference)
+  - `roles/litellm/tasks/install.yaml` (enterprise-inference)
 - **Related Components:**
   - [GenAI Gateway](https://github.com/intel/enterprise-agent-toolkit/tree/release-1.1.0/core/helm-charts/genai-gateway/)
