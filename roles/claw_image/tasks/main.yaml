@@ -1,0 +1,6 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Inputs: claw_image_name, claw_image_context. Output facts: claw_image_repository, claw_image_tag (tag@digest).
+- name: "claw_image | Build {{ claw_image_name }}"
+  ansible.builtin.include_tasks: build.yaml

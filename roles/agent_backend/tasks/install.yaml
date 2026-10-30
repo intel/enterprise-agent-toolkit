@@ -1,0 +1,106 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "agent_backend | Check the agent operator is installed"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: agentgrants.intel-stack.io
+  register: _ab_crd
+  failed_when: _ab_crd.resources | default([]) | length == 0
+
+- name: "agent_backend | Configure the realm"
+  ansible.builtin.include_tasks: keycloak.yaml
+  vars:
+    _kc_script: keycloak-realm.sh
+    _kc_args:
+      - "{{ agent_backend_api_client }}"
+      - "{{ agent_backend_api_owner }}"
+      - "{{ agent_backend_api_email }}"
+      - "{{ agent_backend_audience }}"
+
+- name: "agent_backend | Store the API client credentials"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: "{{ agent_backend_api_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+        labels: {app.kubernetes.io/name: agent-backend}
+      data:
+        client-id: "{{ agent_backend_api_client | b64encode }}"
+        client-secret: "{{ _ab_kc_out.stdout_lines | select('match', '^CLIENT_SECRET=') | first | regex_replace('^CLIENT_SECRET=', '') | b64encode }}"
+  no_log: true
+
+- name: "agent_backend | Configure the console sign-in client"
+  when: claw_console_enabled | bool
+  block:
+    - name: "agent_backend | Create the console client"
+      ansible.builtin.include_tasks: keycloak.yaml
+      vars:
+        _kc_script: keycloak-console.sh
+        _kc_args:
+          - "{{ claw_console_oidc_client }}"
+          - "https://{{ claw_console_hostname }}"
+          - "{{ agent_backend_audience }}"
+
+    # Envoy Gateway reads the key client-secret.
+    - name: "agent_backend | Store the console client secret"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ claw_console_oidc_secret }}"
+            namespace: "{{ agent_operator_namespace }}"
+            labels: {app.kubernetes.io/name: agent-console}
+          data:
+            client-secret: "{{ _ab_kc_out.stdout_lines | select('match', '^CLIENT_SECRET=') | first | regex_replace('^CLIENT_SECRET=', '') | b64encode }}"
+      no_log: true
+
+- name: "agent_backend | Build the image"
+  ansible.builtin.include_role:
+    name: claw_image
+  vars:
+    claw_image_name: agent-backend
+    claw_image_context: "{{ role_path }}/../../src/claw/agent-backend"
+
+- name: "agent_backend | Install or upgrade the API"
+  kubernetes.core.helm:
+    name: "{{ agent_backend_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/claw/agent-backend"
+    release_namespace: "{{ agent_operator_namespace }}"
+    wait: true
+    timeout: "{{ agent_backend_wait_timeout }}"
+    values:
+      image:
+        repository: "{{ claw_image_repository }}"
+        tag: "{{ claw_image_tag }}"
+      affinity: "{{ _platform_affinity | default({}) }}"
+      auth:
+        jwksUrl: "{{ claw_keycloak_jwks_url }}"
+        issuer: "{{ claw_keycloak_issuer }}"
+        audience: "{{ agent_backend_audience }}"
+        tokenUrl: "{{ claw_keycloak_url }}/realms/{{ claw_keycloak_realm }}/protocol/openid-connect/token"
+      console:
+        enabled: "{{ claw_console_enabled | bool }}"
+        oidcClientId: "{{ claw_console_oidc_client }}"
+        oidcSecret: "{{ claw_console_oidc_secret }}"
+      route:
+        hostname: "{{ claw_console_hostname }}"
+      runtimeSecret: "{{ claw_runtime_secret }}"
+      audit:
+        retention:
+          months: "{{ agent_backend_audit_retention_months }}"
+
+- name: "agent_backend | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "API: https://{{ claw_console_hostname }}/api"
+      - "Scripted access: client '{{ agent_backend_api_client }}', secret in {{ agent_operator_namespace }}/{{ agent_backend_api_secret }}"
