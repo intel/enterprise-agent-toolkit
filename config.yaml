@@ -84,6 +84,10 @@ keycloak_agent_realm: "agent-toolkit"
 # --- claw: persistent OpenClaw agents (optional — disabled by default) ---
 # Turns on the OpenClaw operator. See docs/claw.md.
 claw_enabled: false
+# In-cluster image registry (platform; Kubespray add-on). Claw pushes its locally built images
+# here. It only takes effect when Kubespray provisions the cluster, so it stays on even while
+# claw is off, so that claw can be turned on later without reinstalling the cluster.
+kubernetes_registry_enabled: true
 # Pinned release; bump the version and both digests together (see the role defaults).
 openclaw_operator_version: "0.38.3"
 openclaw_operator_digest: "sha256:a5c71a40098baac5e8fe5ffacf97bb9593c0b67712628b21af67b580929fa51a"
