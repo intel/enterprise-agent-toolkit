@@ -51,6 +51,12 @@ class RuntimeAdmissionTest(unittest.TestCase):
     def test_the_same_long_name_is_fine_for_claw(self):
         self.assertIsNone(C._runtime_error("oss-solo", spec("vkumar4"), "agent-vkumar4-oss-solo"))
 
+    def test_an_unknown_model_provider_fails_for_openshell(self):
+        status = self._reconcile("oss", "vkumar4", runtime="openshell", model={"provider": "openai", "id": "gpt"})
+        self.assertIn("model provider", status["suspendReason"])
+        self.assertIsNone(C._runtime_error("oss", spec("vkumar4", runtime="openshell", model={"provider": "genai-gateway"}),
+                                           "agent-vkumar4-oss"))
+
     def test_a_custom_model_endpoint_fails_for_openshell(self):
         status = self._reconcile("oss", "vkumar4", runtime="openshell", model={"baseUrl": "http://x.example/v1"})
         self.assertIn("not supported", status["suspendReason"])

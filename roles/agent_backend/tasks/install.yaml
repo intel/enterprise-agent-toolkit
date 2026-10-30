@@ -71,6 +71,80 @@
     claw_image_name: agent-backend
     claw_image_context: "{{ role_path }}/../../src/claw/agent-backend"
 
+# openshell agents pick a model from the gateways' live lists. LiteLLM lists only with a key, so
+# the API gets one that may call nothing but the list routes; minted once, inside the LiteLLM pod
+# so its master key never leaves it.
+- name: "agent_backend | Model list key"
+  when: claw_openshell_enabled | bool
+  block:
+    - name: "agent_backend | Check for the model list key"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ agent_backend_model_list_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+      register: _ab_list_key
+      no_log: true
+
+    - name: "agent_backend | Check LiteLLM is deployed"
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ openshell_genai_deployment | default('litellm') }}"
+        namespace: "{{ litellm_namespace | default('litellm') }}"
+      register: _ab_litellm
+      when: _ab_list_key.resources | default([]) | length == 0
+
+    - name: "agent_backend | Mint a LiteLLM key that may only list models"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ litellm_namespace | default('litellm') }}"
+          - "deploy/{{ openshell_genai_deployment | default('litellm') }}"
+          - -c
+          - litellm
+          - --
+          - python
+          - -c
+          - |
+            import json, os, urllib.error, urllib.request
+            def post(path, body):
+                req = urllib.request.Request("http://127.0.0.1:4000" + path, json.dumps(body).encode(),
+                    {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
+                return json.load(urllib.request.urlopen(req))
+            # A key with this alias can outlive the Secret (teardown); aliases are unique.
+            try:
+                post("/key/delete", {"key_aliases": ["{{ agent_backend_model_list_key_alias }}"]})
+            except urllib.error.HTTPError as e:
+                if e.code not in (400, 404):
+                    raise
+            print(post("/key/generate", {"key_alias": "{{ agent_backend_model_list_key_alias }}",
+                                         "allowed_routes": ["/model/info", "/v1/models"], "max_budget": 0.01})["key"])
+      register: _ab_list_mint
+      changed_when: true
+      no_log: true
+      when:
+        - _ab_list_key.resources | default([]) | length == 0
+        - _ab_litellm.resources | default([]) | length > 0
+
+    - name: "agent_backend | Store the model list key"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ agent_backend_model_list_secret }}"
+            namespace: "{{ agent_operator_namespace }}"
+            labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+          stringData:
+            api_key: "{{ _ab_list_mint.stdout | trim }}"
+      no_log: true
+      when: _ab_list_mint is changed
+
 - name: "agent_backend | Install or upgrade the API"
   kubernetes.core.helm:
     name: "{{ agent_backend_release_name }}"
@@ -96,6 +170,10 @@
         hostname: "{{ claw_console_hostname }}"
       runtimeSecret: "{{ claw_runtime_secret }}"
       openshellEnabled: "{{ openshell_enabled | default(false) | bool }}"
+      modelGateways: "{{ claw_model_gateways if claw_openshell_enabled | bool else [] }}"
+      modelListExclude: "{{ claw_model_list_exclude }}"
+      defaultModel: "{{ claw_model_id }}"
+      modelListKeySecret: "{{ agent_backend_model_list_secret }}"
       audit:
         retention:
           months: "{{ agent_backend_audit_retention_months }}"

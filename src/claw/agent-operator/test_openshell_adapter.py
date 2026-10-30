@@ -224,6 +224,39 @@ class ConfigTest(unittest.TestCase):
         self.assertNotIn("web", self.cfg["tools"])
 
 
+AIGW = "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1"
+
+
+class ModelGatewayTest(unittest.TestCase):
+    def _config(self, model, env=None):
+        a, *_ = _adapter(env)
+        ctx = _ctx(skills=["github"])
+        ctx.model = model
+        return a, ctx, json.loads(a._config_json(ctx))
+
+    def test_genai_gateway_is_the_default_and_its_key_is_a_placeholder(self):
+        _, _, cfg = self._config({})
+        provider = cfg["models"]["providers"]["genai-gateway"]
+        self.assertEqual((provider["baseUrl"], provider["apiKey"]), (LITELLM, "${OPENAI_API_KEY}"))
+        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], "genai-gateway/qwen")
+
+    def test_ai_gateway_is_reached_directly_with_no_key_when_enabled(self):
+        a, ctx, cfg = self._config({"provider": "ai-gateway", "id": "qwen3-coder-30b"}, {"OPENSHELL_AI_GATEWAY_URL": AIGW})
+        provider = cfg["models"]["providers"]["ai-gateway"]
+        self.assertEqual((provider["baseUrl"], provider["apiKey"]), (AIGW, oa.NO_KEY))
+        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], "ai-gateway/qwen3-coder-30b")
+        hosts = [e["host"] for e in _rules(a, ctx)["network_policies"]["agent_services"]["endpoints"]]
+        self.assertIn("ai-gateway.envoy-gateway-system.svc.cluster.local", hosts)
+
+    def test_ai_gateway_falls_back_to_genai_gateway_when_not_enabled(self):
+        _, _, cfg = self._config({"provider": "ai-gateway", "id": "qwen3-coder-30b"})
+        self.assertEqual(list(cfg["models"]["providers"]), ["genai-gateway"])
+
+    def test_the_agent_s_context_size_is_used(self):
+        _, _, cfg = self._config({"id": "qwen3-4b", "contextWindow": 40960})
+        self.assertEqual(cfg["models"]["providers"]["genai-gateway"]["models"][0]["contextWindow"], 40960)
+
+
 class LifecycleTest(unittest.TestCase):
     def test_a_namespace_over_19_characters_is_refused(self):
         a, client, *_ = _adapter()

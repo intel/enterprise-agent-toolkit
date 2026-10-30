@@ -5,6 +5,7 @@
 import * as k8s from "@kubernetes/client-node";
 import { ownerNamespace } from "./identity.js";
 import { expandCaps } from "./capabilities.js";
+import { gatewayConfig } from "./models.js";
 
 const GROUP = "intel-stack.io";
 const VERSION = "v1alpha1";
@@ -200,10 +201,13 @@ async function pruneAgentSecrets(ns: string, agent: string, prefix: string, keep
   }
 }
 
-export interface ModelFields { provider?: string; id?: string; name?: string; baseUrl?: string }
+export interface ModelFields { provider?: string; id?: string; name?: string; baseUrl?: string; contextWindow?: number }
 
 const modelSpecOf = (m: ModelFields) =>
-  Object.fromEntries(Object.entries({ provider: m.provider, id: m.id, name: m.name, baseUrl: m.baseUrl }).filter(([, v]) => v));
+  Object.fromEntries(Object.entries({
+    provider: m.provider, id: m.id, name: m.name, baseUrl: m.baseUrl,
+    contextWindow: Number.isInteger(m.contextWindow) && m.contextWindow! > 0 ? m.contextWindow : undefined,
+  }).filter(([, v]) => v));
 
 export async function updateAgentModel(namespace: string, name: string, model: ModelFields, apiKey?: string, rv?: string) {
   if ((model.baseUrl || apiKey) && (await getAgent(namespace, name))?.spec?.runtime === "openshell") {
@@ -271,9 +275,13 @@ export function validateRuntime(runtime: string | undefined, name: string, owner
       badRequest(`openshell agents need a namespace of at most ${OPENSHELL_MAX_NAMESPACE} characters: '${ns}' is ` +
         `${ns.length}; ${room > 0 ? `use an agent name of at most ${room} characters` : "this username leaves no room for an agent name"}`);
     }
-    // The sandbox reaches models only through the gateway's provider, which holds the cluster key.
+    // The sandbox reaches models only through the cluster's gateways, which hold any key.
     if (model?.baseUrl || model?.apiKey) {
       badRequest("openshell agents use the cluster's model gateway: a model base URL or API key is not supported");
+    }
+    const gateways = gatewayConfig().map((g) => g.name);
+    if (model?.provider && gateways.length && !gateways.includes(model.provider)) {
+      badRequest(`openshell agents use model provider ${gateways.join(" or ")}, not '${model.provider}'`);
     }
   }
   return rt;

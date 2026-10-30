@@ -64,6 +64,9 @@ OPENSHELL_SERVICE = os.environ.get("OPENSHELL_SERVICE", "openshell")
 # only, so the dashboard's WebSocket works.
 OPENSHELL_ROUTE_BACKEND = "agent-operator-openshell"
 OPENSHELL_SERVICE_DOMAIN = os.environ.get("OPENSHELL_SERVICE_DOMAIN", "openshell.localhost")
+# Model gateways an openshell agent may name in spec.model.provider.
+OPENSHELL_MODEL_PROVIDERS = [os.environ.get("OPENSHELL_PROVIDER_NAME", "genai-gateway")] + (
+    [openshell_adapter.AI_GATEWAY_PROVIDER] if os.environ.get("OPENSHELL_AI_GATEWAY_URL") else [])
 
 PGVECTOR_DSN = os.environ.get("PGVECTOR_DSN", "")
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM") or 768)
@@ -208,10 +211,14 @@ def _runtime_error(name, spec, agent_ns):
                     else "this username leaves no room for an agent name")
             return (f"openshell agents need a namespace of at most {limit} characters: "
                     f"'{agent_ns}' is {len(agent_ns)}; {hint}")
-        # The sandbox reaches models only through the provider, which holds the cluster key.
-        if (spec.get("model") or {}).get("baseUrl") or spec.get("modelSecretRef"):
+        # The sandbox reaches models only through the cluster's gateways, which hold any key.
+        model = spec.get("model") or {}
+        if model.get("baseUrl") or spec.get("modelSecretRef"):
             return ("openshell agents use the cluster's model gateway: spec.model.baseUrl and "
                     "spec.modelSecretRef are not supported")
+        if model.get("provider") and model["provider"] not in OPENSHELL_MODEL_PROVIDERS:
+            return (f"openshell agents use model provider {' or '.join(OPENSHELL_MODEL_PROVIDERS)}, "
+                    f"not '{model['provider']}'")
     return None
 
 

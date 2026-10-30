@@ -69,3 +69,13 @@ claw_openshell_ca_configmap: "openshell-gateway-ca"
 # The provider profile's endpoint (LiteLLM): the only model host a sandbox gets the key for.
 claw_openshell_model_base_url: >-
   http://{{ openshell_genai_service_host | default('litellm.' ~ (litellm_namespace | default('litellm')) ~ '.svc.cluster.local') }}:{{ openshell_genai_service_port | default(4000) }}/v1
+# openshell agents may also use the Envoy AI Gateway (claw_model_base_url) directly, without LiteLLM's
+# budgets and content-safety guardrail; false leaves them on the GenAI Gateway (LiteLLM) only.
+claw_openshell_ai_gateway_enabled: true
+# The gateways the console offers openshell agents, and the models it never lists (not for chat).
+claw_model_gateways: >-
+  {{ [{'name': claw_openshell_provider_name, 'label': 'GenAI Gateway (LiteLLM)',
+       'url': claw_openshell_model_base_url | trim, 'kind': 'litellm'}]
+     + ([{'name': 'ai-gateway', 'label': 'AI Gateway (Envoy)', 'url': claw_model_base_url, 'kind': 'openai'}]
+        if claw_openshell_ai_gateway_enabled | bool else []) }}
+claw_model_list_exclude: "{{ [claw_embedding_model, guardrail_model | default('qwen3guard')] }}"

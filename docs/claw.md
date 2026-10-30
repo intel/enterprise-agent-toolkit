@@ -225,7 +225,7 @@ from `claw`:
 | | `openshell` |
 |---|---|
 | Agent namespace | At most 19 characters (`agent-<username>-<name>`), an OpenShell limit; a longer one makes the agent `Failed` with the longest name allowed |
-| Model | Another model the GenAI Gateway serves can be named (`spec.model.id`, the console's model field); `spec.model.baseUrl` and `spec.modelSecretRef` are not supported: the sandbox reaches models only through the provider (the cluster key) |
+| Model | A gateway and one of its models (`spec.model.provider`, `spec.model.id`; the console lists both live): `genai-gateway` (LiteLLM: budgets and the content-safety guardrail, key injected by the supervisor) or `ai-gateway` (Envoy AI Gateway, no key; `claw_openshell_ai_gateway_enabled`, on by default). A model registered in LiteLLM appears in the list without a restart. `spec.model.baseUrl` and `spec.modelSecretRef` are not supported |
 | `spec.webFetchAllowlist` | Each domain and its subdomains, on ports 80 and 443, for OpenClaw's own requests; `*` is not granted. Edits apply to the running sandbox |
 | Suspend | Stops the sandbox (its pods go away, the workspace volume stays) and starts it again on resume |
 | Workspace files | Written through the OpenShell gateway, not `kubectl exec` |
@@ -330,6 +330,7 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
 | `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
 | `openshell_enabled` | `false` | Also enables the [`openshell` runtime](#openshell-runtime), with the OpenShell component |
+| `claw_openshell_ai_gateway_enabled` | `true` | Offer `openshell` agents the Envoy AI Gateway as well as the GenAI Gateway (LiteLLM). The AI Gateway skips LiteLLM's budgets and guardrail |
 | `mcp_servers_github_token_secret` | `mcp-github-token` | Secret (key `token`) with the shared GitHub token |
 | `claw_console_hostname` | `agents.<base_domain_name>` | Host of the console, the REST API and the agent dashboards |
 | `claw_console_enabled` | `true` | Browser sign-in and per-agent dashboard routes; `false` leaves only the API |

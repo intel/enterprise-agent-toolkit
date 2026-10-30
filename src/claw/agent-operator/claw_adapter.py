@@ -166,9 +166,10 @@ class ClawAdapter:
             "model_id": model_id,
             "model_name": m.get("name") or m.get("id") or self.model_name,
             "model_base_url": m.get("baseUrl") or self.model_base_url,
-            # Known only for the cluster's own model; OpenClaw otherwise assumes 200000.
-            "context_window": self.cfg["model"]["contextWindow"]
-            if model_id == self.model_id and not m.get("baseUrl") else 0,
+            # The agent's own size if given (the console sets it from the gateway's model list),
+            # else known only for the cluster's own model; OpenClaw otherwise assumes 200000.
+            "context_window": int(m.get("contextWindow") or 0) or (
+                self.cfg["model"]["contextWindow"] if model_id == self.model_id and not m.get("baseUrl") else 0),
         }
 
     def _model_key(self, ctx):

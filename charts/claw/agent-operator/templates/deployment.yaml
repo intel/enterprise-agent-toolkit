@@ -130,6 +130,7 @@ spec:
             - {name: OPENSHELL_MODEL_KEY_SECRET, value: {{ .modelKeySecret | quote }}}
             - {name: OPENSHELL_MODEL_BASE_URL, value: {{ required "openshell.modelBaseUrl is required" .modelBaseUrl | quote }}}
             - {name: OPENSHELL_PYPI_ENABLED, value: {{ .pypi | quote }}}
+            - {name: OPENSHELL_AI_GATEWAY_URL, value: {{ .aiGatewayUrl | quote }}}
             {{- end }}
             {{- end }}
           ports:

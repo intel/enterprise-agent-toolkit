@@ -17,3 +17,6 @@ agent_backend_api_secret: "agent-api-client"
 agent_backend_audit_retention_months: 12
 
 claw_keycloak_jwks_url: "{{ claw_keycloak_url }}/realms/{{ claw_keycloak_realm }}/protocol/openid-connect/certs"
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+agent_backend_model_list_secret: "agent-backend-model-list"
+agent_backend_model_list_key_alias: "agent-backend-model-list"

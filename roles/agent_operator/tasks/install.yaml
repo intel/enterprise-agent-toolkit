@@ -119,6 +119,7 @@
         providerName: "{{ claw_openshell_provider_name }}"
         modelKeySecret: "{{ claw_openshell_namespace }}/openshell-genai-key/api_key"
         modelBaseUrl: "{{ claw_openshell_model_base_url }}"
+        aiGatewayUrl: "{{ claw_model_base_url if claw_openshell_ai_gateway_enabled | bool else '' }}"
       webFetchProxy:
         enabled: "{{ claw_web_fetch_proxy_enabled | bool }}"
         httpProxy: "{{ http_proxy | default('') }}"

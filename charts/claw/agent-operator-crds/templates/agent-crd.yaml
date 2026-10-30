@@ -84,6 +84,12 @@ spec:
                     baseUrl:
                       type: string
                       description: OpenAI-compatible base URL.
+                    contextWindow:
+                      type: integer
+                      minimum: 0
+                      description: >-
+                        The model's context size in tokens, as its gateway reports it; 0 or unset
+                        uses the cluster model's size for that model and OpenClaw's default otherwise.
                 modelSecretRef:
                   type: string
                   description: Secret in the agent namespace holding key `apiKey`.

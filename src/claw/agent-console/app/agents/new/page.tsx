@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { dirToWorkspace } from "@/lib/workspace";
 import { useRegisteredTools } from "@/lib/useRegisteredTools";
@@ -31,6 +31,10 @@ const GITHUB_SKILL = "github";
 
 // OpenShell workspace names (the agent namespace, agent-<username>-<name>) are at most 19 characters.
 const OPENSHELL_MAX_NAMESPACE = 19;
+
+// GET /api/models: the gateways an openshell agent may use and the chat models each serves.
+interface GatewayModel { id: string; contextWindow?: number }
+interface Gateway { name: string; label: string; models: GatewayModel[]; error?: string }
 
 function CheckboxRow({ checked, onChange, disabled, title, children }: { checked: boolean; onChange: () => void; disabled?: boolean; title?: string; children: React.ReactNode }) {
   return (
@@ -77,6 +81,28 @@ export default function NewAgentPage() {
   const me = useMe();
   const [runtime, setRuntime] = useState("claw");
   const openshell = runtime === "openshell";
+  // Model gateways and their models, loaded when openshell is picked.
+  const [gateways, setGateways] = useState<Gateway[] | null>(null);
+  const [defaultModel, setDefaultModel] = useState("");
+  const [gatewaysError, setGatewaysError] = useState("");
+  useEffect(() => {
+    if (!openshell || gateways) return;
+    fetch("/api/models", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => {
+        const gws: Gateway[] = Array.isArray(d?.gateways) ? d.gateways : [];
+        setGateways(gws);
+        setDefaultModel(String(d?.defaultModel ?? ""));
+        // Start on the first gateway, with the cluster default model when it serves it.
+        if (gws.length) {
+          setMProvider(gws[0].name);
+          setMId(gws[0].models.some((m) => m.id === d?.defaultModel) ? d.defaultModel : gws[0].models[0]?.id ?? "");
+        }
+      })
+      .catch((e) => setGatewaysError(String(e?.message ?? e)));
+  }, [openshell, gateways]);
+  const gateway = gateways?.find((g) => g.name === mProvider);
+  const gatewayModel = gateway?.models.find((m) => m.id === mId);
   // The longest agent name an openshell namespace leaves room for; the API still decides.
   const maxOpenshellName = me ? OPENSHELL_MAX_NAMESPACE - `agent-${me.username}-`.length : 0;
   // Registered Tools the caller may use, selectable as skills.
@@ -109,9 +135,12 @@ export default function NewAgentPage() {
     setBusy(true);
     setError("");
     try {
-      // An openshell agent reaches models only through the cluster's gateway: a model id, no URL or key.
+      // An openshell agent reaches models only through the cluster's gateways: a gateway and a model it
+      // serves, with the size the gateway reports; no URL or key.
       const model = openshell
-        ? (mId.trim() ? { id: mId.trim() } : undefined)
+        ? (mProvider && mId
+          ? { provider: mProvider, id: mId, ...(gatewayModel?.contextWindow ? { contextWindow: gatewayModel.contextWindow } : {}) }
+          : undefined)
         : mProvider || mId || mName || mBaseUrl || mApiKey
           ? { provider: mProvider, id: mId, name: mName, baseUrl: mBaseUrl, apiKey: mApiKey }
           : undefined;
@@ -295,16 +324,49 @@ export default function NewAgentPage() {
         {openshell && (
           <Card>
             <CardHeader>
-              <CardTitle>LLM model (optional)</CardTitle>
+              <CardTitle>LLM model</CardTitle>
               <CardDescription>
-                Blank uses the cluster default. Otherwise, the name of another model the cluster&apos;s
-                model gateway (LiteLLM) serves. The sandbox reaches models only through that gateway, which
-                holds the key, so a custom endpoint or API key is not available here. Only the default
-                model&apos;s context size is known; for another model OpenClaw assumes its own default.
+                The sandbox reaches models only through the cluster&apos;s gateways, which hold any key.
+                GenAI Gateway (LiteLLM) applies budgets and the content-safety guardrail; AI Gateway
+                (Envoy) goes to the model directly. The lists show what each gateway serves now.
               </CardDescription>
             </CardHeader>
-            <CardContent>
-              <Input placeholder="model name (e.g. qwen3-coder-30b); blank = cluster default" value={mId} onChange={(e) => setMId(e.target.value)} />
+            <CardContent className="space-y-3">
+              {gatewaysError && <p className="text-xs text-destructive">Could not load models: {gatewaysError}</p>}
+              {!gateways && !gatewaysError && <p className="text-xs text-muted-foreground">Loading models…</p>}
+              {gateways && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Provider" htmlFor="m-provider">
+                    <select
+                      id="m-provider" value={mProvider}
+                      onChange={(e) => {
+                        const g = gateways.find((x) => x.name === e.target.value);
+                        setMProvider(e.target.value);
+                        setMId(g?.models.some((m) => m.id === defaultModel) ? defaultModel : g?.models[0]?.id ?? "");
+                      }}
+                      className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm"
+                    >
+                      {gateways.map((g) => <option key={g.name} value={g.name}>{g.label}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Model" htmlFor="m-model">
+                    <select
+                      id="m-model" value={mId} onChange={(e) => setMId(e.target.value)} disabled={!gateway?.models.length}
+                      className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm"
+                    >
+                      {gateway?.models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.id}{m.id === defaultModel ? " (default)" : ""}{m.contextWindow ? ` · ${Math.round(m.contextWindow / 1024)}k context` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              )}
+              {gateway?.error && <p className="text-xs text-destructive">{gateway.label} did not answer: {gateway.error}</p>}
+              {gateway && !gateway.error && !gateway.models.length && (
+                <p className="text-xs text-muted-foreground">{gateway.label} serves no chat models right now.</p>
+              )}
             </CardContent>
           </Card>
         )}

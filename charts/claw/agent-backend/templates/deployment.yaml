@@ -41,6 +41,11 @@ spec:
             - {name: GRANT_MAX_TTL_HOURS, value: {{ .Values.grantMaxTtlHours | quote }}}
             # Offer runtime: openshell (the agent operator runs it when OpenShell is installed).
             - {name: OPENSHELL_ENABLED, value: {{ .Values.openshellEnabled | quote }}}
+            - {name: MODEL_GATEWAYS, value: {{ .Values.modelGateways | toJson | quote }}}
+            - {name: MODEL_LIST_EXCLUDE, value: {{ join "," .Values.modelListExclude | quote }}}
+            - {name: DEFAULT_MODEL, value: {{ .Values.defaultModel | quote }}}
+            - name: LITELLM_LIST_KEY
+              valueFrom: {secretKeyRef: {name: {{ .Values.modelListKeySecret }}, key: api_key, optional: true}}
             - name: AUDIT_PG_DSN
               valueFrom: {secretKeyRef: {name: {{ .Values.runtimeSecret }}, key: pgvector-dsn}}
           ports:

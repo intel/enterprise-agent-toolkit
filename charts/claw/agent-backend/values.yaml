@@ -40,6 +40,13 @@ runtimeSecret: agent-operator-runtime
 grantMaxTtlHours: 720
 # Offer the openshell agent runtime; the agent operator must have it enabled too.
 openshellEnabled: false
+# The model gateways the console offers openshell agents ({name, label, url, kind: litellm|openai}),
+# the models never listed, the cluster default, and the Secret with a LiteLLM key that may only
+# list models (key api_key).
+modelGateways: []
+modelListExclude: []
+defaultModel: ""
+modelListKeySecret: agent-backend-model-list
 
 audit:
   retention:

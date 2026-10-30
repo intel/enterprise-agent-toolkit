@@ -25,6 +25,7 @@ import {
   listRegisteredTools, resourceVersionOf, enabledRuntimes, type ModelFields,
 } from "./lib/k8s.js";
 import { sanitizeWorkspace, normalizeWebFetchAllowlist } from "./lib/workspace.js";
+import { listGateways } from "./lib/models.js";
 
 const PORT = Number(process.env.PORT || "3000");
 const MAX_TTL_HOURS = Number(process.env.GRANT_MAX_TTL_HOURS || "720");
@@ -145,7 +146,10 @@ const strList = (v: unknown) => (Array.isArray(v) ? v.map(String) : undefined);
 
 function modelOf(body: any): ModelFields | undefined {
   const m = body?.model;
-  return m && typeof m === "object" ? { provider: str(m.provider), id: str(m.id), name: str(m.name), baseUrl: str(m.baseUrl) } : undefined;
+  return m && typeof m === "object" ? {
+    provider: str(m.provider), id: str(m.id), name: str(m.name), baseUrl: str(m.baseUrl),
+    contextWindow: Number.isInteger(m.contextWindow) ? m.contextWindow : undefined,
+  } : undefined;
 }
 
 // ── Unauthenticated ──────────────────────────────────────────────────────────
@@ -175,6 +179,11 @@ app.get("/api/me", handled(async (req, res) => {
 // The Tools this caller may use; the same check guards create and patch.
 app.get("/api/tools", requireRole(ROLE_VIEWER), requireScope(SCOPE_READ), handled(async (req, res) => {
   res.json({ tools: filterToolsForCaller(requireCtx(req), await listRegisteredTools()) });
+}));
+
+// The model gateways openshell agents may use and their chat models, for the console's pickers.
+app.get("/api/models", requireRole(ROLE_VIEWER), requireScope(SCOPE_READ), handled(async (_req, res) => {
+  res.json({ defaultModel: process.env.DEFAULT_MODEL || "", gateways: await listGateways() });
 }));
 
 // ── Agents ───────────────────────────────────────────────────────────────────

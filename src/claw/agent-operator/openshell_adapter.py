@@ -40,6 +40,11 @@ PYTHON = "/usr/bin/python3*"
 DNS_CAPTURE_ANNOTATION = "ambient.istio.io/dns-capture"
 MESH_TUNNEL_PORT = 15008
 MESH_POLICY = "openshell-sandbox-mesh"
+# The two model gateways an openshell agent may use. genai-gateway (LiteLLM) holds budgets and the
+# content-safety guardrail; its key is injected by the workspace's provider. ai-gateway (Envoy AI
+# Gateway) needs no key in-cluster and is reached directly, when the cluster enables it.
+AI_GATEWAY_PROVIDER = "ai-gateway"
+NO_KEY = claw_adapter.NO_KEY
 # Code runs with OpenClaw's own exec in the sandboxed pod, so the sandbox MCP is not wired.
 EXCLUDED_SKILLS = {"sandbox"}
 # The config is written once from the environment; later edits arrive as a file and a restart.
@@ -71,6 +76,8 @@ def config_from_env(env=None):
         "modelKeySecret": env.get("OPENSHELL_MODEL_KEY_SECRET", "openshell-system/openshell-genai-key/api_key"),
         # The provider profile's endpoint: the only model host the supervisor injects a key for.
         "modelBaseUrl": env.get("OPENSHELL_MODEL_BASE_URL", ""),
+        # The Envoy AI Gateway's URL; empty leaves openshell agents on genai-gateway only.
+        "aiGatewayUrl": env.get("OPENSHELL_AI_GATEWAY_URL", ""),
         "serviceDomain": env.get("OPENSHELL_SERVICE_DOMAIN", "openshell.localhost"),
         "pypi": claw_adapter._bool(env.get("OPENSHELL_PYPI_ENABLED"), True),
     }
@@ -337,8 +344,20 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             routes = {p: r for p, r in routes.items() if not r["scope"].endswith(f"-{skill}")}
         return servers, routes
 
-    def _model_base_url(self, ctx):
-        return self.os_cfg["modelBaseUrl"] or self.model_base_url
+    def model_gateway(self, ctx):
+        """(provider, base URL, key) for the agent's spec.model.provider; genai-gateway by default."""
+        requested = (ctx.model or {}).get("provider")
+        if requested == AI_GATEWAY_PROVIDER and self.os_cfg["aiGatewayUrl"]:
+            return AI_GATEWAY_PROVIDER, self.os_cfg["aiGatewayUrl"], NO_KEY
+        # A secret reference the supervisor resolves to the provider's key, never the key itself.
+        return self.os_cfg["providerName"], self.os_cfg["modelBaseUrl"] or self.model_base_url, "${OPENAI_API_KEY}"
+
+    def _model_vars(self, ctx):
+        """The model fields, with the provider named after the gateway it really uses."""
+        model = super()._model_vars(ctx)
+        provider, base_url, _ = self.model_gateway(ctx)
+        model.update(model_provider=provider, model_ref=f"{provider}/{model['model_id']}", model_base_url=base_url)
+        return model
 
     def _config_json(self, ctx):
         """openclaw.json: the claw runtime's config, served on loopback behind the gateway relay."""
@@ -353,13 +372,15 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         # The relay delivers every request from loopback, after the platform gateway signed the
         # user in and named them in x-gw-user; nothing else can reach the relay.
         cfg = {**self.cfg, "trustedProxies": ["127.0.0.1/32"]}
-        model = {**self._model_vars(ctx), "model_base_url": self._model_base_url(ctx)}
+        model = self._model_vars(ctx)
         cr = claw_adapter._render_cr(
             "openclaw-instance.yaml.j2", cfg=cfg, name=ctx.name, namespace=ctx.namespace,
             cr_namespace=ctx.cr_namespace, owner_label=ctx.owner.replace("@", "_at_"),
             model_key_secret="unused", tools=tools, plugins=plugins, tools_deny=ctx.tools_deny,
             mcp_servers=mcp_servers, web_fetch_proxy="", **model)
         config = cr["spec"]["config"]["raw"]
+        provider, _, key = self.model_gateway(ctx)
+        config["models"]["providers"][provider]["apiKey"] = key
         # What the OpenClaw operator adds on the claw runtime: without gateway.mode OpenClaw
         # refuses to start. Loopback only: the supervisor's relay is the way in.
         config["gateway"].update(mode="local", bind="loopback", port=SERVICE_PORT)
@@ -378,6 +399,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         direct = [_url_endpoint(t["url"]) for t in ctx.custom_tools or [] if t.get("url")]
         if self.cfg.get("embeddingBaseUrl"):
             direct.append(_url_endpoint(self.cfg["embeddingBaseUrl"]))
+        provider, base_url, _ = self.model_gateway(ctx)
+        if provider == AI_GATEWAY_PROVIDER:
+            direct.append(_url_endpoint(base_url))  # genai-gateway's endpoint comes with the provider
         if any(direct):
             rules["agent_services"] = {"name": "agent-services", "binaries": node,
                                        "endpoints": [ep for ep in direct if ep]}

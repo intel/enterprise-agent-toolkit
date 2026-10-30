@@ -143,4 +143,7 @@ openshell:
   modelKeySecret: openshell-system/openshell-genai-key/api_key
   # The provider profile's endpoint: the only model host the supervisor injects the key for.
   modelBaseUrl: ""
+  # The Envoy AI Gateway, which openshell agents may also use (spec.model.provider ai-gateway,
+  # no key); empty offers only the GenAI Gateway.
+  aiGatewayUrl: ""
   pypi: true

@@ -11,6 +11,7 @@ const PUBLIC = ["GET /api/healthz", "GET /api/authz-config", "GET /api/me"];
 // route → [role, scope, gate in its handler, audited]
 const MATRIX: Record<string, [string, string, RegExp, boolean]> = {
   "GET /api/tools": ["ROLE_VIEWER", "SCOPE_READ", /filterToolsForCaller/, false],
+  "GET /api/models": ["ROLE_VIEWER", "SCOPE_READ", /listGateways/, false],
   "GET /api/agents": ["ROLE_VIEWER", "SCOPE_READ", /listAgentsForUser\(ctx\.email\)/, false],
   "POST /api/agents": ["ROLE_EDITOR", "SCOPE_WRITE", /assertSkillsEntitled/, true],
   "GET /api/agents/:ns/:name": ["ROLE_VIEWER", "SCOPE_READ", /capOn\(req, "view"\)/, false],
