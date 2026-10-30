@@ -24,7 +24,23 @@ rules:
     resources: ["secrets"]
     verbs: ["create", "delete"]
 ---
-# An openshell agent's /gw/ route, in the operator namespace, targets the gateway's Service.
+# The gateway pods for the agents' routes, without appProtocol grpc: the platform gateway then
+# speaks HTTP/1.1, which the dashboard's WebSocket needs. The CLI and supervisors keep `service`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .routeService }}
+  namespace: {{ .namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+spec:
+  selector:
+    app.kubernetes.io/name: openshell
+    app.kubernetes.io/instance: {{ .releaseName }}
+  ports:
+    - {name: https, port: 8080, targetPort: 8080, protocol: TCP}
+---
+# An openshell agent's /gw/ route, in the operator namespace, targets that Service.
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
@@ -36,7 +52,7 @@ spec:
   from:
     - {group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: {{ $.Release.Namespace }}}
   to:
-    - {group: "", kind: Service, name: {{ .service }}}
+    - {group: "", kind: Service, name: {{ .routeService }}}
 ---
 # The platform gateway connects to the OpenShell gateway over TLS and verifies it against the
 # OpenShell CA. The sandbox is chosen by Host, so one server name serves every agent.
@@ -49,7 +65,7 @@ metadata:
     app.kubernetes.io/name: agent-operator
 spec:
   targetRefs:
-    - {group: "", kind: Service, name: {{ .service }}}
+    - {group: "", kind: Service, name: {{ .routeService }}}
   validation:
     caCertificateRefs:
       - {group: "", kind: ConfigMap, name: {{ .caConfigMap }}}

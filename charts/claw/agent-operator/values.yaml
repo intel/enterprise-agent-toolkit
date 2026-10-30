@@ -128,6 +128,10 @@ openshell:
   namespace: openshell-system
   # The gateway's Service, Helm release and ServiceAccount.
   service: openshell
+  # A second Service on the same gateway pods for the agents' /gw/ routes. The chart's Service
+  # declares appProtocol grpc, so the platform gateway would speak HTTP/2 to it, and the
+  # dashboard's WebSocket fails over HTTP/2 (502); without appProtocol it speaks HTTP/1.1.
+  routeService: openshell-routes
   releaseName: openshell
   serviceAccount: openshell
   # The gateway's client certificate (copied into this namespace): the operator's credential.
