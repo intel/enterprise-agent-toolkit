@@ -39,9 +39,15 @@ spec:
               properties:
                 runtime:
                   type: string
-                  description: Agent runtime.
-                  enum: [claw]
+                  description: >-
+                    Agent runtime: claw (an OpenClawInstance) or openshell (OpenClaw in an
+                    OpenShell sandbox in the agent namespace, which may then be at most 19
+                    characters). Fixed once the Agent exists.
+                  enum: [claw, openshell]
                   default: claw
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: runtime cannot be changed; delete and recreate the Agent
                 owner:
                   type: object
                   required: [principal, username]

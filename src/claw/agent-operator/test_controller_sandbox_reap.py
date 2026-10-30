@@ -73,7 +73,7 @@ class TeardownPathsTest(unittest.TestCase):
         self.reaped = []
         adapter = types.SimpleNamespace(suspend=lambda ctx: None, resume=lambda ctx: None)
         stubs = {"_reap_agent_sandboxes": lambda name, s, log, reason: self.reaped.append(reason),
-                 "_get_adapter": lambda: adapter, "AgentContext": lambda *a: None}
+                 "_get_adapter": lambda *a: adapter, "AgentContext": lambda *a: None}
         for name, value in stubs.items():
             self.addCleanup(setattr, C, name, getattr(C, name))
             setattr(C, name, value)

@@ -35,3 +35,5 @@ binaries:
   - /sandbox/.uv/python/*/bin/python3*
   # OpenCode (community image): its Node launcher execs this binary.
   - /usr/lib/node_modules/opencode-ai/bin/.opencode
+  # OpenClaw (openshell agent runtime, the openclaw-sandbox image).
+  - /usr/local/bin/node

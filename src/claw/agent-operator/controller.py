@@ -3,8 +3,9 @@
 """Agent operator: reconciles intel-stack.io/v1alpha1 Agent resources.
 
 The operator owns the platform side of an agent (namespace, isolation, identity,
-memory) and delegates the runtime workload to the claw adapter, which manages one
-OpenClawInstance per Agent. It never writes the OpenClawInstance's own fields.
+memory) and delegates the runtime workload to the adapter spec.runtime names: claw
+manages one OpenClawInstance per Agent (and never writes its own fields); openshell runs
+OpenClaw in an OpenShell sandbox in the agent namespace.
 
 Lifecycle: Pending -> Running <-> IdleSuspended; Failed on invalid input.
 """
@@ -24,6 +25,7 @@ import kubernetes
 import kubernetes.config
 
 import claw_adapter
+import openshell_adapter
 
 API_GROUP, API_VERSION, AGENT_PLURAL = "intel-stack.io", "v1alpha1", "agents"
 TOOL_PLURAL = "tools"
@@ -54,6 +56,11 @@ AGENT_NS_EXEC_BINDING = "agent-ns-exec"
 AGENT_NS_BACKEND_CLUSTER_ROLE = os.environ.get("AGENT_NS_BACKEND_CLUSTER_ROLE", "agent-operator-agent-ns-backend")
 BACKEND_SA_NAME = os.environ.get("BACKEND_SA_NAME", "agent-backend")
 AUTO_SUSPEND_IDLE_MINUTES = int(os.environ.get("AUTO_SUSPEND_IDLE_MINUTES") or 240)
+# The openshell runtime (OpenShell gateway in operator workspace mode); off = claw only.
+OPENSHELL_ENABLED = _env_bool("OPENSHELL_ENABLED")
+OPENSHELL_NAMESPACE = os.environ.get("OPENSHELL_NAMESPACE", "openshell-system")
+OPENSHELL_SERVICE = os.environ.get("OPENSHELL_SERVICE", "openshell")
+OPENSHELL_SERVICE_DOMAIN = os.environ.get("OPENSHELL_SERVICE_DOMAIN", "openshell.localhost")
 
 PGVECTOR_DSN = os.environ.get("PGVECTOR_DSN", "")
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM") or 768)
@@ -185,6 +192,26 @@ def _memory_schema(name, spec):
     return _agent_ns(name, spec).replace("-", "_")
 
 
+def _runtime_error(name, spec, agent_ns):
+    """Why this Agent's runtime cannot host it, or None."""
+    runtime = _runtime(spec)
+    if runtime not in ADAPTERS:
+        return f"runtime '{runtime}' is not enabled on this cluster"
+    if runtime == "openshell":
+        limit = openshell_adapter.MAX_WORKSPACE_NAME
+        if len(agent_ns) > limit:
+            room = limit - len(f"agent-{_owner_username(spec)}-")
+            hint = (f"use an agent name of at most {room} characters" if room > 0
+                    else "this username leaves no room for an agent name")
+            return (f"openshell agents need a namespace of at most {limit} characters: "
+                    f"'{agent_ns}' is {len(agent_ns)}; {hint}")
+        # The sandbox reaches models only through the provider, which holds the cluster key.
+        if (spec.get("model") or {}).get("baseUrl") or spec.get("modelSecretRef"):
+            return ("openshell agents use the cluster's model gateway: spec.model.baseUrl and "
+                    "spec.modelSecretRef are not supported")
+    return None
+
+
 def _now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -203,6 +230,7 @@ class AgentContext:
         self.namespace = _agent_ns(name, self.spec)
         self.cr_namespace = _owner_ns(self.spec)
         self.memory_schema = _memory_schema(name, self.spec)
+        self.runtime = _runtime(self.spec)
         self.owner = self.spec.get("owner", {}).get("principal", "unknown")
         self.skills = self.spec.get("skills", ["shell", "read_file", "list_files"])
         self.custom_tools = self.spec.get("tools", [])
@@ -234,16 +262,20 @@ class AgentContext:
         return None
 
 
-ADAPTER = None
+ADAPTERS = {}
 
 
-def _get_adapter():
-    return ADAPTER
+def _runtime(spec):
+    return (spec or {}).get("runtime") or "claw"
+
+
+def _get_adapter(spec=None):
+    """The adapter of the Agent's spec.runtime; KeyError for a runtime that is not enabled."""
+    return ADAPTERS[_runtime(spec)]
 
 
 @kopf.on.startup()
 def configure(settings: kopf.OperatorSettings, logger, **_):
-    global ADAPTER
     settings.persistence.finalizer = "intel-stack.io/agent-operator"
     settings.posting.level = 20
     if not (KEYCLOAK_URL and KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET and PROXY_IMAGE):
@@ -262,9 +294,12 @@ def configure(settings: kopf.OperatorSettings, logger, **_):
         web_fetch_proxy_enabled=WEB_FETCH_PROXY_ENABLED,
         web_fetch_proxy_port=WEB_FETCH_PROXY_PORT,
     )
-    ADAPTER = claw_adapter.ClawAdapter(core, claw_adapter.config_from_env())
+    ADAPTERS["claw"] = claw_adapter.ClawAdapter(core, claw_adapter.config_from_env())
+    if OPENSHELL_ENABLED:
+        ADAPTERS["openshell"] = openshell_adapter.OpenShellAdapter(core, openshell_adapter.config_from_env())
     logger.info(f"Per-agent identity: keycloak={KEYCLOAK_URL} realm={KEYCLOAK_REALM}; "
-                f"web_fetch proxy={'on' if WEB_FETCH_PROXY_ENABLED else 'off'}")
+                f"web_fetch proxy={'on' if WEB_FETCH_PROXY_ENABLED else 'off'}; "
+                f"runtimes={sorted(ADAPTERS)}")
 
 
 # ── Handlers ─────────────────────────────────────────────────────────────────
@@ -320,6 +355,9 @@ def _reconcile(spec, patch, name, namespace, logger, resuming):
     if len(agent_ns) > _MAX_DERIVED_NAME:
         return _fail(patch, name, logger,
                      f"derived name '{agent_ns}' is {len(agent_ns)} chars, limit {_MAX_DERIVED_NAME}")
+    runtime_error = _runtime_error(name, spec, agent_ns)
+    if runtime_error:
+        return _fail(patch, name, logger, runtime_error)
     # Owner "operator" with agent "system" would otherwise land in the operator's own namespace.
     if agent_ns in (OPERATOR_NAMESPACE, SANDBOX_NAMESPACE):
         return _fail(patch, name, logger, f"derived namespace '{agent_ns}' is reserved for the platform")
@@ -336,8 +374,10 @@ def _reconcile(spec, patch, name, namespace, logger, resuming):
         _ensure_namespace(agent_ns, owner, name, logger)
     except ValueError as e:
         return _fail(patch, name, logger, str(e))
-    # Isolation before the workload, so its pod is born constrained.
-    _apply_web_fetch_proxy(agent_ns, spec.get("webFetchAllowlist", []), logger)
+    # Isolation before the workload, so its pod is born constrained. An openshell sandbox's
+    # web access is its policy's allowlist; it needs no proxy.
+    if _runtime(spec) == "claw":
+        _apply_web_fetch_proxy(agent_ns, spec.get("webFetchAllowlist", []), logger)
     _apply_network_policy(agent_ns, logger)
     _apply_resource_quota(agent_ns, logger)
     _grant_agent_ns_exec(agent_ns, logger)
@@ -370,13 +410,13 @@ def _reconcile(spec, patch, name, namespace, logger, resuming):
         _cond("MemoryReady", False, f"pgvector schema {_memory_schema(name, spec)} was not provisioned")
 
     ctx = AgentContext(name, spec, logger)
-    adapter = _get_adapter()
+    adapter = _get_adapter(spec)
     backend_ref = adapter.create(ctx)
     if backend_ref:
         patch.status["backendRef"] = backend_ref
     backend_ok = _cond("BackendReady", bool(backend_ref),
-                       f"OpenClawInstance {backend_ref['name']}" if backend_ref
-                       else "OpenClawInstance was not created")
+                       f"{backend_ref['kind']} {backend_ref['name']}" if backend_ref
+                       else f"the {_runtime(spec)} backend was not created")
 
     # Create only: the agent edits its workspace, so a restart must not overwrite it.
     if not resuming:
@@ -419,11 +459,11 @@ def on_desired_state(new, old, status, spec, name, namespace, patch, logger, **_
     if new == "Suspended" and phase != "IdleSuspended":
         logger.info(f"Suspending agent '{name}'")
         _reap_agent_sandboxes(name, spec, logger, "suspended")
-        _get_adapter().suspend(ctx)
+        _get_adapter(spec).suspend(ctx)
         patch.status.update(phase="IdleSuspended", suspendedAt=_now(), suspendReason="manual")
     elif new == "Running" and phase != "Running":
         logger.info(f"Resuming agent '{name}'")
-        _get_adapter().resume(ctx)
+        _get_adapter(spec).resume(ctx)
         patch.status.update(phase="Running", resumedAt=_now(), suspendReason="",
                             lastActivity=_now())
 
@@ -445,7 +485,7 @@ def on_capabilities_change(reason, old, new, spec, name, namespace, patch, logge
     ctx = AgentContext(name, spec, logger)
     try:
         _grant_agent_ns_exec(ctx.namespace, logger)
-        _get_adapter().update(ctx)
+        _get_adapter(spec).update(ctx)
         patch.status["lastActivity"] = _now()
         logger.info(f"Agent '{name}': backend re-provisioned")
     except Exception as e:
@@ -455,7 +495,14 @@ def on_capabilities_change(reason, old, new, spec, name, namespace, patch, logge
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.webFetchAllowlist")
 def on_web_fetch_allowlist_change(spec, name, namespace, patch, logger, **_):
     """The proxy re-reads its allowlist per request, so no pod roll is needed."""
-    if not WEB_FETCH_PROXY_ENABLED or not _owner_ns_matches(spec, namespace):
+    if not _owner_ns_matches(spec, namespace):
+        return
+    if _runtime(spec) == "openshell":
+        # Network policy is live: the supervisor applies the new allowlist without a restart.
+        _get_adapter(spec).update_policy(AgentContext(name, spec, logger))
+        patch.status["lastActivity"] = _now()
+        return
+    if not WEB_FETCH_PROXY_ENABLED:
         return
     agent_ns = _agent_ns(name, spec)
     _apply_web_fetch_proxy(agent_ns, spec.get("webFetchAllowlist", []), logger)
@@ -479,7 +526,7 @@ def auto_idle_suspend(spec, status, name, namespace, patch, logger, **_):
     logger.info(f"Auto-suspending '{name}' (idle {idle_min:.0f}m >= {AUTO_SUSPEND_IDLE_MINUTES}m)")
     _reap_agent_sandboxes(name, spec, logger, "auto-idle")
     try:
-        _get_adapter().suspend(AgentContext(name, spec, logger))
+        _get_adapter(spec).suspend(AgentContext(name, spec, logger))
     except Exception as e:
         logger.warning(f"Auto-suspend adapter call failed for '{name}': {e}")
     # Keep desiredState in step so a later desiredState=Running is a real change.
@@ -493,7 +540,9 @@ def pod_readiness(spec, status, name, namespace, patch, logger, **_):
     if not _owner_ns_matches(spec, namespace):
         return
     _apply_gateway_route(name, spec, logger)  # catches grants that expired since the last pass
-    ready = _pod_ready(_agent_ns(name, spec), name)
+    adapter = ADAPTERS.get(_runtime(spec))
+    ready = (adapter.ready(AgentContext(name, spec, logger)) if hasattr(adapter, "ready")
+             else _pod_ready(_agent_ns(name, spec), name))
     conditions = [c for c in (status or {}).get("conditions") or [] if c.get("type") != "PodReady"]
     current = next((c for c in (status or {}).get("conditions") or [] if c.get("type") == "PodReady"), {})
     if current.get("status") == ("True" if ready else "False"):
@@ -523,7 +572,7 @@ def on_delete(spec, name, namespace, logger, **_):
         return
     agent_ns = _agent_ns(name, spec)
     try:
-        _get_adapter().delete(AgentContext(name, spec, logger))
+        _get_adapter(spec).delete(AgentContext(name, spec, logger))
     except Exception as e:
         logger.warning(f"Backend delete for '{name}' failed (continuing): {e}")
     # Sandboxes first: their label derives from the Keycloak client id.
@@ -611,7 +660,7 @@ def on_tool_event(logger, **_):
                 or not _owner_ns_matches(spec, agent["metadata"]["namespace"])):
             continue
         try:
-            _get_adapter().update(AgentContext(name, spec, logger), reseed=False)
+            _get_adapter(spec).update(AgentContext(name, spec, logger), reseed=False)
         except Exception as e:
             logger.warning(f"Agent '{name}': tool re-wiring failed: {e}")
 
@@ -649,6 +698,13 @@ def _gw_objects(name, spec):
     meta = {"name": agent_ns, "namespace": OPERATOR_NAMESPACE, "labels": labels}
     no_credentials = {"type": "RequestHeaderModifier", "requestHeaderModifier": {"remove": ["Authorization", "Cookie"]}}
     backend = [{"name": name, "namespace": agent_ns, "port": GW_PORT}]
+    to_sandbox = []
+    if _runtime(spec) == "openshell":
+        # The OpenShell gateway relays to the sandbox named by Host; its TLS is trusted through
+        # the BackendTLSPolicy, and its ReferenceGrant, that the agent_operator role applies.
+        backend = [{"name": OPENSHELL_SERVICE, "namespace": OPENSHELL_NAMESPACE, "port": 8080}]
+        to_sandbox = [{"type": "URLRewrite", "urlRewrite": {"hostname": openshell_adapter.service_host(
+            agent_ns, name, OPENSHELL_SERVICE_DOMAIN)}}]
     route = {
         "apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute", "metadata": meta,
         "spec": {
@@ -657,10 +713,11 @@ def _gw_objects(name, spec):
                 # The chat API is served at the root, the dashboard under its base path.
                 {"name": "chat", "matches": [{"path": {"type": "PathPrefix", "value": f"{path}/v1/"}}],
                  "filters": [no_credentials, {"type": "URLRewrite", "urlRewrite": {
-                     "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/v1/"}}}],
+                     "path": {"type": "ReplacePrefixMatch", "replacePrefixMatch": "/v1/"},
+                     **(to_sandbox[0]["urlRewrite"] if to_sandbox else {})}}],
                  "backendRefs": backend},
                 {"name": "dashboard", "matches": [{"path": {"type": "PathPrefix", "value": path}}],
-                 "filters": [no_credentials], "backendRefs": backend,
+                 "filters": [no_credentials, *to_sandbox], "backendRefs": backend,
                  "timeouts": {"request": "0s"}},
             ]}}
     policy = {
@@ -744,7 +801,8 @@ def _apply_gateway_route(name, spec, logger):
             return
         _put_custom(route, logger)
         _put_custom(session, logger)
-        _put_custom(grant, logger)
+        if _runtime(spec) == "claw":  # an openshell route targets the OpenShell gateway instead
+            _put_custom(grant, logger)
 
 
 def _delete_gateway_route(name, spec, logger, kinds=("SecurityPolicy", "BackendTrafficPolicy", "HTTPRoute")):
@@ -1122,8 +1180,12 @@ def _apply_network_policy(agent_ns, logger):
     ingress = [c.V1NetworkPolicyIngressRule(_from=[c.V1NetworkPolicyPeer(
         namespace_selector=c.V1LabelSelector(match_labels={"kubernetes.io/metadata.name": agent_ns}))])]
     ingress += _ingress_ns_rules(NETWORK_POLICY_INGRESS_ALLOW)
+    # OpenShell workload pods are left to OpenShell's own policies (their supervisor only):
+    # NetworkPolicy allows are additive, so selecting them here would open same-namespace ingress.
     if _put_network_policy(agent_ns, "agent-default-deny", c.V1NetworkPolicySpec(
-            pod_selector=c.V1LabelSelector(), policy_types=["Ingress", "Egress"],
+            pod_selector=c.V1LabelSelector(match_expressions=[c.V1LabelSelectorRequirement(
+                key="openshell.ai/boundary-role", operator="NotIn", values=["workload"])]),
+            policy_types=["Ingress", "Egress"],
             ingress=ingress, egress=egress), logger):
         logger.info(f"Applied NetworkPolicy (default-deny + allowlist) in '{agent_ns}'")
     # Separate object: NetworkPolicy is additive, so MCP egress cannot be withheld
