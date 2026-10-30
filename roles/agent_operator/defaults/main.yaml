@@ -56,3 +56,16 @@ claw_gateway_trusted_proxies: "{{ kubernetes_cluster_cidr | default('10.233.64.0
 
 claw_auto_suspend_idle_minutes: 240
 claw_max_agents_per_owner: 0
+# openshell agent runtime (spec.runtime: openshell): OpenClaw in an OpenShell sandbox in the agent
+# namespace. Needs the openshell component; its names are read from there when it is configured.
+claw_openshell_enabled: "{{ openshell_enabled | default(false) | bool }}"
+claw_openshell_namespace: "{{ openshell_namespace | default('openshell-system') }}"
+claw_openshell_release_name: "{{ openshell_release_name | default('openshell') }}"
+claw_openshell_workspace_label: "{{ openshell_operator_namespace_label | default('openshell.ai/workspace=eat') }}"
+claw_openshell_provider_name: "{{ openshell_genai_provider_name | default('genai-gateway') }}"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret and ConfigMap names, not secret values
+claw_openshell_client_tls_secret: "{{ openshell_client_tls_secret | default('openshell-client-tls') }}"
+claw_openshell_ca_configmap: "openshell-gateway-ca"
+# The provider profile's endpoint (LiteLLM): the only model host a sandbox gets the key for.
+claw_openshell_model_base_url: >-
+  http://{{ openshell_genai_service_host | default('litellm.' ~ (litellm_namespace | default('litellm')) ~ '.svc.cluster.local') }}:{{ openshell_genai_service_port | default(4000) }}/v1

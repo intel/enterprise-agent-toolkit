@@ -120,3 +120,27 @@ webFetchProxy:
 identityProxy:
   portBase: 8901
   portSpan: 16
+
+# The openshell agent runtime (spec.runtime: openshell): OpenClaw in an OpenShell sandbox in the
+# agent namespace. Needs the openshell component (operator workspace mode).
+openshell:
+  enabled: false
+  namespace: openshell-system
+  # The gateway's Service, Helm release and ServiceAccount.
+  service: openshell
+  releaseName: openshell
+  serviceAccount: openshell
+  # The gateway's client certificate (copied into this namespace): the operator's credential.
+  clientTlsSecret: openshell-client-tls
+  # ConfigMap in `namespace` with the gateway CA (ca.crt), which the platform gateway trusts.
+  caConfigMap: openshell-gateway-ca
+  workspaceLabel: openshell.ai/workspace=eat
+  serviceDomain: openshell.localhost
+  sandboxImage: ""
+  providerName: genai-gateway
+  providerType: eat-genai-gateway
+  # Secret <namespace>/<name>/<key> with the cluster's model key, held by each workspace's provider.
+  modelKeySecret: openshell-system/openshell-genai-key/api_key
+  # The provider profile's endpoint: the only model host the supervisor injects the key for.
+  modelBaseUrl: ""
+  pypi: true

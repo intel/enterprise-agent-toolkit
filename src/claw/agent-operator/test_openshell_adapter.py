@@ -237,9 +237,13 @@ class LifecycleTest(unittest.TestCase):
         ref = a.create(_ctx())
         self.assertEqual(ref["kind"], "Sandbox")
         made = [name for name, _ in k8s.calls]
-        for call in ("patch_namespace", "create_namespaced_service_account", "create_namespaced_role",
+        for call in ("patch_namespace", "create_namespaced_service_account",
                      "create_namespaced_role_binding", "create_namespaced_network_policy"):
             self.assertIn(call, made)
+        self.assertNotIn("create_namespaced_role", made)  # bound to the chart's ClusterRole instead
+        binding = next(args[1] for name, args in k8s.calls if name == "create_namespaced_role_binding")
+        self.assertEqual(binding["role_ref"]["name"], "agent-operator-openshell-workspace")
+        self.assertEqual(binding["subjects"][0]["namespace"], "openshell-system")
         self.assertEqual(ws.created, ["agent-vkumar4-oss"])
         method, req = client._stub.calls[0]
         self.assertEqual(method, "CreateProvider")

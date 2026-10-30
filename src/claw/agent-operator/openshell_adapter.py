@@ -24,7 +24,7 @@ SERVICE_PORT = 18789
 MAX_WORKSPACE_NAME = 19
 # The objects of the openshell-workspace chart, created per agent namespace.
 SANDBOX_SA = "openshell-sandbox"
-WORKSPACE_ROLE = "openshell-workspace-sandbox"
+WORKSPACE_BINDING = "openshell-workspace-sandbox"
 WORKSPACE_SSH_POLICY = "openshell-workspace-sandbox-ssh"
 # Read-only system paths and the two writable ones; fixed when the sandbox is created.
 READ_ONLY_PATHS = ["/usr", "/lib", "/proc", "/dev/urandom", "/app", "/etc", "/var/log"]
@@ -52,6 +52,8 @@ def config_from_env(env=None):
         "tlsDir": env.get("OPENSHELL_TLS_DIR", "/etc/openshell-tls"),
         "gatewayNamespace": env.get("OPENSHELL_NAMESPACE", "openshell-system"),
         "gatewayServiceAccount": env.get("OPENSHELL_SERVICE_ACCOUNT", "openshell"),
+        # The chart's ClusterRole with the workspace chart's Role rules, bound per namespace.
+        "workspaceClusterRole": env.get("OPENSHELL_WORKSPACE_CLUSTER_ROLE", "agent-operator-openshell-workspace"),
         "gatewayPodLabels": {"app.kubernetes.io/name": "openshell",
                              "app.kubernetes.io/instance": env.get("OPENSHELL_RELEASE_NAME", "openshell")},
         "workspaceLabel": env.get("OPENSHELL_WORKSPACE_LABEL", "openshell.ai/workspace=eat"),
@@ -129,7 +131,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
     def _connect(self):
         from openshell import SandboxClient, TlsConfig  # noqa: PLC0415
         tls_dir = pathlib.Path(self.os_cfg["tlsDir"])
-        return SandboxClient(self.os_cfg["endpoint"], tls=TlsConfig(
+        # Deleting a sandbox waits for its pods to stop, which can take longer than the 30 s default.
+        return SandboxClient(self.os_cfg["endpoint"], timeout=120, tls=TlsConfig(
             ca_path=tls_dir / "ca.crt", cert_path=tls_dir / "tls.crt", key_path=tls_dir / "tls.key"))
 
     @property
@@ -246,6 +249,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
 
     def _ensure_workspace(self, ctx):
         """Label the namespace and add what the openshell-workspace chart would, then register it."""
+        # Sandbox ServiceAccount, the gateway's access (the chart's Role, as a ClusterRole
+        # binding) and SSH from the gateway only.
         c = self.k8s.client
         key, _, value = self.os_cfg["workspaceLabel"].partition("=")
         c.CoreV1Api().patch_namespace(ctx.namespace, {"metadata": {"labels": {key: value}}})
@@ -256,17 +261,13 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         objects = [
             (core.create_namespaced_service_account, core.replace_namespaced_service_account, SANDBOX_SA,
              c.V1ServiceAccount(metadata=meta(SANDBOX_SA), automount_service_account_token=False)),
-            (rbac.create_namespaced_role, rbac.replace_namespaced_role, WORKSPACE_ROLE, c.V1Role(
-                metadata=meta(WORKSPACE_ROLE), rules=[
-                    c.V1PolicyRule(api_groups=["agents.x-k8s.io"], resources=["sandboxes", "sandboxes/status"],
-                                   verbs=["create", "delete", "get", "list", "patch", "update", "watch"]),
-                    c.V1PolicyRule(api_groups=[""], resources=["events"], verbs=["get", "list", "watch"]),
-                    c.V1PolicyRule(api_groups=[""], resources=["pods"], verbs=["get"]),
-                    c.V1PolicyRule(api_groups=[""], resources=["secrets"], verbs=["create", "delete"])])),
-            (rbac.create_namespaced_role_binding, rbac.replace_namespaced_role_binding, WORKSPACE_ROLE,
+            # A binding to the chart's ClusterRole: the operator needs only `bind` on it, not
+            # the sandbox permissions it grants the gateway here.
+            (rbac.create_namespaced_role_binding, rbac.replace_namespaced_role_binding, WORKSPACE_BINDING,
              c.V1RoleBinding(
-                 metadata=meta(WORKSPACE_ROLE),
-                 role_ref=c.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="Role", name=WORKSPACE_ROLE),
+                 metadata=meta(WORKSPACE_BINDING),
+                 role_ref=c.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="ClusterRole",
+                                      name=self.os_cfg["workspaceClusterRole"]),
                  subjects=[c.RbacV1Subject(kind="ServiceAccount", name=gw_sa, namespace=gw_ns)])),
             (net.create_namespaced_network_policy, net.replace_namespaced_network_policy, WORKSPACE_SSH_POLICY,
              c.V1NetworkPolicy(metadata=meta(WORKSPACE_SSH_POLICY), spec=c.V1NetworkPolicySpec(

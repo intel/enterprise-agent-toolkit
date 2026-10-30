@@ -73,6 +73,17 @@ rules:
     resources: ["clusterroles"]
     verbs: ["bind"]
     resourceNames: ["agent-operator-agent-ns-exec", "agent-operator-agent-ns-backend"]
+  {{- if .Values.openshell.enabled }}
+  # openshell runtime: the OpenShell gateway's access and the sandbox ServiceAccount in each
+  # agent namespace (its workspace).
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["agent-operator-openshell-workspace"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "create", "update"]
+  {{- end }}
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     verbs: ["get", "create", "update"]

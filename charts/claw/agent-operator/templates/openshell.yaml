@@ -1,0 +1,58 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+{{- with .Values.openshell }}
+{{- if .enabled }}
+# The OpenShell gateway's access in each openshell agent namespace (its workspace): the rules
+# of the openshell-workspace chart's Role. The operator binds it per namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-operator-openshell-workspace
+  labels:
+    app.kubernetes.io/name: agent-operator
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes", "sandboxes/status"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+---
+# An openshell agent's /gw/ route, in the operator namespace, targets the gateway's Service.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: agent-operator-routes
+  namespace: {{ .namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+spec:
+  from:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: {{ $.Release.Namespace }}}
+  to:
+    - {group: "", kind: Service, name: {{ .service }}}
+---
+# The platform gateway connects to the OpenShell gateway over TLS and verifies it against the
+# OpenShell CA. The sandbox is chosen by Host, so one server name serves every agent.
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: agent-operator-openshell
+  namespace: {{ .namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+spec:
+  targetRefs:
+    - {group: "", kind: Service, name: {{ .service }}}
+  validation:
+    caCertificateRefs:
+      - {group: "", kind: ConfigMap, name: {{ .caConfigMap }}}
+    hostname: {{ .serviceDomain }}
+{{- end }}
+{{- end }}

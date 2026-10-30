@@ -1,0 +1,59 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# The openshell agent runtime: what the operator needs from the openshell component.
+
+- name: "agent_operator | openshell | Check the OpenShell gateway is installed"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ claw_openshell_client_tls_secret }}"
+    namespace: "{{ claw_openshell_namespace }}"
+  register: _ao_os_tls
+  no_log: true
+  failed_when: _ao_os_tls.resources | default([]) | length == 0
+
+# Before the operator image: claw_image publishes the reference of the image it built last.
+- name: "agent_operator | openshell | Build the OpenClaw sandbox image"
+  ansible.builtin.include_role:
+    name: claw_image
+  vars:
+    claw_image_name: openclaw-sandbox
+    claw_image_context: "{{ role_path }}/../../src/claw/openclaw-sandbox"
+
+- name: "agent_operator | openshell | Record the sandbox image"
+  ansible.builtin.set_fact:
+    _ao_openshell_sandbox_image: "{{ claw_image_repository }}:{{ claw_image_tag }}"
+
+# The gateway's client certificate is the operator's credential; a Secret can only be mounted
+# from its own namespace.
+- name: "agent_operator | openshell | Copy the gateway client certificate"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: "{{ _ao_os_tls.resources[0].type }}"
+      metadata:
+        name: "{{ claw_openshell_client_tls_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+        labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+      data:
+        ca.crt: "{{ _ao_os_tls.resources[0].data['ca.crt'] }}"
+        tls.crt: "{{ _ao_os_tls.resources[0].data['tls.crt'] }}"
+        tls.key: "{{ _ao_os_tls.resources[0].data['tls.key'] }}"
+  no_log: true
+
+# The platform gateway verifies the OpenShell gateway against this CA (BackendTLSPolicy).
+- name: "agent_operator | openshell | Publish the gateway CA"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ claw_openshell_ca_configmap }}"
+        namespace: "{{ claw_openshell_namespace }}"
+        labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+      data:
+        ca.crt: "{{ _ao_os_tls.resources[0].data['ca.crt'] | b64decode }}"

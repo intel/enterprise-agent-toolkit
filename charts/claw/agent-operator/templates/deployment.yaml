@@ -108,6 +108,26 @@ spec:
             - {name: PROXY_IMAGE, value: {{ $image | quote }}}
             - {name: IDENTITY_PROXY_PORT_BASE, value: {{ .Values.identityProxy.portBase | quote }}}
             - {name: IDENTITY_PROXY_PORT_SPAN, value: {{ .Values.identityProxy.portSpan | quote }}}
+            {{- with .Values.openshell }}
+            - {name: OPENSHELL_ENABLED, value: {{ .enabled | quote }}}
+            {{- if .enabled }}
+            - {name: OPENSHELL_ENDPOINT, value: {{ printf "%s.%s.svc.cluster.local:8080" .service .namespace | quote }}}
+            - {name: OPENSHELL_TLS_DIR, value: /etc/openshell-tls}
+            - {name: OPENSHELL_NAMESPACE, value: {{ .namespace | quote }}}
+            - {name: OPENSHELL_SERVICE, value: {{ .service | quote }}}
+            - {name: OPENSHELL_RELEASE_NAME, value: {{ .releaseName | quote }}}
+            - {name: OPENSHELL_SERVICE_ACCOUNT, value: {{ .serviceAccount | quote }}}
+            - {name: OPENSHELL_WORKSPACE_CLUSTER_ROLE, value: agent-operator-openshell-workspace}
+            - {name: OPENSHELL_WORKSPACE_LABEL, value: {{ .workspaceLabel | quote }}}
+            - {name: OPENSHELL_SERVICE_DOMAIN, value: {{ .serviceDomain | quote }}}
+            - {name: OPENSHELL_SANDBOX_IMAGE, value: {{ required "openshell.sandboxImage is required" .sandboxImage | quote }}}
+            - {name: OPENSHELL_PROVIDER_NAME, value: {{ .providerName | quote }}}
+            - {name: OPENSHELL_PROVIDER_TYPE, value: {{ .providerType | quote }}}
+            - {name: OPENSHELL_MODEL_KEY_SECRET, value: {{ .modelKeySecret | quote }}}
+            - {name: OPENSHELL_MODEL_BASE_URL, value: {{ required "openshell.modelBaseUrl is required" .modelBaseUrl | quote }}}
+            - {name: OPENSHELL_PYPI_ENABLED, value: {{ .pypi | quote }}}
+            {{- end }}
+            {{- end }}
           ports:
             - {name: health, containerPort: 8080}
           livenessProbe:
@@ -121,5 +141,12 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            {{- if .Values.openshell.enabled }}
+            - {name: openshell-tls, mountPath: /etc/openshell-tls, readOnly: true}
+            {{- end }}
       volumes:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+        {{- if .Values.openshell.enabled }}
+        - name: openshell-tls
+          secret: {secretName: {{ .Values.openshell.clientTlsSecret }}, defaultMode: 0400}
+        {{- end }}

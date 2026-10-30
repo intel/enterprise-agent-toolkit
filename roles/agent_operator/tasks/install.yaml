@@ -46,6 +46,10 @@
 - name: "agent_operator | Inference gateway request size"
   ansible.builtin.include_tasks: ai_gateway.yaml
 
+- name: "agent_operator | openshell agent runtime"
+  ansible.builtin.include_tasks: openshell.yaml
+  when: claw_openshell_enabled | bool
+
 - name: "agent_operator | Build the operator image"
   ansible.builtin.include_role:
     name: claw_image
@@ -102,6 +106,19 @@
         podSecurity:
           enabled: "{{ enforce_pss | default(true) | bool }}"
         maxAgentsPerOwner: "{{ claw_max_agents_per_owner }}"
+      openshell:
+        enabled: "{{ claw_openshell_enabled | bool }}"
+        namespace: "{{ claw_openshell_namespace }}"
+        service: "{{ claw_openshell_release_name }}"
+        releaseName: "{{ claw_openshell_release_name }}"
+        serviceAccount: "{{ claw_openshell_release_name }}"
+        clientTlsSecret: "{{ claw_openshell_client_tls_secret }}"
+        caConfigMap: "{{ claw_openshell_ca_configmap }}"
+        workspaceLabel: "{{ claw_openshell_workspace_label }}"
+        sandboxImage: "{{ _ao_openshell_sandbox_image | default('') }}"
+        providerName: "{{ claw_openshell_provider_name }}"
+        modelKeySecret: "{{ claw_openshell_namespace }}/openshell-genai-key/api_key"
+        modelBaseUrl: "{{ claw_openshell_model_base_url }}"
       webFetchProxy:
         enabled: "{{ claw_web_fetch_proxy_enabled | bool }}"
         httpProxy: "{{ http_proxy | default('') }}"

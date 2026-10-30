@@ -55,7 +55,12 @@ openshell_oidc_audience: "openshell-cli"
 # (for example the agent operator's and the platform gateway's). Exposed sandbox services
 # are reachable by anything that can connect, so keep this on.
 openshell_gateway_network_policy: true
-openshell_gateway_client_namespaces: []
+# With claw on, the agent operator (manages workspaces) and the platform gateway (routes users to
+# openshell agents, after its sign-in and owner check).
+openshell_gateway_client_namespaces: >-
+  {{ [agent_operator_namespace | default('agent-operator-system'),
+      envoy_gateway_namespace | default('envoy-gateway-system')]
+     if (claw_enabled | default(false) | bool) else [] }}
 
 # GenAI Gateway (LiteLLM) provider: sandboxes see a placeholder, the supervisor injects a
 # per-deployment LiteLLM virtual key only toward the gateway service.
