@@ -29,6 +29,10 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        {{- if .Values.openshell.enabled }}
+        # The OpenShell client certificate is mounted 0440: readable by this group only.
+        fsGroup: 65532
+        {{- end }}
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.affinity }}
@@ -148,5 +152,5 @@ spec:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         {{- if .Values.openshell.enabled }}
         - name: openshell-tls
-          secret: {secretName: {{ .Values.openshell.clientTlsSecret }}, defaultMode: 0400}
+          secret: {secretName: {{ .Values.openshell.clientTlsSecret }}, defaultMode: 0440}
         {{- end }}
