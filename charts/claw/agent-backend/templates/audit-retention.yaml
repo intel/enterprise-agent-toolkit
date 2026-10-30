@@ -1,0 +1,106 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Audit retention, separate from the backend (which never removes a row): creates the coming
+# months' partitions and drops whole months older than audit.retention.months.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-backend-audit-retention
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-backend}
+data:
+  retention.sql: |
+    SET audit.retention_months = :'months';
+    SET audit.months_ahead = :'ahead';
+    DO $job$
+    DECLARE
+      keep_from timestamptz;
+      hi timestamptz;
+      n bigint;
+      r record;
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'audit_events' AND relkind = 'p') THEN
+        RAISE NOTICE 'audit_events does not exist yet: nothing to retain';
+        RETURN;
+      END IF;
+      PERFORM audit_events_ensure_partitions(current_setting('audit.months_ahead')::int);
+      SELECT count(*) INTO n FROM audit_events_default;
+      IF n > 0 THEN
+        RAISE WARNING 'audit: % row(s) in audit_events_default; partition creation fell behind', n;
+      END IF;
+      IF current_setting('audit.retention_months')::int <= 0 THEN
+        RETURN;
+      END IF;
+      keep_from := (date_trunc('month', now() AT TIME ZONE 'UTC')
+                    - make_interval(months => current_setting('audit.retention_months')::int)) AT TIME ZONE 'UTC';
+      FOR r IN
+        SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) AS bound
+        FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid
+        WHERE i.inhparent = 'audit_events'::regclass
+      LOOP
+        IF r.bound = 'DEFAULT' THEN
+          -- The default partition has no bound to drop by, so it ages out by row.
+          EXECUTE format('DELETE FROM %I WHERE ts < %L', r.relname, keep_from);
+          CONTINUE;
+        END IF;
+        hi := (regexp_match(r.bound, 'TO \(''([^'']+)''\)'))[1]::timestamptz;
+        IF hi IS NOT NULL AND hi <= keep_from THEN
+          RAISE NOTICE 'audit retention: dropping % (everything before %)', r.relname, hi;
+          EXECUTE format('DROP TABLE %I', r.relname);
+        END IF;
+      END LOOP;
+    END
+    $job$;
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agent-backend-audit-retention
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-backend}
+spec:
+  schedule: {{ .Values.audit.retention.schedule | quote }}
+  timeZone: Etc/UTC
+  startingDeadlineSeconds: 3600
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels: {app.kubernetes.io/name: agent-backend-audit-retention}
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: retention
+              image: {{ .Values.audit.retention.image | quote }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: ["ALL"]}
+              env:
+                - name: AUDIT_PG_DSN
+                  valueFrom: {secretKeyRef: {name: {{ .Values.runtimeSecret }}, key: pgvector-dsn}}
+              command: ["sh", "-c"]
+              args:
+                - >-
+                  exec psql --no-psqlrc -v ON_ERROR_STOP=1
+                  -v months={{ .Values.audit.retention.months | int }} -v ahead={{ .Values.audit.retention.monthsAhead | int }}
+                  -d "$AUDIT_PG_DSN" -f /sql/retention.sql
+              resources:
+                requests: {cpu: 20m, memory: 64Mi}
+                limits: {cpu: 200m, memory: 256Mi}
+              volumeMounts:
+                - {name: sql, mountPath: /sql, readOnly: true}
+          volumes:
+            - name: sql
+              configMap: {name: agent-backend-audit-retention}

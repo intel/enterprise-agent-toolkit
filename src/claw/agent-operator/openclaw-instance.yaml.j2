@@ -1,0 +1,120 @@
+[#- Copyright (C) 2025-2026 Intel Corporation #]
+[#- SPDX-License-Identifier: Apache-2.0 #]
+[#- Every interpolated value is rendered with tojson: inert, always-valid YAML. #]
+apiVersion: openclaw.rocks/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: [[ name | tojson ]]
+  namespace: [[ namespace | tojson ]]
+  labels:
+    app.kubernetes.io/name: openclaw
+    app.kubernetes.io/instance: [[ name | tojson ]]
+    intel-stack.io/agent: [[ name | tojson ]]
+    intel-stack.io/owner: [[ owner_label | tojson ]]
+spec:
+  image:
+    repository: [[ cfg.openclawImage | tojson ]]
+    tag: [[ cfg.openclawTag | tojson ]]
+    [% if cfg.openclawDigest %]
+    digest: [[ cfg.openclawDigest | tojson ]]
+    [% endif %]
+  storage:
+    persistence:
+      enabled: true
+      size: "10Gi"
+  security:
+    networkPolicy:
+      enabled: false  # the agent operator owns this namespace's NetworkPolicy
+  shareProcessNamespace: false  # CRD default true lets same-UID containers read each other's env
+  autoUpdate:
+    enabled: false
+  config:
+    format: json
+    # merge keeps runtime-written state; forcePaths keeps the operator-managed trees exact.
+    mergeMode: merge
+    forcePaths: ["tools", "plugins", "mcp"]
+    raw:
+      agents:
+        defaults:
+          timeoutSeconds: [[ cfg.agentTimeoutSeconds | int ]]
+          model:
+            primary: [[ model_ref | tojson ]]
+          models:
+            [[ model_ref | tojson ]]: {}
+          [% if context_window %]
+          # Compact only when context > contextWindow - reserveTokens (default floor 20000).
+          compaction:
+            reserveTokensFloor: 0
+            reserveTokens: [[ cfg.compactionReserveTokens | int ]]
+          [% endif %]
+          [% if cfg.embeddingBaseUrl %]
+          memorySearch:
+            provider: "openai-compatible"
+            model: [[ cfg.embeddingModel | tojson ]]
+            remote:
+              baseUrl: [[ cfg.embeddingBaseUrl | tojson ]]
+              apiKey: "sk-no-key-needed"
+          [% endif %]
+      models:
+        providers:
+          [[ model_provider | tojson ]]:
+            api: "openai-completions"
+            baseUrl: [[ model_base_url | tojson ]]
+            # A secret reference resolved from the env below, not the key itself.
+            apiKey: "${OPENAI_API_KEY}"
+            [% if cfg.model.allowPrivateNetwork %]
+            request:
+              allowPrivateNetwork: true
+            [% endif %]
+            models:
+              - id: [[ model_id | tojson ]]
+                name: [[ model_name | tojson ]]
+                [% if context_window %]
+                contextWindow: [[ context_window | int ]]
+                [% endif %]
+      tools:
+        [% for key, value in tools.items() %]
+        [[ key | tojson ]]: [[ value | tojson ]]
+        [% endfor %]
+        deny: [[ (["create_goal", "update_goal", "get_goal"] + (tools_deny or [])) | tojson ]]
+        [% if web_fetch_proxy %]
+        # The proxy env below is operator-set, so web_fetch may trust it.
+        web:
+          fetch:
+            useTrustedEnvProxy: true
+        [% endif %]
+      # Always emitted (empty when unused) so a JSON patch removes stale entries.
+      plugins:
+        allow: [[ plugins | tojson ]]
+      mcp:
+        servers: [[ mcp_servers | tojson ]]
+      gateway:
+        controlUi:
+          dangerouslyAllowHostHeaderOriginFallback: false
+          # Device pairing has no approval surface here; the gateway token gates access.
+          dangerouslyDisableDeviceAuth: true
+          [% if cfg.controlUiAllowedOrigins %]
+          allowedOrigins: [[ cfg.controlUiAllowedOrigins | tojson ]]
+          [% endif %]
+        http:
+          endpoints:
+            chatCompletions:
+              enabled: true
+  env:
+    - name: OPENAI_BASE_URL
+      value: [[ model_base_url | tojson ]]
+    - name: OPENAI_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: [[ model_key_secret | tojson ]]
+          key: apiKey
+    [% if web_fetch_proxy %]
+    - name: HTTP_PROXY
+      value: [[ web_fetch_proxy | tojson ]]
+    - name: HTTPS_PROXY
+      value: [[ web_fetch_proxy | tojson ]]
+    - name: NO_PROXY
+      value: "localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local"
+    [% endif %]
+  gateway:
+    existingSecret: [[ (name ~ "-gateway-token") | tojson ]]

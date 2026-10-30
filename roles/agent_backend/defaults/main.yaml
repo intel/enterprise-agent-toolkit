@@ -1,0 +1,22 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agent API (claw_enabled): https://agents.<base_domain_name>/api. Shared settings come from the
+# agent_operator role defaults.
+
+agent_backend_release_name: "agent-backend"
+agent_backend_wait_timeout: "5m0s"
+agent_backend_hostname: "agents.{{ base_domain_name | default('example.com') }}"
+# Tokens for the API carry this audience; the gateway and the backend both check it.
+agent_backend_audience: "agent-backend"
+# A confidential client for scripted use; its agents are owned by agent_backend_api_owner.
+agent_backend_api_client: "agent-api"
+agent_backend_api_owner: "automation"
+agent_backend_api_email: "{{ agent_backend_api_client }}@{{ base_domain_name | default('example.com') }}"
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+agent_backend_api_secret: "agent-api-client"
+agent_backend_audit_retention_months: 12
+
+claw_keycloak_issuer: >-
+  https://{{ keycloak_hostname | default('keycloak.' ~ (base_domain_name | default('example.com'))) }}/realms/{{ claw_keycloak_realm }}
+claw_keycloak_jwks_url: "{{ claw_keycloak_url }}/realms/{{ claw_keycloak_realm }}/protocol/openid-connect/certs"

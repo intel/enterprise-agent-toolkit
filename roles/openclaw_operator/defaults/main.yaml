@@ -1,0 +1,22 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# OpenClaw operator (claw): OpenClawInstance CRDs and controller. Enabled by claw_enabled.
+
+openclaw_operator_namespace: "openclaw-operator-system"
+openclaw_operator_release_name: "openclaw-operator"
+openclaw_operator_chart: "oci://ghcr.io/paperclipinc/charts/openclaw-operator"
+
+# Bump all three together. Digests: `helm pull <chart> --version <v>` and
+# `docker buildx imagetools inspect ghcr.io/paperclipinc/openclaw-operator:v<v>`.
+openclaw_operator_version: "0.38.3"
+openclaw_operator_digest: "sha256:a5c71a40098baac5e8fe5ffacf97bb9593c0b67712628b21af67b580929fa51a"
+openclaw_operator_image: "ghcr.io/paperclipinc/openclaw-operator"
+openclaw_operator_image_digest: "sha256:ca7ad419da6cfa6de5d088be2ee4af3be0120f735741b30652676dadce2f690d"
+
+# Signatures are verified whenever cosign is on PATH; true also fails when it is missing.
+openclaw_operator_cosign_required: false
+openclaw_operator_cosign_identity: "https://github.com/paperclipinc/openclaw-operator/.github/workflows/release.yaml@refs/tags/v{{ openclaw_operator_version }}"
+openclaw_operator_cosign_issuer: "https://token.actions.githubusercontent.com"
+
+openclaw_operator_wait_timeout: "5m0s"

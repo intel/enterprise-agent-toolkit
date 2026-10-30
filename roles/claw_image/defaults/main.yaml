@@ -1,0 +1,24 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Helper for claw components: build an image into the in-cluster registry (not a component).
+
+# The registry is the Kubernetes registry add-on (kubernetes_registry_enabled).
+claw_image_registry_service: registry
+claw_image_registry_namespace: kube-system
+claw_image_registry_port: 5000
+claw_image_registry_host: "registry.{{ claw_image_registry_namespace }}.svc.cluster.local:{{ claw_image_registry_port }}"
+
+# Images are built on the first control-plane node, which can reach the registry.
+claw_image_builder: "{{ (groups['kube_control_plane'] | default(['localhost']))[0] }}"
+claw_image_nodes: "{{ ((groups['kube_control_plane'] | default([])) + (groups['kube_node'] | default([]))) | unique }}"
+
+claw_image_buildkit_version: v0.19.0
+claw_image_buildkit_sha256: 9993fdd8b454e541ac14a1adf4bf53d271dbc8f3aafde45894bf689604a0a5cf
+claw_image_buildkit_url: "https://github.com/moby/buildkit/releases/download/{{ claw_image_buildkit_version }}/buildkit-{{ claw_image_buildkit_version }}.linux-amd64.tar.gz"
+claw_image_root: /var/lib/agent-toolkit/claw-image
+claw_image_build_timeout: 1800
+# Local build output never reaches the image, its tag or the upload.
+claw_image_exclude: [__pycache__, "*.pyc", node_modules, dist, dist-test]
+# The packed context on the installer host; removed after each run.
+claw_image_archive: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/claw-image-{{ claw_image_name }}.tar"
