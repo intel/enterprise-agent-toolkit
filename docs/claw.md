@@ -225,7 +225,7 @@ from `claw`:
 | | `openshell` |
 |---|---|
 | Agent namespace | At most 19 characters (`agent-<username>-<name>`), an OpenShell limit; a longer one makes the agent `Failed` with the longest name allowed |
-| `spec.model.baseUrl`, `spec.modelSecretRef` | Not supported: the sandbox reaches models only through the provider (the cluster key) |
+| Model | Another model the GenAI Gateway serves can be named (`spec.model.id`, the console's model field); `spec.model.baseUrl` and `spec.modelSecretRef` are not supported: the sandbox reaches models only through the provider (the cluster key) |
 | `spec.webFetchAllowlist` | Each domain and its subdomains, on ports 80 and 443, for OpenClaw's own requests; `*` is not granted. Edits apply to the running sandbox |
 | Suspend | Stops the sandbox (its pods go away, the workspace volume stays) and starts it again on resume |
 | Workspace files | Written through the OpenShell gateway, not `kubectl exec` |
@@ -233,7 +233,10 @@ from `claw`:
 Users reach an `openshell` agent at the same `/gw/<owner ns>/<name>/` path. The route goes to
 the OpenShell gateway, which relays to the agent's sandbox; OpenClaw listens on loopback only
 and trusts the user name only from that relay. The gateway's port accepts only the
-supervisors, the agent operator and the platform gateway (`openshell-gateway-ingress`).
+supervisors, the agent operator and the platform gateway (`openshell-gateway-ingress`). The
+platform gateway reaches it through an Envoy Gateway `Backend` (TLS checked against the OpenShell
+CA, HTTP/1.1 only, which the dashboard's WebSocket needs), so Envoy Gateway's Backend API must
+be enabled, as the platform's `envoy_gateway` role does.
 
 ---
 

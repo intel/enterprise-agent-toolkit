@@ -44,7 +44,7 @@
         tls.key: "{{ _ao_os_tls.resources[0].data['tls.key'] }}"
   no_log: true
 
-# The platform gateway verifies the OpenShell gateway against this CA (BackendTLSPolicy).
+# The platform gateway verifies the OpenShell gateway against this CA (the chart's Backend).
 - name: "agent_operator | openshell | Publish the gateway CA"
   kubernetes.core.k8s:
     state: present

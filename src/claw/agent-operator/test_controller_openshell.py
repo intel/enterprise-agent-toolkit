@@ -64,8 +64,10 @@ class OpenShellRouteTest(unittest.TestCase):
     def test_both_rules_go_to_the_openshell_gateway_with_the_sandbox_host(self):
         host = "agent-vkumar4-oss--oss--openclaw.openshell.localhost"
         for rule in self.route["spec"]["rules"]:
-            # The HTTP/1.1 Service, not the chart's appProtocol-grpc one (the WebSocket needs it).
-            self.assertEqual(rule["backendRefs"], [{"name": "openshell-routes", "namespace": "openshell-system", "port": 8080}])
+            # The chart's Backend: HTTP/1.1-only TLS to the gateway, which the WebSocket needs.
+            self.assertEqual(rule["backendRefs"], [{"group": "gateway.envoyproxy.io", "kind": "Backend",
+                                                    "name": "agent-operator-openshell", "namespace": "openshell-system",
+                                                    "port": 8080}])
             hostnames = [f["urlRewrite"].get("hostname") for f in rule["filters"] if f["type"] == "URLRewrite"]
             self.assertEqual(hostnames, [host])
 

@@ -109,9 +109,10 @@ export default function NewAgentPage() {
     setBusy(true);
     setError("");
     try {
-      // An openshell agent uses the cluster's model gateway.
-      const model =
-        !openshell && (mProvider || mId || mName || mBaseUrl || mApiKey)
+      // An openshell agent reaches models only through the cluster's gateway: a model id, no URL or key.
+      const model = openshell
+        ? (mId.trim() ? { id: mId.trim() } : undefined)
+        : mProvider || mId || mName || mBaseUrl || mApiKey
           ? { provider: mProvider, id: mId, name: mName, baseUrl: mBaseUrl, apiKey: mApiKey }
           : undefined;
       const res = await fetch("/api/agents", {
@@ -290,6 +291,23 @@ export default function NewAgentPage() {
             </Field>
           </CardContent>
         </Card>
+
+        {openshell && (
+          <Card>
+            <CardHeader>
+              <CardTitle>LLM model (optional)</CardTitle>
+              <CardDescription>
+                Blank uses the cluster default. Otherwise, the name of another model the cluster&apos;s
+                model gateway (LiteLLM) serves. The sandbox reaches models only through that gateway, which
+                holds the key, so a custom endpoint or API key is not available here. Only the default
+                model&apos;s context size is known; for another model OpenClaw assumes its own default.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Input placeholder="model name (e.g. qwen3-coder-30b); blank = cluster default" value={mId} onChange={(e) => setMId(e.target.value)} />
+            </CardContent>
+          </Card>
+        )}
 
         {!openshell && (
         <Card>

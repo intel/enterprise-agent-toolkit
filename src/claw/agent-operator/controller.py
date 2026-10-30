@@ -60,8 +60,9 @@ AUTO_SUSPEND_IDLE_MINUTES = int(os.environ.get("AUTO_SUSPEND_IDLE_MINUTES") or 2
 OPENSHELL_ENABLED = _env_bool("OPENSHELL_ENABLED")
 OPENSHELL_NAMESPACE = os.environ.get("OPENSHELL_NAMESPACE", "openshell-system")
 OPENSHELL_SERVICE = os.environ.get("OPENSHELL_SERVICE", "openshell")
-# The gateway Service the /gw/ routes use: HTTP/1.1, so the dashboard's WebSocket works.
-OPENSHELL_ROUTE_SERVICE = os.environ.get("OPENSHELL_ROUTE_SERVICE", "openshell-routes")
+# The Envoy Gateway Backend the /gw/ routes use (chart): TLS to the OpenShell gateway, HTTP/1.1
+# only, so the dashboard's WebSocket works.
+OPENSHELL_ROUTE_BACKEND = "agent-operator-openshell"
 OPENSHELL_SERVICE_DOMAIN = os.environ.get("OPENSHELL_SERVICE_DOMAIN", "openshell.localhost")
 
 PGVECTOR_DSN = os.environ.get("PGVECTOR_DSN", "")
@@ -703,9 +704,10 @@ def _gw_objects(name, spec):
     backend = [{"name": name, "namespace": agent_ns, "port": GW_PORT}]
     to_sandbox = []
     if _runtime(spec) == "openshell":
-        # The OpenShell gateway relays to the sandbox named by Host; its TLS is trusted through
-        # the BackendTLSPolicy, and its ReferenceGrant, that the agent_operator role applies.
-        backend = [{"name": OPENSHELL_ROUTE_SERVICE, "namespace": OPENSHELL_NAMESPACE, "port": 8080}]
+        # The OpenShell gateway relays to the sandbox named by Host; the chart's Backend holds the
+        # TLS settings, and its ReferenceGrant lets this route use it.
+        backend = [{"group": "gateway.envoyproxy.io", "kind": "Backend", "name": OPENSHELL_ROUTE_BACKEND,
+                    "namespace": OPENSHELL_NAMESPACE, "port": 8080}]
         to_sandbox = [{"type": "URLRewrite", "urlRewrite": {"hostname": openshell_adapter.service_host(
             agent_ns, name, OPENSHELL_SERVICE_DOMAIN)}}]
     route = {

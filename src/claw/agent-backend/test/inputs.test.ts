@@ -67,6 +67,8 @@ test("runtime: claw by default; openshell only when enabled, within 19 character
     assert.throws(() => validateRuntime("openshell", "oss", "vkumar4", { baseUrl: "http://x/v1" }), (e: any) => /not supported/.test(e.message));
     assert.throws(() => validateRuntime("openshell", "oss", "vkumar4", { apiKey: "k" }), (e: any) => /not supported/.test(e.message));
     assert.equal(validateRuntime("claw", "oss-solo", "vkumar4", { baseUrl: "http://x/v1" }), "claw");
+    // Another model the gateway serves is fine: same endpoint, same key.
+    assert.equal(validateRuntime("openshell", "oss", "vkumar4", { id: "qwen3-4b" }), "openshell");
   } finally {
     delete process.env.OPENSHELL_ENABLED;
   }
