@@ -1,0 +1,42 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Cluster-wide: the API's own resources, owner namespaces, and Secret create (credentials are
+# written before an agent's namespace is reconciled). Reading Secrets is granted per agent
+# namespace by the operator (agent-operator-agent-ns-backend).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-backend
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-backend}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-backend
+  labels: {app.kubernetes.io/name: agent-backend}
+rules:
+  - apiGroups: ["intel-stack.io"]
+    resources: ["agents"]
+    verbs: ["get", "list", "create", "patch", "delete"]
+  - apiGroups: ["intel-stack.io"]
+    resources: ["agentgrants"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["intel-stack.io"]
+    resources: ["tools"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-backend
+  labels: {app.kubernetes.io/name: agent-backend}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: agent-backend}
+subjects:
+  - {kind: ServiceAccount, name: agent-backend, namespace: {{ .Release.Namespace }}}

@@ -32,7 +32,8 @@ litellm_public_paths: []
 # --- Default model (inference layer, applied only where this layer is provisioned) ---
 # Deployed on install.
 # Set [] to install without a chat model; deploy others with ./model-manager deploy <name>.
-llm_services_autodeploy_models: ["qwen2-5-coder-14b"]
+# claw adds bge-base-en, which embeds agent memory.
+llm_services_autodeploy_models: "{{ ['qwen2-5-coder-14b'] + (['bge-base-en'] if claw_enabled | default(false) | bool else []) }}"
 
 # --- vLLM Semantic Router dashboard (inference layer; applies only with vllm_sr_enabled) ---
 # Served at https://vllm-sr.<base_domain_name>/
@@ -79,3 +80,15 @@ litellm_allowed_namespaces:
 # --- Keycloak ---
 # Optional in LiteLLM mode: set keycloak_enabled: true for the realm.
 keycloak_agent_realm: "agent-toolkit"
+
+# --- claw: persistent OpenClaw agents (optional — disabled by default) ---
+# Turns on the OpenClaw operator. See docs/claw.md.
+claw_enabled: false
+# In-cluster image registry (platform; Kubespray add-on). Claw pushes its locally built images
+# here. It only takes effect when Kubespray provisions the cluster, so it stays on even while
+# claw is off, so that claw can be turned on later without reinstalling the cluster.
+kubernetes_registry_enabled: true
+# Pinned release; bump the version and both digests together (see the role defaults).
+openclaw_operator_version: "0.38.3"
+openclaw_operator_digest: "sha256:a5c71a40098baac5e8fe5ffacf97bb9593c0b67712628b21af67b580929fa51a"
+openclaw_operator_image_digest: "sha256:ca7ad419da6cfa6de5d088be2ee4af3be0120f735741b30652676dadce2f690d"

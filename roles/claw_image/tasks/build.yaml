@@ -1,0 +1,171 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Always built, and pinned to the digest BuildKit pushed: the registry accepts unauthenticated
+# pushes, so a tag that already exists there proves nothing. Unchanged source builds from cache.
+
+- name: "claw_image | Find the in-cluster registry"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    name: "{{ claw_image_registry_service }}"
+    namespace: "{{ claw_image_registry_namespace }}"
+  register: _ci_registry
+  failed_when: >-
+    _ci_registry.resources | default([]) | length == 0
+    or not _ci_registry.resources[0].spec.clusterIP | default('')
+
+- name: "claw_image | Pack the build context"
+  ansible.builtin.command:
+    argv: "{{ ['tar', '--exclude-vcs', '--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner',
+               '--mode=u=rwX,go=rX']
+              + claw_image_exclude | map('regex_replace', '^', '--exclude=') | list
+              + ['-cf', claw_image_archive, '-C', claw_image_context, '.'] }}"
+  changed_when: false
+
+- name: "claw_image | Hash the build context"
+  ansible.builtin.command:
+    argv: [sha256sum, "{{ claw_image_archive }}"]
+  register: _ci_sum
+  changed_when: false
+
+- name: "claw_image | Set image coordinates"
+  ansible.builtin.set_fact:
+    _ci_tag: "src-{{ _ci_sum.stdout[:24] }}"
+    _ci_endpoint: "{{ _ci_registry.resources[0].spec.clusterIP }}:{{ claw_image_registry_port }}"
+    _ci_env:
+      HTTP_PROXY: "{{ http_proxy | default('') }}"
+      HTTPS_PROXY: "{{ https_proxy | default('') }}"
+      NO_PROXY: "{{ [no_proxy | default(''), _ci_registry.resources[0].spec.clusterIP] | select | join(',') }}"
+
+- name: "claw_image | Build and push"
+  become: true
+  delegate_to: "{{ claw_image_builder }}"
+  vars:
+    _ci_bin: "{{ claw_image_root }}/buildkit-{{ claw_image_buildkit_version }}/bin"
+    _ci_sock: "unix:///run/claw-image-buildkit.sock"
+    _ci_ctx: "{{ claw_image_root }}/context/{{ claw_image_name }}"
+    _ci_meta: "{{ claw_image_root }}/context/{{ claw_image_name }}.metadata.json"
+  block:
+    - name: "claw_image | Create the work directories"
+      ansible.builtin.file:
+        path: "{{ claw_image_root }}/buildkit-{{ claw_image_buildkit_version }}"
+        state: directory
+        mode: "0755"
+
+    - name: "claw_image | Download BuildKit {{ claw_image_buildkit_version }}"
+      ansible.builtin.get_url:
+        url: "{{ claw_image_buildkit_url }}"
+        dest: "{{ claw_image_root }}/buildkit-{{ claw_image_buildkit_version }}.tar.gz"
+        checksum: "sha256:{{ claw_image_buildkit_sha256 }}"
+        mode: "0644"
+      environment: "{{ _ci_env }}"
+
+    - name: "claw_image | Unpack BuildKit"
+      ansible.builtin.unarchive:
+        src: "{{ claw_image_root }}/buildkit-{{ claw_image_buildkit_version }}.tar.gz"
+        dest: "{{ claw_image_root }}/buildkit-{{ claw_image_buildkit_version }}"
+        remote_src: true
+        creates: "{{ _ci_bin }}/buildkitd"
+
+    - name: "claw_image | Create the context directory"
+      ansible.builtin.file:
+        path: "{{ _ci_ctx }}"
+        state: directory
+        mode: "0755"
+
+    - name: "claw_image | Stage the build context"
+      ansible.builtin.unarchive:
+        src: "{{ claw_image_archive }}"
+        dest: "{{ _ci_ctx }}"
+
+    - name: "claw_image | Stop a BuildKit left by an interrupted run"
+      ansible.builtin.systemd_service:
+        name: claw-image-buildkit
+        state: stopped
+      failed_when: false
+
+    # Transient unit: nothing keeps running once the build is done.
+    - name: "claw_image | Start BuildKit"
+      ansible.builtin.command:
+        argv:
+          - systemd-run
+          - --unit=claw-image-buildkit
+          - --collect
+          - --quiet
+          - "--setenv=HTTP_PROXY={{ _ci_env.HTTP_PROXY }}"
+          - "--setenv=HTTPS_PROXY={{ _ci_env.HTTPS_PROXY }}"
+          - "--setenv=NO_PROXY={{ _ci_env.NO_PROXY }}"
+          - "{{ _ci_bin }}/buildkitd"
+          - --root={{ claw_image_root }}/buildkit-state
+          - --addr={{ _ci_sock }}
+          - --oci-worker=true
+          - --containerd-worker=false
+      changed_when: true
+
+    - name: "claw_image | Wait for BuildKit"
+      ansible.builtin.command:
+        argv: ["{{ _ci_bin }}/buildctl", "--addr", "{{ _ci_sock }}", "debug", "workers"]
+      register: _ci_workers
+      until: _ci_workers.rc == 0
+      retries: 30
+      delay: 1
+      changed_when: false
+
+    # buildctl fetches registry tokens itself, so it needs the proxy too.
+    - name: "claw_image | Build {{ claw_image_name }}:{{ _ci_tag }}"
+      ansible.builtin.command:
+        argv:
+          - "{{ _ci_bin }}/buildctl"
+          - --addr
+          - "{{ _ci_sock }}"
+          - build
+          - --frontend=dockerfile.v0
+          - "--local=context={{ _ci_ctx }}"
+          - "--local=dockerfile={{ _ci_ctx }}"
+          - "--opt=build-arg:http_proxy={{ _ci_env.HTTP_PROXY }}"
+          - "--opt=build-arg:https_proxy={{ _ci_env.HTTPS_PROXY }}"
+          - "--opt=build-arg:no_proxy={{ _ci_env.NO_PROXY }}"
+          - "--output=type=image,name={{ _ci_endpoint }}/{{ claw_image_name }}:{{ _ci_tag }},push=true,registry.insecure=true"
+          - "--metadata-file={{ _ci_meta }}"
+      environment: "{{ _ci_env }}"
+      async: "{{ claw_image_build_timeout }}"
+      poll: 10
+      changed_when: true
+
+    # The digest BuildKit pushed, not one read back from the registry afterwards.
+    - name: "claw_image | Read the built digest"
+      ansible.builtin.slurp:
+        src: "{{ _ci_meta }}"
+      register: _ci_built
+
+    - name: "claw_image | Record the built digest"
+      ansible.builtin.set_fact:
+        _ci_digest: "{{ (_ci_built.content | b64decode | from_json)['containerimage.digest'] }}"
+      failed_when: not (_ci_digest | default('')).startswith('sha256:')
+
+  always:
+    - name: "claw_image | Stop BuildKit"
+      ansible.builtin.systemd_service:
+        name: claw-image-buildkit
+        state: stopped
+      failed_when: false
+
+    - name: "claw_image | Remove the staged context"
+      ansible.builtin.file:
+        path: "{{ claw_image_root }}/context"
+        state: absent
+
+- name: "claw_image | Trust the registry on every node"
+  ansible.builtin.include_tasks: trust.yaml
+
+- name: "claw_image | Publish the image reference"
+  ansible.builtin.set_fact:
+    claw_image_repository: "{{ claw_image_registry_host }}/{{ claw_image_name }}"
+    claw_image_tag: "{{ _ci_tag }}@{{ _ci_digest }}"
+
+- name: "claw_image | Remove the packed context"
+  ansible.builtin.file:
+    path: "{{ claw_image_archive }}"
+    state: absent
+  changed_when: false

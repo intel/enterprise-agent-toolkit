@@ -1,0 +1,14 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Exec into agent pods. No ClusterRoleBinding: the operator binds it per agent namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-operator-agent-ns-exec
+  labels:
+    app.kubernetes.io/name: agent-operator
+rules:
+  # The websocket exec authorizes against both get and create.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]

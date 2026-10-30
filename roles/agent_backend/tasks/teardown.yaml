@@ -1,0 +1,26 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agents and grants stay; the API, its route, client and realm roles go. Succeeds when nothing is installed.
+
+- name: "agent_backend | teardown | Uninstall the API"
+  kubernetes.core.helm:
+    name: "{{ agent_backend_release_name }}"
+    release_namespace: "{{ agent_operator_namespace }}"
+    state: absent
+    wait: true
+
+- name: "agent_backend | teardown | Remove the client credentials"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: Secret
+    name: "{{ item }}"
+    namespace: "{{ agent_operator_namespace }}"
+  loop: ["{{ agent_backend_api_secret }}", "{{ claw_console_oidc_secret }}"]
+
+- name: "agent_backend | teardown | Remove the realm configuration"
+  ansible.builtin.include_tasks: keycloak.yaml
+  vars:
+    _kc_script: keycloak-realm-remove.sh
+    _kc_args: ["{{ agent_backend_api_client }}", "{{ claw_console_oidc_client }}"]
