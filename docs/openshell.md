@@ -13,7 +13,8 @@ The toolkit registers the **GenAI Gateway** (LiteLLM) as an OpenShell provider, 
 OpenShell sandboxes call models through LiteLLM with a dedicated, budgeted virtual key that
 never enters the sandbox.
 
-OpenShell is **optional** and **off by default** (`openshell_enabled: false`).
+OpenShell is **optional** and **off by default** (`openshell_enabled: false`). With claw on, it also
+runs claw agents: see [the `openshell` runtime](claw.md#openshell-runtime).
 
 ---
 

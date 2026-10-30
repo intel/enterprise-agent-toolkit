@@ -367,7 +367,7 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             rules["web_fetch"] = {"name": "web-fetch-allowlist", "binaries": node,
                                   "endpoints": [{"host": h, "ports": [80, 443]} for h in web]}
         if self.os_cfg["pypi"]:
-            rules["pypi"] = {"name": "pypi-read-only", "binaries": [{"path": PYTHON}],
+            rules["pypi"] = {"name": "pypi", "binaries": [{"path": PYTHON}],
                              "endpoints": [_endpoint(h, 443) for h in PYPI_HOSTS]}
         return json_format.ParseDict({
             "version": 1,

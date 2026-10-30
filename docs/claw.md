@@ -12,6 +12,7 @@ output, follow [claw-e2e.md](claw-e2e.md).
 
 **Contents:** [Components](#components) · [Enable](#enable) · [Create an agent](#create-an-agent) ·
 [Memory](#memory) · [Tools](#tools) · [Sandbox, GitHub and web access](#sandbox-github-and-web-access) ·
+[OpenShell runtime](#openshell-runtime) ·
 [Console and dashboards](#console-and-dashboards) · [REST API](#rest-api) ·
 [Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
 [Configuration](#configuration) · [Security](#security) · [Validate and remove](#validate-and-remove) ·
@@ -110,6 +111,7 @@ automatically. The chat walkthrough is in [claw-e2e.md](claw-e2e.md#create-an-ag
 | Field | Meaning |
 |---|---|
 | `owner.principal`, `owner.username` | Required. The username (`[a-z0-9]{1,39}`) keys every derived name |
+| `runtime` | `claw` (default) or `openshell` ([OpenShell runtime](#openshell-runtime)); cannot be changed later |
 | `desiredState` | `Running` (default) or `Suspended` |
 | `skills` | OpenClaw capabilities, for example `shell`, `read_file`, `list_files`, and the [tools](#tools) to wire |
 | `workspace` | Files seeded into the agent's workspace, keyed by relative path |
@@ -179,6 +181,53 @@ kubectl -n agent-operator-system rollout restart deploy/mcp-github-server
 `spec.webFetchAllowlist` and refuses names that resolve to private or cluster addresses. The
 proxy reaches the internet through the platform proxy (`http_proxy`, `https_proxy`) when one
 is set. An allowlist edit takes effect within a minute, without a restart.
+
+---
+
+## OpenShell runtime
+
+An `Agent` with `runtime: openshell` runs the same OpenClaw agent inside an
+[NVIDIA OpenShell](openshell.md) sandbox instead of an `OpenClawInstance`. Its memory,
+tools, identity proxy, Keycloak client, console and `/gw/` route are the same; what changes
+is how the agent process is confined:
+
+- **Every connection is checked.** The agent runs in a workload pod that can reach only its
+  supervisor pod, and the supervisor allows only the agent's identity-proxy ports, the
+  `spec.webFetchAllowlist` domains (for OpenClaw itself) and PyPI (`pypi.org`, `files.pythonhosted.org`,
+  for Python).
+  Everything else, including other cluster services, is refused.
+- **The model key never enters the pod.** Each agent namespace gets an OpenShell provider
+  that holds the key; the agent sees a placeholder, and the supervisor adds the key only to
+  requests to the GenAI Gateway.
+- **Code runs in the agent's own pod.** OpenClaw's `exec` is always on and runs inside the
+  sandbox, so the `sandbox` MCP is not used; the agent installs packages into a venv under
+  `/sandbox`.
+- **The agent namespace is the sandbox's namespace** (an OpenShell workspace). Its quota,
+  LimitRange and Pod Security level apply to the sandbox pods too.
+
+Enable it with OpenShell (which needs Agent Sandbox) and claw:
+
+```yaml
+# env/<env>/config.agent-toolkit.yaml
+claw_enabled: true
+agent_sandbox_enabled: true
+openshell_enabled: true
+```
+
+Then create an `Agent` with `runtime: openshell`. Differences from `claw`:
+
+| | `openshell` |
+|---|---|
+| Agent namespace | At most 19 characters (`agent-<username>-<name>`), an OpenShell limit; a longer one makes the agent `Failed` with the longest name allowed |
+| `spec.model.baseUrl`, `spec.modelSecretRef` | Not supported: the sandbox reaches models only through the provider (the cluster key) |
+| `spec.webFetchAllowlist` | Each domain and its subdomains, on ports 80 and 443, for OpenClaw's own requests; `*` is not granted. Edits apply to the running sandbox |
+| Suspend | Stops the sandbox (its pods go away, the workspace volume stays) and starts it again on resume |
+| Workspace files | Written through the OpenShell gateway, not `kubectl exec` |
+
+Users reach an `openshell` agent at the same `/gw/<owner ns>/<name>/` path. The route goes to
+the OpenShell gateway, which relays to the agent's sandbox; OpenClaw listens on loopback only
+and trusts the user name only from that relay. The gateway's port accepts only the
+supervisors, the agent operator and the platform gateway (`openshell-gateway-ingress`).
 
 ---
 
@@ -271,6 +320,7 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 | `claw_model_context_window` | `32768` | The model's served `max_model_len`; `0` lets OpenClaw assume 200000 |
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
 | `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
+| `openshell_enabled` | `false` | Also enables the [`openshell` runtime](#openshell-runtime), with the OpenShell component |
 | `mcp_servers_github_token_secret` | `mcp-github-token` | Secret (key `token`) with the shared GitHub token |
 | `claw_console_hostname` | `agents.<base_domain_name>` | Host of the console, the REST API and the agent dashboards |
 | `claw_console_enabled` | `true` | Browser sign-in and per-agent dashboard routes; `false` leaves only the API |
@@ -387,3 +437,7 @@ More symptoms are listed in [claw-e2e.md](claw-e2e.md#if-it-does-not-work).
 - Break-glass covers the API only; an admin cannot open another user's dashboard.
 - Every turn sends the agent's ~19,500-token system prompt, so the first token of each turn is
   slow on a model that reads long prompts slowly.
+- `openshell` agents: the agent namespace is limited to 19 characters; all of them share the
+  cluster's model key and its budget; `PodReady` turns true a few seconds before OpenClaw
+  answers; and the agent can edit its own `openclaw.json` (as with `claw`), which changes its
+  behaviour but not what its sandbox policy allows.
