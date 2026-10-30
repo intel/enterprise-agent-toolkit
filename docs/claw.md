@@ -214,7 +214,11 @@ agent_sandbox_enabled: true
 openshell_enabled: true
 ```
 
-Then create an `Agent` with `runtime: openshell`. Differences from `claw`:
+Then pick **openshell** as the runtime when creating an agent in the console (shown only when
+the cluster offers it, with the longest name your username allows), send `"runtime": "openshell"`
+to `POST /api/agents`, or create an `Agent` with `runtime: openshell`. The API refuses a
+name that is too long, or a model base URL or key, before the agent is created. Differences
+from `claw`:
 
 | | `openshell` |
 |---|---|
@@ -268,7 +272,7 @@ curl -s https://agents.<base_domain_name>/api/agents -H "Authorization: Bearer $
 | Method and path | Needs | Does |
 |---|---|---|
 | `GET /api/agents` | viewer, `agent:read` | Agents you own and agents shared with you |
-| `POST /api/agents` | editor, `agent:write` | Create an agent owned by you; `202` with the `href` to poll |
+| `POST /api/agents` | editor, `agent:write` | Create an agent owned by you; `202` with the `href` to poll. `"runtime": "openshell"` picks the [OpenShell runtime](#openshell-runtime) where the cluster offers it (`GET /api/me` lists `runtimes`) |
 | `GET` / `PATCH` / `DELETE /api/agents/<ns>/<name>` | `view` / owner / `delete` | Read, edit (skills, tools, workspace, model, keys, allowlist) or delete |
 | `POST /api/agents/<ns>/<name>/suspend`, `/resume` | `suspend-resume` | Change the desired state |
 | `GET /api/agents/<ns>/<name>/provisioning` | `view` | The operator's provisioning steps |

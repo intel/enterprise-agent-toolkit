@@ -10,6 +10,8 @@ interface Me {
   isAdmin: boolean;
   // Realm roles, for break-glass; isAdmin (platform-admin) only shows operator links.
   roles: string[];
+  // Agent runtimes this cluster offers: "claw", and "openshell" when OpenShell is installed.
+  runtimes: string[];
 }
 
 // The signed-in user, from /api/me.
@@ -24,6 +26,7 @@ export function useMe(): Me | null {
         username: d.username,
         isAdmin: !!d.isAdmin,
         roles: Array.isArray(d.roles) ? d.roles : [],
+        runtimes: Array.isArray(d.runtimes) ? d.runtimes : ["claw"],
       }))
       .catch(() => {});
   }, []);

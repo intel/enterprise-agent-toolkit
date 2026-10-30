@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sanitizeWorkspace, normalizeWebFetchAllowlist } from "../lib/workspace.js";
-import { validateAgentNaming, agentNamespace } from "../lib/k8s.js";
+import { validateAgentNaming, agentNamespace, validateRuntime, enabledRuntimes } from "../lib/k8s.js";
 import { ownerNamespace } from "../lib/identity.js";
 import { parseIfMatch } from "../lib/http.js";
 import { crossSiteRefusal } from "../lib/security/context.js";
@@ -48,4 +48,26 @@ test("state changes from another site are refused; scripts and same-site calls p
   assert.equal(crossSiteRefusal("POST", { host, origin: `https://${host}` }), null); // the console
   assert.equal(crossSiteRefusal("POST", { host }), null); // a script: no Origin
   assert.equal(crossSiteRefusal("GET", { host, origin: "https://evil.example" }), null); // reads change nothing
+});
+
+test("runtime: claw by default; openshell only when enabled, within 19 characters, on the cluster's model", () => {
+  delete process.env.OPENSHELL_ENABLED;
+  assert.deepEqual(enabledRuntimes(), ["claw"]);
+  assert.equal(validateRuntime(undefined, "oss-solo", "vkumar4"), "claw");
+  assert.throws(() => validateRuntime("openshell", "oss", "vkumar4"), (e: any) => e.status === 400 && /not available/.test(e.message));
+  assert.throws(() => validateRuntime("hermes", "oss", "vkumar4"), (e: any) => e.status === 400);
+  process.env.OPENSHELL_ENABLED = "true";
+  try {
+    assert.deepEqual(enabledRuntimes(), ["claw", "openshell"]);
+    assert.equal(validateRuntime("openshell", "oss", "vkumar4"), "openshell");
+    // agent-vkumar4-oss-solo is 22; agent-vkumar4- leaves 5.
+    assert.throws(() => validateRuntime("openshell", "oss-solo", "vkumar4"),
+      (e: any) => e.status === 400 && /is 22/.test(e.message) && /at most 5 characters/.test(e.message));
+    assert.throws(() => validateRuntime("openshell", "a", "averyverylonguser"), (e: any) => /leaves no room/.test(e.message));
+    assert.throws(() => validateRuntime("openshell", "oss", "vkumar4", { baseUrl: "http://x/v1" }), (e: any) => /not supported/.test(e.message));
+    assert.throws(() => validateRuntime("openshell", "oss", "vkumar4", { apiKey: "k" }), (e: any) => /not supported/.test(e.message));
+    assert.equal(validateRuntime("claw", "oss-solo", "vkumar4", { baseUrl: "http://x/v1" }), "claw");
+  } finally {
+    delete process.env.OPENSHELL_ENABLED;
+  }
 });

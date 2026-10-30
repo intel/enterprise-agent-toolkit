@@ -39,6 +39,8 @@ spec:
             - {name: JWT_AUDIENCE, value: {{ .Values.auth.audience | quote }}}
             - {name: JWT_AUTHORIZED_PARTIES, value: {{ .Values.auth.authorizedParties | quote }}}
             - {name: GRANT_MAX_TTL_HOURS, value: {{ .Values.grantMaxTtlHours | quote }}}
+            # Offer runtime: openshell (the agent operator runs it when OpenShell is installed).
+            - {name: OPENSHELL_ENABLED, value: {{ .Values.openshellEnabled | quote }}}
             - name: AUDIT_PG_DSN
               valueFrom: {secretKeyRef: {name: {{ .Values.runtimeSecret }}, key: pgvector-dsn}}
           ports:

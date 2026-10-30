@@ -95,6 +95,7 @@
       route:
         hostname: "{{ claw_console_hostname }}"
       runtimeSecret: "{{ claw_runtime_secret }}"
+      openshellEnabled: "{{ openshell_enabled | default(false) | bool }}"
       audit:
         retention:
           months: "{{ agent_backend_audit_retention_months }}"

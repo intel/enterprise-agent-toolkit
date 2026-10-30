@@ -85,6 +85,10 @@ export async function listRegisteredTools(): Promise<ToolEntry[]> {
     }));
 }
 
+const badRequest = (message: string): never => {
+  throw Object.assign(new Error(message), { status: 400 });
+};
+
 // ── Agents ───────────────────────────────────────────────────────────────────
 // agent-<username>-<name>: the agent's own namespace (its Agent lives in user-<username>).
 export function agentNamespace(username: string, name: string): string {
@@ -202,6 +206,9 @@ const modelSpecOf = (m: ModelFields) =>
   Object.fromEntries(Object.entries({ provider: m.provider, id: m.id, name: m.name, baseUrl: m.baseUrl }).filter(([, v]) => v));
 
 export async function updateAgentModel(namespace: string, name: string, model: ModelFields, apiKey?: string, rv?: string) {
+  if ((model.baseUrl || apiKey) && (await getAgent(namespace, name))?.spec?.runtime === "openshell") {
+    badRequest("openshell agents use the cluster's model gateway: a model base URL or API key is not supported");
+  }
   const spec: any = {};
   if (Object.keys(modelSpecOf(model)).length) spec.model = modelSpecOf(model);
   const backendNs = apiKey ? await backendNamespaceOf(namespace, name) : "";
@@ -233,6 +240,7 @@ export interface CreateAgentInput {
   webFetchAllowlist?: string[];
   githubToken?: string;
   model?: ModelFields & { apiKey?: string };
+  runtime?: string;       // "claw" (default) or "openshell", when the cluster enables it
   requestId?: string;     // joins operator logs to this request and its audit row
 }
 
@@ -242,9 +250,34 @@ const NAME_RE = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
 const USERNAME_RE = /^[a-z0-9]{1,39}$/;
 const MAX_DERIVED_NAME = 63;
 
-const badRequest = (message: string): never => {
-  throw Object.assign(new Error(message), { status: 400 });
-};
+
+// OpenShell workspace names (the agent namespace) are at most 19 characters.
+export const OPENSHELL_MAX_NAMESPACE = 19;
+
+/** The runtimes this cluster runs agents on; openshell only with the OpenShell component. */
+export function enabledRuntimes(): string[] {
+  return ["claw", ...((process.env.OPENSHELL_ENABLED || "").trim().toLowerCase() === "true" ? ["openshell"] : [])];
+}
+
+/** The Agent's runtime, refused here with the operator's reasons so the caller sees them at once. */
+export function validateRuntime(runtime: string | undefined, name: string, ownerUsername: string,
+                                model?: ModelFields & { apiKey?: string }): string {
+  const rt = (runtime || "claw").trim();
+  if (!enabledRuntimes().includes(rt)) badRequest(`runtime '${rt}' is not available on this cluster`);
+  if (rt === "openshell") {
+    const ns = agentNamespace(ownerUsername, name);
+    if (ns.length > OPENSHELL_MAX_NAMESPACE) {
+      const room = OPENSHELL_MAX_NAMESPACE - agentNamespace(ownerUsername, "").length;
+      badRequest(`openshell agents need a namespace of at most ${OPENSHELL_MAX_NAMESPACE} characters: '${ns}' is ` +
+        `${ns.length}; ${room > 0 ? `use an agent name of at most ${room} characters` : "this username leaves no room for an agent name"}`);
+    }
+    // The sandbox reaches models only through the gateway's provider, which holds the cluster key.
+    if (model?.baseUrl || model?.apiKey) {
+      badRequest("openshell agents use the cluster's model gateway: a model base URL or API key is not supported");
+    }
+  }
+  return rt;
+}
 
 export function validateAgentNaming(name: string, ownerUsername?: string): string {
   if (!NAME_RE.test(name)) {
@@ -281,9 +314,10 @@ export async function ensureOwnerNamespace(username: string): Promise<string> {
 
 export async function createAgent(input: CreateAgentInput): Promise<any> {
   const username = validateAgentNaming(input.name, input.ownerUsername);
+  const runtime = validateRuntime(input.runtime, input.name, username, input.model);
   const ns = await ensureOwnerNamespace(username);
   const spec: any = {
-    runtime: "claw",
+    runtime,
     owner: { principal: input.owner, username },
     desiredState: "Running",
     skills: input.skills?.length ? input.skills : ["shell", "read_file", "list_files"],

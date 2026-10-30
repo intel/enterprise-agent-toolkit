@@ -22,7 +22,7 @@ import {
 import {
   listAgentsForUser, listAllAgents, createAgent, deleteAgent, setDesiredState, patchAgentCapabilities,
   updateAgentModel, updateAgentGithubToken, getAgentProvisioning, listGrantsForAgent, createGrant, revokeGrant,
-  listRegisteredTools, resourceVersionOf, type ModelFields,
+  listRegisteredTools, resourceVersionOf, enabledRuntimes, type ModelFields,
 } from "./lib/k8s.js";
 import { sanitizeWorkspace, normalizeWebFetchAllowlist } from "./lib/workspace.js";
 
@@ -168,7 +168,7 @@ app.get("/api/me", handled(async (req, res) => {
   const ctx = requireCtx(req);
   res.json({
     email: ctx.email, username: ctx.username || ctx.subject, isAdmin: ctx.isAdmin, roles: ctx.roles,
-    scopes: stackScopesOf(ctx), authMethod: ctx.authMethod,
+    scopes: stackScopesOf(ctx), authMethod: ctx.authMethod, runtimes: enabledRuntimes(),
   });
 }));
 
@@ -206,6 +206,7 @@ app.post("/api/agents", requireRole(ROLE_EDITOR), requireScope(SCOPE_WRITE), aud
     workspace: sanitizeWorkspace(body.workspace),
     webFetchAllowlist: normalizeWebFetchAllowlist(body.webFetchAllowlist),
     githubToken: str(body.githubToken) || undefined,
+    runtime: str(body.runtime) || undefined,
     model: modelOf(body) && { ...modelOf(body), apiKey: typeof body.model?.apiKey === "string" ? body.model.apiKey : undefined },
   });
   const href = `${PUBLIC_API_BASE}/agents/${agent?.metadata?.namespace ?? ""}/${agent?.metadata?.name ?? ""}`;
