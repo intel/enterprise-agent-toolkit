@@ -33,10 +33,15 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ item }}"
+        name: "{{ item.name }}"
+        labels: "{{ item.labels }}"
   loop:
-    - "{{ openshell_namespace }}"
-    - "{{ openshell_sandbox_namespace }}"
+    - {name: "{{ openshell_namespace }}", labels: {}}
+    # The admin workspace: the label makes it one.
+    - name: "{{ openshell_sandbox_namespace }}"
+      labels: "{{ {openshell_operator_namespace_label.split('=')[0]: openshell_operator_namespace_label.split('=')[1]} }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 # Seeding a workspace on NFS takes ~16 min (thousands of small files); a node-local class keeps sandbox start fast
 - name: "openshell | Find the node-local StorageClass for sandbox workspaces"
@@ -69,7 +74,9 @@
           pullPolicy: Always
       {% endif %}
       server:
-        sandboxNamespace: {{ openshell_sandbox_namespace | to_json }}
+        drivers:
+          kubernetes:
+            operatorNamespaceLabel: {{ openshell_operator_namespace_label | to_json }}
       {% set _ws_sc = openshell_workspace_storage_class if openshell_workspace_storage_class | length > 0
            else ('local-path' if (_openshell_local_sc.resources | default([]) | length > 0) else '') %}
       {% if _ws_sc | length > 0 %}
@@ -80,8 +87,9 @@
           issuer: {{ openshell_oidc_issuer | to_json }}
           audience: {{ openshell_oidc_audience | to_json }}
       {% else %}
-        auth:
-          allowUnauthenticatedUsers: true
+      gatewayConfig:
+        openshell.gateway.mtls_auth:
+          enabled: true
       {% endif %}
       {% if openshell_upstream_proxy | length > 0 %}
       upstreamProxy:
@@ -90,110 +98,60 @@
       {% endif %}
   register: openshell_helm
 
-# Chart gap: supervisor pods in server.sandboxNamespace mount the client TLS secret,
-# but the chart only creates it in the release namespace.
-- name: "openshell | Replicate client TLS secret into the sandbox namespace"
-  ansible.builtin.shell: |
-    set -o pipefail
-    kubectl get secret {{ openshell_client_tls_secret }} -n {{ openshell_namespace }} -o json \
-      | python3 -c 'import json, sys; s = json.load(sys.stdin); print(json.dumps({"apiVersion": s.get("apiVersion"), "kind": s.get("kind"), "type": s.get("type"), "data": s.get("data"), "metadata": {"name": s["metadata"]["name"], "namespace": "{{ openshell_sandbox_namespace }}"}}))' \
-      | kubectl apply -f -
-  args:
-    executable: /bin/bash
-  register: tls_copy
-  changed_when: "'configured' in tls_copy.stdout or 'created' in tls_copy.stdout"
+# The sandbox ServiceAccount, the gateway's Role there and the SSH NetworkPolicy. The gateway
+# copies only the CA into the workspace; the client key stays in openshell_namespace.
+- name: "openshell | Install the admin workspace chart"
+  kubernetes.core.helm:
+    name: "{{ openshell_release_name }}-workspace"
+    chart_ref: "{{ openshell_workspace_chart_ref }}"
+    chart_version: "{{ openshell_chart_version }}"
+    release_namespace: "{{ openshell_sandbox_namespace }}"
+    values:
+      gateway:
+        serviceAccount:
+          name: "{{ openshell_release_name }}"
+          namespace: "{{ openshell_namespace }}"
+        networkPolicy:
+          podSelector:
+            app.kubernetes.io/name: openshell
+            app.kubernetes.io/instance: "{{ openshell_release_name }}"
+    wait: true
 
-# NodeLocal DNSCache is the pods' resolver on a link-local address that the kube-dns
-# pod selector does not match. Its DaemonSet is nodelocaldns on kubespray clusters and
-# node-local-dns with the upstream manifest. When neither exists, only the kube-dns
-# pods are allowed (openshell_sandbox_dns_cidrs names another resolver).
-- name: "openshell | Detect NodeLocal DNSCache"
-  kubernetes.core.k8s_info:
-    api_version: apps/v1
-    kind: DaemonSet
-    name: "{{ item }}"
-    namespace: kube-system
-  loop: [nodelocaldns, node-local-dns]
-  register: _openshell_nodelocaldns
-  when:
-    - openshell_sandbox_network_policy | bool
-    - openshell_sandbox_dns_cidrs | length == 0
-
-# Selects only pods without openshell.ai/boundary-role, so split-pod charts keep their
-# own (stricter) policies: NetworkPolicy allows are additive.
-- name: "openshell | Apply sandbox pod NetworkPolicy"
+# Sandbox routes are served on the gateway port without authentication (0.1.x: client
+# certificates are optional, and only the RPCs check identity), so whoever reaches the
+# port reaches every exposed sandbox service. Allow only the supervisors and the
+# namespaces that call the gateway. kubectl port-forward enters through the kubelet,
+# which NetworkPolicy does not filter. Sandbox pods get their policies from OpenShell.
+- name: "openshell | Restrict who can reach the gateway"
   kubernetes.core.k8s:
     state: present
-    definition: "{{ sandbox_np | from_yaml }}"
+    definition: "{{ gateway_np | from_yaml }}"
   vars:
-    # Proxy hostnames behind GSLB resolve to varying IPs: allow the proxy port on
-    # openshell_upstream_proxy_cidrs (default: private ranges) instead of pinning /32s.
-    proxy_cidrs: "{{ openshell_upstream_proxy_cidrs if openshell_upstream_proxy | length > 0 else [] }}"
-    # NodeLocal DNSCache container args, e.g. [-localip, <address>, -conf, ...].
-    nodelocaldns_args: >-
-      {{ _openshell_nodelocaldns.results | default([])
-         | map(attribute='resources', default=[]) | flatten
-         | map(attribute='spec.template.spec.containers') | flatten
-         | map(attribute='args', default=[]) | flatten }}
-    # Each -localip may list several comma-separated addresses.
-    nodelocaldns_cidrs: >-
-      {{ (nodelocaldns_args | zip(nodelocaldns_args[1:])
-          | selectattr(0, 'eq', '-localip') | map(attribute=1) | join(','))
-         | split(',') | map('trim') | select | unique | map('regex_replace', '$', '/32') | list }}
-    dns_cidrs: "{{ openshell_sandbox_dns_cidrs if openshell_sandbox_dns_cidrs | length > 0 else nodelocaldns_cidrs }}"
-    sandbox_np: |
+    gateway_np: |
       apiVersion: networking.k8s.io/v1
       kind: NetworkPolicy
       metadata:
-        name: eat-openshell-sandbox-pods
-        namespace: {{ openshell_sandbox_namespace }}
+        name: openshell-gateway-ingress
+        namespace: {{ openshell_namespace }}
         labels:
           app.kubernetes.io/managed-by: agentic-ai-stack
       spec:
         podSelector:
-          matchExpressions:
-          - {key: openshell.ai/boundary-role, operator: DoesNotExist}
-        policyTypes: [Ingress, Egress]
+          matchLabels:
+            app.kubernetes.io/name: openshell
+            app.kubernetes.io/instance: {{ openshell_release_name }}
+        policyTypes: [Ingress]
         ingress:
         - from:
-          - namespaceSelector:
-              matchLabels: {kubernetes.io/metadata.name: {{ openshell_namespace }}}
-        egress:
-        - to:
-          - namespaceSelector:
-              matchLabels: {kubernetes.io/metadata.name: kube-system}
+          - namespaceSelector: {}
             podSelector:
-              matchLabels: {k8s-app: kube-dns}
-          # NodeLocal DNSCache (hostNetwork, link-local IP) or openshell_sandbox_dns_cidrs
-      {% for cidr in dns_cidrs %}
-          - ipBlock: {cidr: "{{ cidr }}"}
-      {% endfor %}
-          ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
-        - to:
+              matchLabels: {openshell.ai/boundary-role: supervisor}
+      {% for ns in openshell_gateway_client_namespaces %}
           - namespaceSelector:
-              matchLabels: {kubernetes.io/metadata.name: {{ openshell_namespace }}}
-        - to:
-          - namespaceSelector:
-              matchLabels: {kubernetes.io/metadata.name: {{ openshell_genai_namespace }}}
-          ports: [{port: {{ openshell_genai_service_port }}, protocol: TCP}]
-      {% if proxy_cidrs | length > 0 %}
-        - to:
-      {% for cidr in proxy_cidrs %}
-          - ipBlock: {cidr: {{ cidr }}}
+              matchLabels: {kubernetes.io/metadata.name: {{ ns }}}
       {% endfor %}
-          ports: [{port: {{ openshell_upstream_proxy | urlsplit('port') | default(3128, true) }}, protocol: TCP}]
-      {% endif %}
-      {% if openshell_sandbox_egress_cidrs | length > 0 %}
-        - to:
-      {% for cidr in openshell_sandbox_egress_cidrs %}
-          - ipBlock: {cidr: {{ cidr }}}
-      {% endfor %}
-      {% endif %}
-        - to:
-          - ipBlock:
-              cidr: 0.0.0.0/0
-              except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]
-  when: openshell_sandbox_network_policy | bool
+          ports: [{port: 8080, protocol: TCP}]
+  when: openshell_gateway_network_policy | bool
 
 - name: "openshell | Verify OpenShell gateway is ready"
   ansible.builtin.command: >
@@ -362,14 +320,10 @@
         PORT=$(sed -nE 's/^Forwarding from 127\.0\.0\.1:([0-9]+).*/\1/p' pf.log | head -1)
         [ -n "$PORT" ] || { echo "kubectl port-forward to svc/{{ openshell_release_name }} did not start:" >&2; cat pf.log >&2; exit 1; }
         ./openshell gateway add "https://127.0.0.1:${PORT}" --local --name eat > /dev/null
-        # <= 0.0.116 composes provider endpoints into sandbox policy only behind this flag
-        # (dev builds dropped the key and always compose).
-        if ./openshell settings get --global | grep -q providers_v2_enabled; then
-          ./openshell settings set --global --key providers_v2_enabled --value true --yes > /dev/null
-        fi
+        # Profiles are workspace-scoped; a global one serves every workspace (--global-profile).
         # Match the gRPC NotFound text: the CLI line-wraps the "provider profile not found" message.
         for _ in 1 2 3; do
-          OUT=$(./openshell provider profile export eat-genai-gateway 2>&1) && break
+          OUT=$(./openshell provider profile export --global eat-genai-gateway 2>&1) && break
           grep -q 'entity was not found' <<< "$OUT" && break
           sleep 2
         done
@@ -377,18 +331,23 @@
         if [ -n "$RV" ]; then
           # update is optimistic-concurrency: requires the stored resource_version
           sed -i "/^id: /a resource_version: ${RV}" genai-gateway-provider.yaml
-          ./openshell provider profile update --file genai-gateway-provider.yaml eat-genai-gateway
+          ./openshell provider profile update --global --file genai-gateway-provider.yaml eat-genai-gateway
         elif grep -q 'entity was not found' <<< "$OUT"; then
-          ./openshell provider profile import -f genai-gateway-provider.yaml
+          ./openshell provider profile import --global -f genai-gateway-provider.yaml
         else
           echo "$OUT" >&2
           exit 1
         fi
-        if ./openshell provider get {{ openshell_genai_provider_name }} > /dev/null 2>&1; then
+        # The admin workspace record; the namespace and its objects already exist.
+        if ! OUT=$(./openshell workspace create --name {{ openshell_sandbox_namespace }} 2>&1); then
+          grep -q 'already exists' <<< "$OUT" || { echo "$OUT" >&2; exit 1; }
+        fi
+        WS="--workspace {{ openshell_sandbox_namespace }}"
+        if ./openshell provider get $WS {{ openshell_genai_provider_name }} > /dev/null 2>&1; then
           echo "provider exists"
         elif ! OUT=$(OPENAI_API_KEY="$(kubectl get secret openshell-genai-key -n {{ openshell_namespace }} -o jsonpath='{.data.api_key}' | base64 -d)" \
-            ./openshell provider create --name {{ openshell_genai_provider_name }} \
-              --type eat-genai-gateway --credential OPENAI_API_KEY 2>&1); then
+            ./openshell provider create $WS --name {{ openshell_genai_provider_name }} \
+              --type eat-genai-gateway --global-profile --credential OPENAI_API_KEY 2>&1); then
           # a transient get failure must not fail a re-run
           grep -q 'already exists' <<< "$OUT" || { echo "$OUT" >&2; exit 1; }
           echo "provider exists"
@@ -417,13 +376,13 @@
       - "  OpenShell deployed successfully!"
       - "  Chart      : {{ openshell_chart_ref }}:{{ openshell_chart_version }} (images {{ openshell_image_tag }})"
       - "  Gateway    : {{ openshell_release_name }}.{{ openshell_namespace }}.svc.cluster.local:8080 (mTLS)"
-      - "  Sandboxes  : namespace {{ openshell_sandbox_namespace }} (Agent Sandbox CRs)"
-      - "  Auth       : {{ 'OIDC ' + openshell_oidc_issuer if openshell_oidc_issuer | length > 0 else 'ClusterIP-only, Kubernetes RBAC (port-forward)' }}"
+      - "  Workspaces : namespaces labeled {{ openshell_operator_namespace_label }}; admin workspace {{ openshell_sandbox_namespace }}"
+      - "  Auth       : {{ 'OIDC ' + openshell_oidc_issuer if openshell_oidc_issuer | length > 0 else 'mTLS client certificate, ClusterIP-only (port-forward)' }}"
       - "  Provider   : {{ openshell_genai_provider_name if (genai_present.rc | default(1)) == 0 else 'none (GenAI Gateway not deployed)' }}"
       - "============================================================"
       - "  Quick-start (admin):"
       - "    kubectl port-forward -n {{ openshell_namespace }} svc/{{ openshell_release_name }} 8080:8080 &"
       - "    # client mTLS bundle: secret {{ openshell_client_tls_secret }} in {{ openshell_namespace }}"
       - "    openshell gateway add https://127.0.0.1:8080 --local --name eat"
-      - "    openshell sandbox create --name demo --provider {{ openshell_genai_provider_name }} \\"
+      - "    openshell sandbox create --workspace {{ openshell_sandbox_namespace }} --name demo --provider {{ openshell_genai_provider_name }} \\"
       - "      --env OPENAI_BASE_URL=http://{{ openshell_genai_service_host }}:{{ openshell_genai_service_port }}/v1"

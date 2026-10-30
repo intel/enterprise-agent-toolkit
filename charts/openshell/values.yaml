@@ -11,6 +11,14 @@ global:
 server:
   # Upstream default sends anonymous usage telemetry; enterprise deployments opt out.
   telemetryEnabled: false
+  drivers:
+    kubernetes:
+      # Workspaces are pre-provisioned namespaces (operatorNamespaceLabel is set by the role).
+      workspaceMode: operator
+
+# The gateway release only; each workspace namespace gets the openshell-workspace chart.
+workspaceResources:
+  enabled: false
 
 # Agent Sandbox CRDs/controller come from deploy_agent_sandbox; fail fast if absent.
 agentSandbox:
