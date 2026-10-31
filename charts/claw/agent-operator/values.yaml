@@ -141,11 +141,16 @@ openshell:
   providerType: eat-genai-gateway
   # Secret <namespace>/<name>/<key> with the cluster's model key, held by each workspace's provider.
   modelKeySecret: openshell-system/openshell-genai-key/api_key
-  # The provider profile's endpoint: the only model host the supervisor injects the key for.
+  # The GenAI Gateway (LiteLLM): the provider profile's endpoint, the only model host the
+  # supervisor injects the key for. Empty when there is no LiteLLM: agents then use the AI
+  # Gateway (aiGatewayUrl, else agents.model.baseUrl) for chat and embeddings, with no key.
   modelBaseUrl: ""
   # The Envoy AI Gateway, which openshell agents may also use (spec.model.provider ai-gateway,
   # no key); empty offers only the GenAI Gateway.
   aiGatewayUrl: ""
+  # Each model's own OpenAI-compatible URL, "{model}" for its name (KServe's /<namespace>/<name>
+  # through the AI Gateway): where the operator reads a model's served size when LiteLLM can't.
+  modelServerUrl: ""
   # Secret (key api_key) with a LiteLLM key that may manage users and keys: set, each agent gets
   # its own key owned by its user; empty uses the shared key in modelKeySecret.
   litellmAdminSecret: ""

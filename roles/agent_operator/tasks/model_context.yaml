@@ -48,26 +48,56 @@
   register: _ao_served_context
   changed_when: false
   failed_when: false
+  when: claw_model_context_window | int > 0 and claw_litellm_present | bool
+
+# No LiteLLM, or it doesn't know the size: ask the model's own server (claw_model_server_url),
+# through the API server's proxy to the in-cluster gateway Service.
+- name: "agent_operator | Read the default model's served context size from its own server"
+  vars:
+    _url: "{{ claw_model_server_url | replace('{model}', claw_model_id) }}"
+    _host: "{{ _url | urlsplit('hostname') }}"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - get
+      - --raw
+      - >-
+        /api/v1/namespaces/{{ _host.split('.')[1] }}/services/{{ _host.split('.')[0] }}:{{ _url | urlsplit('port') or 80
+        }}/proxy{{ _url | urlsplit('path') | regex_replace('/$', '') }}/models
+  register: _ao_own_context
+  changed_when: false
+  failed_when: false
+  when:
+    - claw_model_context_window | int > 0
+    - (_ao_served_context.stdout | default('0') | trim | int) == 0
+    - (claw_model_server_url | replace('{model}', claw_model_id) | urlsplit('hostname')) is search('\\.svc(\\.cluster\\.local)?$')
+
+- name: "agent_operator | Record the default model's served context size"
+  ansible.builtin.set_fact:
+    _ao_served_size: >-
+      {{ (_ao_served_context.stdout | default('0') | trim | int)
+         or ((_ao_own_context.stdout | default('', true) or '{}') | from_json).data | default([])
+             | map(attribute='max_model_len') | map('int') | list | max | default(0) }}
   when: claw_model_context_window | int > 0
 
 - name: "agent_operator | Note an unknown served context size"
   ansible.builtin.debug:
     msg: >-
-      Could not read the context size {{ claw_model_id }} serves (not registered in LiteLLM yet?);
+      Could not read the context size {{ claw_model_id }} serves (not deployed yet?);
       claw_model_context_window={{ claw_model_context_window }} is not checked against it.
   when:
     - claw_model_context_window | int > 0
-    - (_ao_served_context.stdout | default('0') | trim | int) == 0
+    - _ao_served_size | int == 0
 
 - name: "agent_operator | Check the context size fits the default model"
   ansible.builtin.assert:
     that:
-      - claw_model_context_window | int <= _ao_served_context.stdout | trim | int
+      - claw_model_context_window | int <= _ao_served_size | int
     fail_msg: >-
       claw_model_context_window is {{ claw_model_context_window }}, but {{ claw_model_id }} serves
-      {{ _ao_served_context.stdout | trim }} tokens: conversations longer than that would fail.
-      Set claw_model_context_window to at most {{ _ao_served_context.stdout | trim }}, or 0.
+      {{ _ao_served_size }} tokens: conversations longer than that would fail.
+      Set claw_model_context_window to at most {{ _ao_served_size }}, or 0.
     quiet: true
   when:
     - claw_model_context_window | int > 0
-    - (_ao_served_context.stdout | default('0') | trim | int) > 0
+    - _ao_served_size | int > 0

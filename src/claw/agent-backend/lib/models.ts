@@ -58,6 +58,16 @@ async function servedSize(fetchImpl: Fetch, apiBase: unknown): Promise<number> {
   }
 }
 
+// A model name as it may go into a URL path: never "..", "/" or anything to escape.
+const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/** The size a model serves at its own URL (MODEL_SERVER_URL, "{model}" for its name): KServe
+ *  serves each model at /<namespace>/<name>, also through the AI Gateway, so no LiteLLM is needed. */
+async function ownServerSize(fetchImpl: Fetch, env: NodeJS.ProcessEnv, id: string): Promise<number> {
+  const template = env.MODEL_SERVER_URL || "";
+  return template && MODEL_ID_RE.test(id) ? servedSize(fetchImpl, template.replace("{model}", id)) : 0;
+}
+
 /** LiteLLM's model names and context sizes; it alone knows each model's server, so the AI Gateway
  *  reuses them. The server's own figure first: LiteLLM's max_input_tokens is empty for a newly
  *  registered model and can be the model's published size rather than the one it is served with. */
@@ -89,6 +99,11 @@ export async function listGateways(fetchImpl: Fetch = fetch as unknown as Fetch,
         ? await liteLlmModels(fetchImpl, g, env.LITELLM_LIST_KEY || "")
         : await openAiModels(fetchImpl, g);
       for (const m of models) if (m.contextWindow) sizes.set(m.id, m.contextWindow);
+      // Neither LiteLLM nor the gateway's list said: ask the model's own server, once per model.
+      await Promise.all(models.filter((m) => !m.contextWindow && !sizes.has(m.id) && !exclude.has(m.id)).map(async (m) => {
+        const size = await ownServerSize(fetchImpl, env, m.id);
+        if (size) sizes.set(m.id, size);
+      }));
       const seen = new Set<string>();
       gateways.push({
         name: g.name, label: g.label || g.name,

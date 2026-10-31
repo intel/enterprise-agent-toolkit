@@ -65,8 +65,15 @@ OPENSHELL_SERVICE = os.environ.get("OPENSHELL_SERVICE", "openshell")
 OPENSHELL_ROUTE_BACKEND = "agent-operator-openshell"
 OPENSHELL_SERVICE_DOMAIN = os.environ.get("OPENSHELL_SERVICE_DOMAIN", "openshell.localhost")
 # Model gateways an openshell agent may name in spec.model.provider.
-OPENSHELL_MODEL_PROVIDERS = [os.environ.get("OPENSHELL_PROVIDER_NAME", "genai-gateway")] + (
-    [openshell_adapter.AI_GATEWAY_PROVIDER] if os.environ.get("OPENSHELL_AI_GATEWAY_URL") else [])
+def openshell_model_providers(env):
+    """The gateways an openshell agent may name; without LiteLLM (no GenAI Gateway URL), the AI
+    Gateway alone."""
+    genai = bool(env.get("OPENSHELL_MODEL_BASE_URL"))
+    return ([env.get("OPENSHELL_PROVIDER_NAME", "genai-gateway")] if genai else []) + (
+        [openshell_adapter.AI_GATEWAY_PROVIDER] if env.get("OPENSHELL_AI_GATEWAY_URL") or not genai else [])
+
+
+OPENSHELL_MODEL_PROVIDERS = openshell_model_providers(os.environ)
 
 PGVECTOR_DSN = os.environ.get("PGVECTOR_DSN", "")
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM") or 768)

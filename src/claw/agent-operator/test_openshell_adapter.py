@@ -405,6 +405,8 @@ class _ModelServers:
         return {"data": [{"id": "m", "max_model_len": self.sizes[url]}]}
 
 
+SERVER = "http://ai-gateway/llm-inference/{model}/v1"
+NO_LITELLM_ENV = {"OPENSHELL_MODEL_BASE_URL": ""}
 Q06 = "http://ai-gateway/llm-inference/qwen3-0-6b/v1"
 Q17 = "http://ai-gateway/llm-inference/qwen3-1-7b/v1"
 
@@ -483,6 +485,74 @@ class ContextWindowTest(unittest.TestCase):
         a, *_ = _adapter(litellm=ll)
         self.assertIsNone(a.served_context("qwen3-1-7b"))
         self.assertEqual(ll.calls, [])
+
+    def test_without_litellm_the_size_comes_from_the_model_s_own_url(self):
+        servers = _ModelServers({f"{SERVER.replace('{model}', 'qwen3-1-7b')}/models": 40960})
+        a, *_ = _adapter({**NO_LITELLM_ENV, "OPENSHELL_MODEL_SERVER_URL": SERVER})
+        a._fetch_json = servers
+        ctx = _ctx()
+        ctx.model = {"id": "qwen3-1-7b", "contextWindow": 262144}
+        self.assertEqual(a._model_vars(ctx)["context_window"], 40960)  # capped, with no LiteLLM
+        self.assertIsNone(a.served_context("not-deployed"))
+
+    def test_the_model_s_own_url_is_the_fallback_when_litellm_does_not_know(self):
+        servers = _ModelServers({f"{SERVER.replace('{model}', 'qwen3-1-7b')}/models": 40960})
+        a, _ = self._adapter([], servers, {"OPENSHELL_MODEL_SERVER_URL": SERVER})
+        self.assertEqual(a.served_context("qwen3-1-7b"), 40960)
+
+    def test_a_model_name_never_changes_the_url_path(self):
+        servers = _ModelServers({})
+        a, *_ = _adapter({**NO_LITELLM_ENV, "OPENSHELL_MODEL_SERVER_URL": SERVER})
+        a._fetch_json = servers
+        for evil in ("../../key/generate", "a/b", "..", "x?y", ""):
+            self.assertIsNone(a.served_context(evil))
+        self.assertEqual(servers.calls, [])
+
+
+NO_LITELLM = {"OPENSHELL_MODEL_BASE_URL": "", "EMBEDDING_BASE_URL": AIGW, "EMBEDDING_MODEL": "bge-base-en"}
+
+
+class WithoutLiteLLMTest(unittest.TestCase):
+    """No LiteLLM: no GenAI Gateway, so no provider and no key; the AI Gateway for chat and embeddings."""
+
+    def _agent(self, model=None, env=None):
+        a, client, k8s, _ = _adapter({**NO_LITELLM, **(env or {})})
+        ctx = _ctx(skills=["github"])
+        ctx.model = model or {}
+        return a, client, k8s, ctx
+
+    def test_no_provider_and_no_key(self):
+        a, client, k8s, ctx = self._agent()
+        a.create(ctx)
+        self.assertFalse([m for m, _ in client._stub.calls if m in ("GetProvider", "CreateProvider")])
+        self.assertFalse([n for n, _ in k8s.calls if n == "read_namespaced_secret"])  # no cluster key read
+        self.assertEqual(list(client.created[0]["spec"].providers), [])
+
+    def test_chat_and_embeddings_use_the_ai_gateway_which_the_policy_allows(self):
+        for model in ({}, {"provider": "genai-gateway", "id": "qwen3-coder-30b"}):
+            a, _, _, ctx = self._agent(model)
+            cfg = json.loads(a._config_json(ctx))
+            self.assertEqual(list(cfg["models"]["providers"]), ["ai-gateway"])
+            provider = cfg["models"]["providers"]["ai-gateway"]
+            self.assertEqual((provider["baseUrl"], provider["apiKey"]), (AIGW, oa.NO_KEY))
+            self.assertEqual(cfg["agents"]["defaults"]["memorySearch"]["remote"]["baseUrl"], AIGW)
+            rules = _rules(a, ctx)["network_policies"]
+            self.assertNotIn("_provider_genai_gateway", rules)
+            self.assertIn("ai-gateway.envoy-gateway-system.svc.cluster.local",
+                          [e["host"] for e in rules["agent_services"]["endpoints"]])
+
+    def test_the_ai_gateway_url_defaults_to_the_cluster_model_url(self):
+        a, _, _, ctx = self._agent()  # OPENSHELL_AI_GATEWAY_URL unset: MODEL_BASE_URL, the AI Gateway
+        self.assertEqual(a.model_gateway(ctx)[1], "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1")
+
+    def test_no_litellm_calls_and_delete_still_works(self):
+        ll = _LiteLLM()
+        a, client, *_ = _adapter(NO_LITELLM, litellm=ll)
+        ctx = _ctx()
+        a.create(ctx)
+        a.delete(ctx)
+        self.assertEqual(ll.calls, [])
+        self.assertIsNone(a.served_context("qwen3-coder-30b"))
 
 
 class LifecycleTest(unittest.TestCase):

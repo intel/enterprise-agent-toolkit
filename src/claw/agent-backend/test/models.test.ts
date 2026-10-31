@@ -151,3 +151,37 @@ test("a model change without a size drops the old model's size", () => {
                    { provider: "genai-gateway", id: "qwen3-1-7b", contextWindow: 40960 });
   assert.deepEqual(modelChange(undefined, { id: "qwen3-1-7b" }), { patch: { id: "qwen3-1-7b" }, effective: { id: "qwen3-1-7b" } });
 });
+
+test("without LiteLLM, sizes come from each model's own URL; a name never changes the path", async () => {
+  resetModelCache();
+  const calls: string[] = [];
+  const env = {
+    MODEL_GATEWAYS: JSON.stringify([{ name: "ai-gateway", label: "AI Gateway (Envoy)", url: AIGW, kind: "openai" }]),
+    MODEL_LIST_EXCLUDE: "bge-base-en",
+    MODEL_SERVER_URL: "http://ai-gateway.envoy-gateway-system.svc.cluster.local/llm-inference/{model}/v1",
+  };
+  const fetchImpl = async (url: string) => {
+    calls.push(url);
+    if (url === `${AIGW}/models`) {
+      return { ok: true, status: 200, json: async () => ({ data: [{ id: "qwen3-coder-30b" }, { id: "qwen3-0-6b" }, { id: "gone" }, { id: "bge-base-en" }, { id: "../key/generate" }] }) };
+    }
+    const m = url.match(/llm-inference\/([^/]+)\/v1\/models$/);
+    const size = m && ({ "qwen3-coder-30b": 262144, "qwen3-0-6b": 16384 } as any)[m[1]];
+    if (size) return { ok: true, status: 200, json: async () => ({ data: [{ id: m![1], max_model_len: size }] }) };
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  const [aigw] = await listGateways(fetchImpl as any, env as any, 1);
+  assert.deepEqual(aigw.models.filter((m) => m.id !== "../key/generate"),
+    [{ id: "gone" }, { id: "qwen3-0-6b", contextWindow: 16384 }, { id: "qwen3-coder-30b", contextWindow: 262144 }]);
+  assert.ok(!calls.some((c) => c.includes("bge-base-en")));   // excluded models are not asked
+  assert.ok(!calls.some((c) => c.includes("..")));            // an odd name is never put in a URL
+  // The picker's checks then work without LiteLLM.
+  const saved = { ...process.env };
+  try {
+    process.env.MODEL_GATEWAYS = env.MODEL_GATEWAYS;
+    assert.match(gatewayModelProblem({ id: "qwen3-0-6b" }, [aigw]) ?? "", /16384 tokens, too few/);
+    assert.match(gatewayModelProblem({ id: "qwen3-coder-30b", contextWindow: 524288 }, [aigw]) ?? "", /more than/);
+  } finally {
+    process.env = saved;
+  }
+});

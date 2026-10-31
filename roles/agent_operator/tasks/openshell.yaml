@@ -64,7 +64,7 @@
 # /key/list and /key/update limit agent keys minted before their routes were).
 # Minted once, inside the LiteLLM pod, so the master key never leaves it.
 - name: "agent_operator | openshell | LiteLLM key for per-agent keys"
-  when: claw_openshell_agent_keys | bool
+  when: claw_openshell_agent_keys | bool and claw_litellm_present | bool
   vars:
     _ao_ll_admin_routes: ["/key/generate", "/key/delete", "/key/info", "/key/list", "/key/update",
                           "/user/new", "/user/info", "/user/update", "/model/info"]

@@ -26,6 +26,9 @@ class RuntimeAdmissionTest(unittest.TestCase):
         self.addCleanup(lambda: (C.ADAPTERS.clear(), C.ADAPTERS.update(saved)))
         C.ADAPTERS.clear()
         C.ADAPTERS.update(claw=_Adapter(), openshell=_Adapter())
+        saved_providers = C.OPENSHELL_MODEL_PROVIDERS
+        self.addCleanup(lambda: setattr(C, "OPENSHELL_MODEL_PROVIDERS", saved_providers))
+        C.OPENSHELL_MODEL_PROVIDERS = ["genai-gateway", "ai-gateway"]  # a cluster with LiteLLM
 
     def _reconcile(self, name, username, **extra):
         patch, logger = Patch(), Logger()
@@ -56,6 +59,13 @@ class RuntimeAdmissionTest(unittest.TestCase):
         self.assertIn("model provider", status["suspendReason"])
         self.assertIsNone(C._runtime_error("oss", spec("vkumar4", runtime="openshell", model={"provider": "genai-gateway"}),
                                            "agent-vkumar4-oss"))
+
+    def test_without_litellm_only_the_ai_gateway_is_offered(self):
+        litellm = {"OPENSHELL_MODEL_BASE_URL": "http://litellm/v1", "OPENSHELL_AI_GATEWAY_URL": "http://aigw/v1"}
+        self.assertEqual(C.openshell_model_providers(litellm), ["genai-gateway", "ai-gateway"])
+        self.assertEqual(C.openshell_model_providers({"OPENSHELL_MODEL_BASE_URL": "http://litellm/v1"}), ["genai-gateway"])
+        self.assertEqual(C.openshell_model_providers({}), ["ai-gateway"])
+        self.assertEqual(C.openshell_model_providers({"OPENSHELL_AI_GATEWAY_URL": "http://aigw/v1"}), ["ai-gateway"])
 
     def test_a_custom_model_endpoint_fails_for_openshell(self):
         status = self._reconcile("oss", "vkumar4", runtime="openshell", model={"baseUrl": "http://x.example/v1"})

@@ -13,6 +13,7 @@ import base64
 import json
 import os
 import pathlib
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -47,6 +48,8 @@ MESH_POLICY = "openshell-sandbox-mesh"
 # content-safety guardrail; its key is injected by the workspace's provider. ai-gateway (Envoy AI
 # Gateway) needs no key in-cluster and is reached directly, when the cluster enables it.
 AI_GATEWAY_PROVIDER = "ai-gateway"
+# A model name as it may go into a URL path: never "..", "/" or anything to escape.
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 # What an agent's LiteLLM key may call. The supervisor adds the key to any request from the sandbox
 # to LiteLLM, so with the default (every route) code in the sandbox could mint itself new keys
 # (/key/generate) and read them in plain text.
@@ -92,10 +95,14 @@ def config_from_env(env=None):
         "agentRpmLimit": claw_adapter._int(env.get("OPENSHELL_AGENT_RPM_LIMIT"), 0),
         "userTpmLimit": claw_adapter._int(env.get("OPENSHELL_USER_TPM_LIMIT"), 0),
         "userRpmLimit": claw_adapter._int(env.get("OPENSHELL_USER_RPM_LIMIT"), 0),
-        # The provider profile's endpoint: the only model host the supervisor injects a key for.
+        # The GenAI Gateway (LiteLLM): the provider profile's endpoint, the only model host the
+        # supervisor injects a key for. Empty: no LiteLLM, so agents use the AI Gateway only.
         "modelBaseUrl": env.get("OPENSHELL_MODEL_BASE_URL", ""),
         # The Envoy AI Gateway's URL; empty leaves openshell agents on genai-gateway only.
         "aiGatewayUrl": env.get("OPENSHELL_AI_GATEWAY_URL", ""),
+        # Each model's own OpenAI-compatible URL with "{model}" for its name: KServe serves a model
+        # at /<namespace>/<name>, also through the AI Gateway. Its /models gives the served size.
+        "modelServerUrl": env.get("OPENSHELL_MODEL_SERVER_URL", ""),
         "serviceDomain": env.get("OPENSHELL_SERVICE_DOMAIN", "openshell.localhost"),
         "pypi": claw_adapter._bool(env.get("OPENSHELL_PYPI_ENABLED"), True),
     }
@@ -159,6 +166,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         self._litellm_call = litellm or self._litellm_http
         self._fetch_json = fetch_json or self._get_json
         self._sizes = {}  # model: (looked up at, served context size or None)
+        # Without LiteLLM there is no GenAI Gateway: no provider, no key, the AI Gateway for all.
+        self.genai = bool(self.os_cfg["modelBaseUrl"])
         self.mesh_ambient = bool(getattr(core, "mesh_ambient", False))
         self._client_factory = client_factory or self._connect
         self._client = None
@@ -372,6 +381,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
 
     def _ensure_provider(self, ctx):
         """The workspace's model provider; it holds the key, the sandbox sees a placeholder."""
+        if not self.genai:
+            return  # the AI Gateway takes no key
         pb, dm = self._pb()
         try:
             self.client._stub.GetProvider(pb.GetProviderRequest(
@@ -430,23 +441,32 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         return size
 
     def _lookup_context(self, model_id):
-        if not self.os_cfg["litellmAdminKey"]:
-            return None
+        """The model server's max_model_len: at the upstream LiteLLM lists for the model, else at
+        the model's own URL (modelServerUrl, which needs no LiteLLM); else LiteLLM's figure."""
+        entry = self._litellm_entry(model_id) if self.os_cfg["litellmAdminKey"] else None
+        bases = [(entry.get("litellm_params") or {}).get("api_base") or ""] if entry else []
+        if self.os_cfg["modelServerUrl"] and _MODEL_ID_RE.match(model_id or ""):
+            bases.append(self.os_cfg["modelServerUrl"].replace("{model}", model_id))
+        for base in bases:
+            size = self._served_max(base)
+            if size:
+                return size
+        return int(((entry or {}).get("model_info") or {}).get("max_input_tokens") or 0) or None
+
+    def _litellm_entry(self, model_id):
         status, body = self._litellm_call("/model/info", None)
         entries = (body.get("data") or []) if status == 200 and isinstance(body, dict) else []
-        entry = next((e for e in entries if e.get("model_name") == model_id), None)
-        if not entry:
-            return None
-        api_base = (entry.get("litellm_params") or {}).get("api_base") or ""
-        if api_base.startswith(("http://", "https://")):
-            try:
-                served = self._fetch_json(f"{api_base.rstrip('/')}/models")
-                sizes = [int(m.get("max_model_len") or 0) for m in (served or {}).get("data") or []]
-                if any(sizes):
-                    return max(sizes)
-            except Exception:  # not a vLLM server, or unreachable: fall back to LiteLLM's figure
-                pass
-        return int((entry.get("model_info") or {}).get("max_input_tokens") or 0) or None
+        return next((e for e in entries if e.get("model_name") == model_id), None)
+
+    def _served_max(self, base):
+        """max_model_len from a vLLM server's /models; 0 when it is not one or does not answer."""
+        if not base.startswith(("http://", "https://")):
+            return 0
+        try:
+            served = self._fetch_json(f"{base.rstrip('/')}/models")
+            return max([int(m.get("max_model_len") or 0) for m in (served or {}).get("data") or []] or [0])
+        except Exception:
+            return 0
 
     @staticmethod
     def _limits(tpm, rpm):
@@ -499,6 +519,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
     def model_gateway(self, ctx):
         """(provider, base URL, key) for the agent's spec.model.provider; genai-gateway by default."""
         requested = (ctx.model or {}).get("provider")
+        if not self.genai:
+            return AI_GATEWAY_PROVIDER, self.os_cfg["aiGatewayUrl"] or self.model_base_url, NO_KEY
         if requested == AI_GATEWAY_PROVIDER and self.os_cfg["aiGatewayUrl"]:
             return AI_GATEWAY_PROVIDER, self.os_cfg["aiGatewayUrl"], NO_KEY
         # A secret reference the supervisor resolves to the provider's key, never the key itself.
@@ -538,8 +560,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         config["gateway"].update(mode="local", bind="loopback", port=SERVICE_PORT)
         # Memory embeddings go through LiteLLM with the agent's own key, like its chats, so no
         # rule needs the AI Gateway, where any model answers with no key and no accounting.
+        # Without LiteLLM they keep the AI Gateway, which the policy then allows.
         search = config["agents"]["defaults"].get("memorySearch")
-        if search:
+        if search and self.genai:
             search["remote"] = {"baseUrl": self.os_cfg["modelBaseUrl"] or self.model_base_url,
                                 "apiKey": "${OPENAI_API_KEY}"}
         return json.dumps(config, indent=2)
@@ -555,6 +578,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             rules["identity_proxy"] = {"name": "agent-identity-proxy", "binaries": node, "endpoints": [
                 _endpoint(proxy, port, "rest") for port in sorted(routes)]}
         direct = [_url_endpoint(t["url"]) for t in ctx.custom_tools or [] if t.get("url")]
+        if not self.genai and self.cfg.get("embeddingBaseUrl"):
+            direct.append(_url_endpoint(self.cfg["embeddingBaseUrl"]))  # with LiteLLM, embeddings go there
         provider, base_url, _ = self.model_gateway(ctx)
         if provider == AI_GATEWAY_PROVIDER:
             direct.append(_url_endpoint(base_url))  # genai-gateway's endpoint comes with the provider
@@ -586,7 +611,7 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         spec = pb.SandboxSpec(
             template=pb.SandboxTemplate(image=self.os_cfg["image"], annotations=annotations),
             policy=self._policy(ctx, routes),
-            providers=[self.os_cfg["providerName"]],
+            providers=[self.os_cfg["providerName"]] if self.genai else [],
             # SQLite (OpenClaw's memory index) puts temp files in /var/tmp before /tmp. /var/tmp
             # looks writable but the policy denies it, so the index could never be built.
             environment={"HOME": "/sandbox", "OC_CONFIG": CONFIG_PATH, "TMPDIR": "/tmp", "SQLITE_TMPDIR": "/tmp",

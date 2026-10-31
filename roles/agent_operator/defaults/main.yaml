@@ -15,6 +15,10 @@ claw_model_id: "{{ (llm_services_autodeploy_models | default([]) | first) | defa
 # agents, from LiteLLM), else 32768. Never OpenClaw's own 200000, which outgrows most models.
 claw_model_context_window: 32768
 claw_model_base_url: "http://{{ ai_gateway_service_name | default('ai-gateway') }}.envoy-gateway-system.svc.cluster.local/v1"
+# Each model's own URL through the AI Gateway ("{model}" for its name): KServe serves a model at
+# /<namespace>/<name>. Its /models gives the size the model serves, with or without LiteLLM.
+claw_model_server_namespace: "{{ kserve_llmisvc_namespace | default('llm-inference') }}"
+claw_model_server_url: "{{ claw_model_base_url | regex_replace('/v1/?$', '') }}/{{ claw_model_server_namespace }}/{model}/v1"
 
 # Agent requests exceed Envoy's 32 KiB default; applied only if no policy targets the gateway.
 claw_ai_gateway_name: "{{ ai_gateway_name | default('ai-gateway') }}"
@@ -73,13 +77,16 @@ claw_openshell_model_base_url: >-
   http://{{ openshell_genai_service_host | default('litellm.' ~ (litellm_namespace | default('litellm')) ~ '.svc.cluster.local') }}:{{ openshell_genai_service_port | default(4000) }}/v1
 # openshell agents may also use the Envoy AI Gateway (claw_model_base_url) directly, without LiteLLM's
 # budgets and content-safety guardrail; false leaves them on the GenAI Gateway (LiteLLM) only.
+# Without LiteLLM, the AI Gateway is the only gateway, whatever this says.
 claw_openshell_ai_gateway_enabled: true
 # The gateways the console offers openshell agents, and the models it never lists (not for chat).
+# claw_litellm_present is found at install: without LiteLLM, the AI Gateway alone.
 claw_model_gateways: >-
-  {{ [{'name': claw_openshell_provider_name, 'label': 'GenAI Gateway (LiteLLM)',
-       'url': claw_openshell_model_base_url | trim, 'kind': 'litellm'}]
+  {{ ([{'name': claw_openshell_provider_name, 'label': 'GenAI Gateway (LiteLLM)',
+        'url': claw_openshell_model_base_url | trim, 'kind': 'litellm'}]
+      if claw_litellm_present | default(true) | bool else [])
      + ([{'name': 'ai-gateway', 'label': 'AI Gateway (Envoy)', 'url': claw_model_base_url, 'kind': 'openai'}]
-        if claw_openshell_ai_gateway_enabled | bool else []) }}
+        if (claw_openshell_ai_gateway_enabled | bool or not claw_litellm_present | default(true) | bool) else []) }}
 claw_model_list_exclude: "{{ [claw_embedding_model, guardrail_model | default('qwen3guard')] }}"
 # A LiteLLM key per openshell agent, owned by its user, so model usage is tracked per agent and
 # per user; false keeps one shared key. The operator gets a key that may only manage users and

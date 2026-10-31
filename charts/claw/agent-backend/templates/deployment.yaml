@@ -44,6 +44,7 @@ spec:
             - {name: MODEL_GATEWAYS, value: {{ .Values.modelGateways | toJson | quote }}}
             - {name: MODEL_LIST_EXCLUDE, value: {{ join "," .Values.modelListExclude | quote }}}
             - {name: DEFAULT_MODEL, value: {{ .Values.defaultModel | quote }}}
+            - {name: MODEL_SERVER_URL, value: {{ .Values.modelServerUrl | quote }}}
             - name: LITELLM_LIST_KEY
               valueFrom: {secretKeyRef: {name: {{ .Values.modelListKeySecret }}, key: api_key, optional: true}}
             - name: AUDIT_PG_DSN

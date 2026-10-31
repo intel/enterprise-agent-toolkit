@@ -238,6 +238,21 @@ from `claw`:
 | Suspend | Stops the sandbox (its pods go away, the workspace volume stays) and starts it again on resume |
 | Workspace files | Written through the OpenShell gateway, not `kubectl exec` |
 
+**Without LiteLLM.** The inference layer runs LiteLLM (the GenAI Gateway) only with
+`auth_type: litellm_vkey` or `litellm_enabled: true`. When the install finds no LiteLLM, the AI
+Gateway is the only gateway, whatever `claw_openshell_ai_gateway_enabled` says:
+- Agents get no OpenShell provider and no key.
+- Chat and memory embeddings both go to the AI Gateway, which their policy allows.
+- The console offers only the AI Gateway.
+- There are no per-agent keys, no usage per agent or user, no limits, and no content-safety
+  guardrail.
+- Context sizes are still read, from each model's own URL (`claw_model_server_url`), and
+  checked as with LiteLLM. Only a model KServe doesn't serve has an unknown size, and agents on
+  it assume `32768`.
+
+The fence is the same: the agent reaches only the AI Gateway, its identity proxy, its allowlist
+and PyPI.
+
 Users reach an `openshell` agent at the same `/gw/<owner ns>/<name>/` path. The route goes to
 the OpenShell gateway, which relays to the agent's sandbox; OpenClaw listens on loopback only
 and trusts the user name only from that relay. The gateway's port accepts only the
@@ -255,10 +270,14 @@ then fail at the model instead of being compacted. The operator gives OpenClaw:
 
 1. the agent's `spec.model.contextWindow` (the console sends the size the gateway lists), else
 2. `claw_model_context_window` for the cluster's own model, else
-3. the size the model serves (`openshell` agents: the model server's `max_model_len`, found
-   through LiteLLM, which lists each model's server; LiteLLM's own figure only when the
-   server does not say), else
+3. for `openshell` agents, the size the model serves, else
 4. `32768`.
+
+The served size is the model server's own `max_model_len`:
+- It's read at the server LiteLLM lists for the model, else at the model's own URL,
+  `claw_model_server_url`. KServe serves each model at `/<namespace>/<name>`, also through the
+  AI Gateway, so this works without LiteLLM.
+- LiteLLM's own figure is used only when neither server says.
 
 It never gives more than the model serves, where it can read that. The agent's `ModelContext`
 condition shows the size, and is `False` (reason `SizeAdjusted`) when the size was assumed,

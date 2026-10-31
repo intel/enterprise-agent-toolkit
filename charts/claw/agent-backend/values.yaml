@@ -46,6 +46,9 @@ openshellEnabled: false
 modelGateways: []
 modelListExclude: []
 defaultModel: ""
+# Each model's own OpenAI-compatible URL, "{model}" for its name (KServe's /<namespace>/<name>
+# through the AI Gateway): its /models gives the size the model serves when no gateway says.
+modelServerUrl: ""
 modelListKeySecret: agent-backend-model-list
 
 audit:
