@@ -4,17 +4,31 @@
 # =============================================================================
 # OpenShell — Teardown
 # =============================================================================
-# Removes what install applied: the Helm release and both namespaces (which
-# also removes the openshell-genai-key Secret, the replicated client TLS
-# secret and the sandbox NetworkPolicy), plus the LiteLLM PeerAuthentication.
+# Removes what install applied: both Helm releases and both namespaces (which
+# also removes the openshell-genai-key Secret and the gateway NetworkPolicy),
+# plus the LiteLLM PeerAuthentication. Agent workspaces belong to the agent
+# operator, which deletes them with their agents.
 # =============================================================================
 
-- name: "openshell | teardown | Remove Helm release"
+- name: "openshell | teardown | Remove Helm releases"
   kubernetes.core.helm:
-    name: "{{ openshell_release_name }}"
-    release_namespace: "{{ openshell_namespace }}"
+    name: "{{ item.name }}"
+    release_namespace: "{{ item.namespace }}"
     state: absent
     wait: true
+  loop:
+    - {name: "{{ openshell_release_name }}-workspace", namespace: "{{ openshell_sandbox_namespace }}"}
+    - {name: "{{ openshell_release_name }}", namespace: "{{ openshell_namespace }}"}
+  failed_when: false
+
+# 0.0.x named its cluster RBAC differently; an upgrade from it leaves these behind.
+- name: "openshell | teardown | Remove 0.0.x cluster RBAC"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: "{{ item }}"
+    name: "{{ openshell_release_name }}-node-reader"
+  loop: [ClusterRoleBinding, ClusterRole]
   failed_when: false
 
 - name: "openshell | teardown | Remove LiteLLM PeerAuthentication"

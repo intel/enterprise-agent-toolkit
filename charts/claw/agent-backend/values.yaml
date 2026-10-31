@@ -1,0 +1,60 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/agent-backend
+  # "<tag>@sha256:<digest>"; set by the installer.
+  tag: ""
+  pullPolicy: IfNotPresent
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: "1", memory: 512Mi}
+affinity: {}
+
+# Token verification: keys from the in-cluster realm, issuer as the realm advertises it.
+auth:
+  jwksUrl: ""
+  issuer: ""
+  audience: agent-backend
+  # Comma-separated client IDs also accepted by azp.
+  authorizedParties: ""
+  # In-cluster token endpoint, for the console's sign-in.
+  tokenUrl: ""
+
+# The console at / on the same host, signed in with this client (Secret key client-secret).
+console:
+  enabled: false
+  oidcClientId: agent-console
+  oidcSecret: agent-console-oidc
+
+# https://<hostname>/api on the platform gateway; empty hostname = no route.
+route:
+  hostname: ""
+  gateway:
+    name: eg-gateway
+    namespace: envoy-gateway-system
+    sectionName: https
+
+# Secret (key pgvector-dsn) for the audit table; shared with the agent operator.
+runtimeSecret: agent-operator-runtime
+grantMaxTtlHours: 720
+# Offer the openshell agent runtime; the agent operator must have it enabled too.
+openshellEnabled: false
+# The model gateways the console offers openshell agents ({name, label, url, kind: litellm|openai}),
+# the models never listed, the cluster default, and the Secret with a LiteLLM key that may only
+# list models (key api_key).
+modelGateways: []
+modelListExclude: []
+defaultModel: ""
+# Each model's own OpenAI-compatible URL, "{model}" for its name (KServe's /<namespace>/<name>
+# through the AI Gateway): its /models gives the size the model serves when no gateway says.
+modelServerUrl: ""
+modelListKeySecret: agent-backend-model-list
+
+audit:
+  retention:
+    # Whole months older than this are dropped; set it to your compliance policy.
+    months: 12
+    monthsAhead: 2
+    schedule: "17 3 * * *"
+    image: docker.io/pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a

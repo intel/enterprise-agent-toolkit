@@ -1,0 +1,18 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Whether the inference layer's LiteLLM (the GenAI Gateway) runs: it does only with
+# auth_type litellm_vkey or litellm_enabled. Without it, openshell agents use the AI Gateway
+# for chat and embeddings, with no key, and LiteLLM's per-agent keys and accounting are off.
+
+- name: "agent_operator | Check whether LiteLLM is deployed"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openshell_genai_deployment | default('litellm') }}"
+    namespace: "{{ litellm_namespace | default('litellm') }}"
+  register: _ao_litellm_deploy
+
+- name: "agent_operator | Record whether LiteLLM is deployed"
+  ansible.builtin.set_fact:
+    claw_litellm_present: "{{ _ao_litellm_deploy.resources | default([]) | length > 0 }}"

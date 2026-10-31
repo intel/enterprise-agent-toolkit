@@ -1,0 +1,98 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-backend
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-backend}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: agent-backend}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: agent-backend}
+    spec:
+      serviceAccountName: agent-backend
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: backend
+          image: "{{ required "image.tag is required" .Values.image.tag | printf "%s:%s" .Values.image.repository }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          env:
+            - {name: PORT, value: "3000"}
+            - {name: JWT_JWKS_URL, value: {{ required "auth.jwksUrl is required" .Values.auth.jwksUrl | quote }}}
+            - {name: JWT_ISSUER, value: {{ required "auth.issuer is required" .Values.auth.issuer | quote }}}
+            - {name: JWT_AUDIENCE, value: {{ .Values.auth.audience | quote }}}
+            - {name: JWT_AUTHORIZED_PARTIES, value: {{ .Values.auth.authorizedParties | quote }}}
+            - {name: GRANT_MAX_TTL_HOURS, value: {{ .Values.grantMaxTtlHours | quote }}}
+            # Offer runtime: openshell (the agent operator runs it when OpenShell is installed).
+            - {name: OPENSHELL_ENABLED, value: {{ .Values.openshellEnabled | quote }}}
+            - {name: MODEL_GATEWAYS, value: {{ .Values.modelGateways | toJson | quote }}}
+            - {name: MODEL_LIST_EXCLUDE, value: {{ join "," .Values.modelListExclude | quote }}}
+            - {name: DEFAULT_MODEL, value: {{ .Values.defaultModel | quote }}}
+            - {name: MODEL_SERVER_URL, value: {{ .Values.modelServerUrl | quote }}}
+            - name: LITELLM_LIST_KEY
+              valueFrom: {secretKeyRef: {name: {{ .Values.modelListKeySecret }}, key: api_key, optional: true}}
+            - name: AUDIT_PG_DSN
+              valueFrom: {secretKeyRef: {name: {{ .Values.runtimeSecret }}, key: pgvector-dsn}}
+          ports:
+            - {name: http, containerPort: 3000}
+          livenessProbe:
+            httpGet: {path: /api/healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /api/healthz, port: http}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-backend
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-backend}
+spec:
+  selector: {app.kubernetes.io/name: agent-backend}
+  ports:
+    - {name: http, port: 3000, targetPort: http}
+---
+# Only the platform gateway reaches the API; 15008 is the ambient mesh's HBONE port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-backend
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-backend}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: agent-backend}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.route.gateway.namespace }}}
+          podSelector:
+            matchLabels: {gateway.envoyproxy.io/owning-gateway-name: {{ .Values.route.gateway.name }}}
+      ports:
+        - {protocol: TCP, port: 3000}
+        - {protocol: TCP, port: 15008}

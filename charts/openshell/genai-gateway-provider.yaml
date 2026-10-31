@@ -23,13 +23,17 @@ endpoints:
     enforcement: enforce
 # Binary identity matches the resolved executable path: a venv python resolves to its base
 # interpreter. Listed symlinks are resolved when the policy loads; globs are not, so the
-# uv-managed interpreter of the default community image is matched by its real path.
+# uv-managed interpreter of the community image is matched by its real path. 0.1.x accepts
+# `*` within a path segment but not `**`: a profile with `**` leaves every sandbox that
+# attaches it in ConfigurationInvalid.
 binaries:
   - /usr/bin/curl
   - /usr/bin/python3
   - /usr/bin/python3.12
   - /usr/local/bin/python3
   - /usr/local/bin/python3.12
-  - /sandbox/.uv/python/**
+  - /sandbox/.uv/python/*/bin/python3*
   # OpenCode (community image): its Node launcher execs this binary.
   - /usr/lib/node_modules/opencode-ai/bin/.opencode
+  # OpenClaw (openshell agent runtime, the openclaw-sandbox image).
+  - /usr/local/bin/node

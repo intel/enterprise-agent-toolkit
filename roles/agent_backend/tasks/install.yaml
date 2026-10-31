@@ -1,0 +1,181 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "agent_backend | Check the agent operator is installed"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: agentgrants.intel-stack.io
+  register: _ab_crd
+  failed_when: _ab_crd.resources | default([]) | length == 0
+
+- name: "agent_backend | Configure the realm"
+  ansible.builtin.include_tasks: keycloak.yaml
+  vars:
+    _kc_script: keycloak-realm.sh
+    _kc_args:
+      - "{{ agent_backend_api_client }}"
+      - "{{ agent_backend_api_owner }}"
+      - "{{ agent_backend_api_email }}"
+      - "{{ agent_backend_audience }}"
+
+- name: "agent_backend | Store the API client credentials"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: "{{ agent_backend_api_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+        labels: {app.kubernetes.io/name: agent-backend}
+      data:
+        client-id: "{{ agent_backend_api_client | b64encode }}"
+        client-secret: "{{ _ab_kc_out.stdout_lines | select('match', '^CLIENT_SECRET=') | first | regex_replace('^CLIENT_SECRET=', '') | b64encode }}"
+  no_log: true
+
+- name: "agent_backend | Configure the console sign-in client"
+  when: claw_console_enabled | bool
+  block:
+    - name: "agent_backend | Create the console client"
+      ansible.builtin.include_tasks: keycloak.yaml
+      vars:
+        _kc_script: keycloak-console.sh
+        _kc_args:
+          - "{{ claw_console_oidc_client }}"
+          - "https://{{ claw_console_hostname }}"
+          - "{{ agent_backend_audience }}"
+
+    # Envoy Gateway reads the key client-secret.
+    - name: "agent_backend | Store the console client secret"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ claw_console_oidc_secret }}"
+            namespace: "{{ agent_operator_namespace }}"
+            labels: {app.kubernetes.io/name: agent-console}
+          data:
+            client-secret: "{{ _ab_kc_out.stdout_lines | select('match', '^CLIENT_SECRET=') | first | regex_replace('^CLIENT_SECRET=', '') | b64encode }}"
+      no_log: true
+
+- name: "agent_backend | Build the image"
+  ansible.builtin.include_role:
+    name: claw_image
+  vars:
+    claw_image_name: agent-backend
+    claw_image_context: "{{ role_path }}/../../src/claw/agent-backend"
+
+# openshell agents pick a model from the gateways' live lists. LiteLLM lists only with a key, so
+# the API gets one that may call nothing but the list routes; minted once, inside the LiteLLM pod
+# so its master key never leaves it.
+- name: "agent_backend | Model list key"
+  when: claw_openshell_enabled | bool
+  block:
+    - name: "agent_backend | Check for the model list key"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ agent_backend_model_list_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+      register: _ab_list_key
+      no_log: true
+
+    # Sets claw_litellm_present, which also decides the gateways offered (claw_model_gateways).
+    - name: "agent_backend | Check LiteLLM is deployed"
+      ansible.builtin.include_tasks: "{{ role_path }}/../agent_operator/tasks/litellm_present.yaml"
+
+    - name: "agent_backend | Mint a LiteLLM key that may only list models"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ litellm_namespace | default('litellm') }}"
+          - "deploy/{{ openshell_genai_deployment | default('litellm') }}"
+          - -c
+          - litellm
+          - --
+          - python
+          - -c
+          - |
+            import json, os, urllib.error, urllib.request
+            def post(path, body):
+                req = urllib.request.Request("http://127.0.0.1:4000" + path, json.dumps(body).encode(),
+                    {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
+                return json.load(urllib.request.urlopen(req))
+            # A key with this alias can outlive the Secret (teardown); aliases are unique.
+            try:
+                post("/key/delete", {"key_aliases": ["{{ agent_backend_model_list_key_alias }}"]})
+            except urllib.error.HTTPError as e:
+                if e.code not in (400, 404):
+                    raise
+            print(post("/key/generate", {"key_alias": "{{ agent_backend_model_list_key_alias }}",
+                                         "allowed_routes": ["/model/info", "/v1/models"], "max_budget": 0.01})["key"])
+      register: _ab_list_mint
+      changed_when: true
+      no_log: true
+      when:
+        - _ab_list_key.resources | default([]) | length == 0
+        - claw_litellm_present | bool
+
+    - name: "agent_backend | Store the model list key"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ agent_backend_model_list_secret }}"
+            namespace: "{{ agent_operator_namespace }}"
+            labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+          stringData:
+            api_key: "{{ _ab_list_mint.stdout | trim }}"
+      no_log: true
+      when: _ab_list_mint is changed
+
+- name: "agent_backend | Install or upgrade the API"
+  kubernetes.core.helm:
+    name: "{{ agent_backend_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/claw/agent-backend"
+    release_namespace: "{{ agent_operator_namespace }}"
+    wait: true
+    timeout: "{{ agent_backend_wait_timeout }}"
+    values:
+      image:
+        repository: "{{ claw_image_repository }}"
+        tag: "{{ claw_image_tag }}"
+      affinity: "{{ _platform_affinity | default({}) }}"
+      auth:
+        jwksUrl: "{{ claw_keycloak_jwks_url }}"
+        issuer: "{{ claw_keycloak_issuer }}"
+        audience: "{{ agent_backend_audience }}"
+        tokenUrl: "{{ claw_keycloak_url }}/realms/{{ claw_keycloak_realm }}/protocol/openid-connect/token"
+      console:
+        enabled: "{{ claw_console_enabled | bool }}"
+        oidcClientId: "{{ claw_console_oidc_client }}"
+        oidcSecret: "{{ claw_console_oidc_secret }}"
+      route:
+        hostname: "{{ claw_console_hostname }}"
+      runtimeSecret: "{{ claw_runtime_secret }}"
+      openshellEnabled: "{{ openshell_enabled | default(false) | bool }}"
+      modelGateways: "{{ claw_model_gateways if claw_openshell_enabled | bool else [] }}"
+      modelListExclude: "{{ claw_model_list_exclude }}"
+      defaultModel: "{{ claw_model_id }}"
+      modelServerUrl: "{{ claw_model_server_url }}"
+      modelListKeySecret: "{{ agent_backend_model_list_secret }}"
+      audit:
+        retention:
+          months: "{{ agent_backend_audit_retention_months }}"
+
+- name: "agent_backend | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "API: https://{{ claw_console_hostname }}/api"
+      - "Scripted access: client '{{ agent_backend_api_client }}', secret in {{ agent_operator_namespace }}/{{ agent_backend_api_secret }}"

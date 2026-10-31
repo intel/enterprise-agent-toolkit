@@ -1,0 +1,202 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# A template, not crds/, so `helm upgrade` applies schema changes.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agents.intel-stack.io
+  labels:
+    app.kubernetes.io/name: agent-operator
+    app.kubernetes.io/part-of: enterprise-agent-toolkit
+spec:
+  group: intel-stack.io
+  names:
+    kind: Agent
+    listKind: AgentList
+    plural: agents
+    singular: agent
+    shortNames: [ag]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - {name: Owner, type: string, jsonPath: .spec.owner.principal}
+        - {name: Desired, type: string, jsonPath: .spec.desiredState}
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Reason, type: string, jsonPath: .status.suspendReason, priority: 1}
+        - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [owner]
+              properties:
+                runtime:
+                  type: string
+                  description: >-
+                    Agent runtime: claw (an OpenClawInstance) or openshell (OpenClaw in an
+                    OpenShell sandbox in the agent namespace, which may then be at most 19
+                    characters). Fixed once the Agent exists.
+                  enum: [claw, openshell]
+                  default: claw
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: runtime cannot be changed; delete and recreate the Agent
+                owner:
+                  type: object
+                  required: [principal, username]
+                  properties:
+                    principal:
+                      type: string
+                      description: Owner identity, e.g. user@example.com.
+                    username:
+                      type: string
+                      description: >-
+                        Owner's Keycloak username. Every per-agent name derives from it:
+                        namespace and Keycloak client agent-<username>-<name>, memory schema
+                        agent_<username>_<name>. The Agent must be created in namespace
+                        user-<username>.
+                      pattern: '^[a-z0-9]{1,39}$'
+                      maxLength: 39
+                desiredState:
+                  type: string
+                  description: Set Suspended to scale the agent to zero; its state is kept.
+                  enum: [Running, Suspended]
+                  default: Running
+                model:
+                  type: object
+                  description: >-
+                    Per-agent model override; omit to use the cluster default. The API key is
+                    never stored here, see modelSecretRef.
+                  properties:
+                    provider:
+                      type: string
+                    id:
+                      type: string
+                    name:
+                      type: string
+                    baseUrl:
+                      type: string
+                      description: OpenAI-compatible base URL.
+                    contextWindow:
+                      type: integer
+                      minimum: 0
+                      description: >-
+                        The model's context size in tokens, as its gateway reports it; 0 or unset
+                        uses the cluster model's size for that model and OpenClaw's default otherwise.
+                modelSecretRef:
+                  type: string
+                  description: Secret in the agent namespace holding key `apiKey`.
+                githubTokenSecretRef:
+                  type: string
+                  description: >-
+                    Secret in the agent namespace holding key `token`, a GitHub PAT for this
+                    agent only. Rotate by pointing this at a new Secret.
+                skills:
+                  type: array
+                  description: Capabilities, e.g. shell, read_file, github.
+                  items:
+                    type: string
+                tools:
+                  type: array
+                  description: Extra MCP servers, addressed as in-cluster Services.
+                  items:
+                    type: object
+                    required: [name, url]
+                    properties:
+                      name:
+                        type: string
+                      url:
+                        type: string
+                        pattern: '^https?://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc(\.cluster\.local)?(:[0-9]{1,5})?(/[^\s]*)?$'
+                        maxLength: 253
+                toolsDeny:
+                  type: array
+                  description: MCP tool names or globs (e.g. github__*) this agent may not call.
+                  items:
+                    type: string
+                webFetchAllowlist:
+                  type: array
+                  description: >-
+                    Domains web_fetch may reach (subdomains included); "*" allows any. Empty
+                    means no external access.
+                  default: []
+                  maxItems: 100
+                  items:
+                    type: string
+                    maxLength: 253
+                    pattern: '^(\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$'
+                workspace:
+                  type: object
+                  description: >-
+                    Files seeded into the agent workspace, keyed by relative path. Values are
+                    text, or base64 prefixed with "base64:".
+                  additionalProperties:
+                    type: string
+                  x-kubernetes-validations:
+                    - rule: >-
+                        self.all(k, k.matches('^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$') &&
+                        !k.split('/').exists(s, s == '..'))
+                      message: workspace keys must be relative paths of [A-Za-z0-9._-] segments
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Running, IdleSuspended, Failed]
+                suspendReason:
+                  type: string
+                lastActivity:
+                  type: string
+                  format: date-time
+                suspendedAt:
+                  type: string
+                  format: date-time
+                resumedAt:
+                  type: string
+                  format: date-time
+                memoryRef:
+                  type: string
+                  description: The agent's pgvector schema, when memory is configured.
+                backendRef:
+                  type: object
+                  properties:
+                    apiVersion:
+                      type: string
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                sandboxRestarts:
+                  type: object
+                  description: >-
+                    openshell runtime: how often the operator started a sandbox OpenShell had
+                    stopped (out of memory, for example), and when last; it backs off by this.
+                  properties:
+                    count:
+                      type: integer
+                    lastStartAt:
+                      type: string
+                      format: date-time
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string

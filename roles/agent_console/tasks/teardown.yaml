@@ -1,0 +1,11 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Succeeds when nothing is installed.
+
+- name: "agent_console | teardown | Uninstall the console"
+  kubernetes.core.helm:
+    name: "{{ agent_console_release_name }}"
+    release_namespace: "{{ agent_operator_namespace }}"
+    state: absent
+    wait: true

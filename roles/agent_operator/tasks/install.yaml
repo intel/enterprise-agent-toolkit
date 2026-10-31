@@ -1,0 +1,150 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "agent_operator | Check prerequisites"
+  ansible.builtin.assert:
+    that:
+      - (auth_provider | default('keycloak')) == 'keycloak'
+      - claw_model_id | length > 0
+    fail_msg: >-
+      claw needs auth_provider=keycloak (per-agent identity) and a default model:
+      set llm_services_autodeploy_models or claw_model_id.
+    quiet: true
+
+- name: "agent_operator | LiteLLM"
+  ansible.builtin.include_tasks: litellm_present.yaml
+
+- name: "agent_operator | Default model's context size"
+  ansible.builtin.include_tasks: model_context.yaml
+
+- name: "agent_operator | Check the OpenClaw operator is installed"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: openclawinstances.openclaw.rocks
+  register: _ao_oc_crd
+  failed_when: _ao_oc_crd.resources | default([]) | length == 0
+
+- name: "agent_operator | Create namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ agent_operator_namespace }}"
+        labels: >-
+          {{ {}
+             | combine({'pod-security.kubernetes.io/enforce': 'restricted',
+                        'pod-security.kubernetes.io/audit': 'restricted',
+                        'pod-security.kubernetes.io/warn': 'restricted'}
+                       if (enforce_pss | default(false) | bool) else {})
+             | combine({'istio.io/dataplane-mode': 'ambient'}
+                       if (istio_enabled | default(false) | bool) else {}) }}
+
+- name: "agent_operator | Memory database credentials"
+  ansible.builtin.include_tasks: runtime.yaml
+
+- name: "agent_operator | Keycloak service account"
+  ansible.builtin.include_tasks: keycloak.yaml
+
+- name: "agent_operator | Inference gateway request size"
+  ansible.builtin.include_tasks: ai_gateway.yaml
+
+- name: "agent_operator | openshell agent runtime"
+  ansible.builtin.include_tasks: openshell.yaml
+  when: claw_openshell_enabled | bool
+
+- name: "agent_operator | Build the operator image"
+  ansible.builtin.include_role:
+    name: claw_image
+  vars:
+    claw_image_name: agent-operator
+    claw_image_context: "{{ role_path }}/../../src/claw"
+
+- name: "agent_operator | Install or upgrade the CRDs"
+  kubernetes.core.helm:
+    name: "{{ agent_operator_crds_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/claw/agent-operator-crds"
+    release_namespace: "{{ agent_operator_namespace }}"
+    wait: true
+    timeout: "{{ agent_operator_wait_timeout }}"
+
+- name: "agent_operator | Install or upgrade the operator"
+  kubernetes.core.helm:
+    name: "{{ agent_operator_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/claw/agent-operator"
+    release_namespace: "{{ agent_operator_namespace }}"
+    wait: true
+    timeout: "{{ agent_operator_wait_timeout }}"
+    values:
+      image:
+        repository: "{{ claw_image_repository }}"
+        tag: "{{ claw_image_tag }}"
+      affinity: "{{ _platform_affinity | default({}) }}"
+      autoSuspendIdleMinutes: "{{ claw_auto_suspend_idle_minutes }}"
+      runtimeSecret: "{{ claw_runtime_secret }}"
+      memory:
+        embeddingDim: "{{ claw_embedding_dim }}"
+      keycloak:
+        url: "{{ claw_keycloak_url }}"
+        realm: "{{ claw_keycloak_realm }}"
+        issuer: "{{ claw_keycloak_issuer }}"
+      gatewayRoute:
+        hostname: "{{ claw_console_hostname if claw_console_enabled | bool else '' }}"
+        oidcClientId: "{{ claw_console_oidc_client }}"
+        oidcSecret: "{{ claw_console_oidc_secret }}"
+        dashboardSession: "{{ claw_dashboard_session }}"
+        trustedProxies: "{{ claw_gateway_trusted_proxies }}"
+        credentialsSecret: "{{ claw_keycloak_credentials_secret }}"
+      agents:
+        model:
+          id: "{{ claw_model_id }}"
+          baseUrl: "{{ claw_model_base_url }}"
+          contextWindow: "{{ claw_model_context_window }}"
+        controlUiAllowedOrigins: "https://{{ claw_console_hostname }}"
+        embedding:
+          baseUrl: "{{ claw_embedding_base_url }}"
+          model: "{{ claw_embedding_model }}"
+      isolation:
+        meshAmbient: "{{ istio_enabled | default(false) | bool }}"
+        podSecurity:
+          enabled: "{{ enforce_pss | default(true) | bool }}"
+        maxAgentsPerOwner: "{{ claw_max_agents_per_owner }}"
+      openshell:
+        enabled: "{{ claw_openshell_enabled | bool }}"
+        namespace: "{{ claw_openshell_namespace }}"
+        service: "{{ claw_openshell_release_name }}"
+        releaseName: "{{ claw_openshell_release_name }}"
+        serviceAccount: "{{ claw_openshell_release_name }}"
+        clientTlsSecret: "{{ claw_openshell_client_tls_secret }}"
+        caConfigMap: "{{ claw_openshell_ca_configmap }}"
+        workspaceLabel: "{{ claw_openshell_workspace_label }}"
+        sandboxImage: "{{ _ao_openshell_sandbox_image | default('') }}"
+        providerName: "{{ claw_openshell_provider_name }}"
+        modelKeySecret: "{{ claw_openshell_namespace }}/openshell-genai-key/api_key"
+        # Without LiteLLM: no GenAI Gateway, and the AI Gateway whatever claw_openshell_ai_gateway_enabled says.
+        modelBaseUrl: "{{ claw_openshell_model_base_url | trim if claw_litellm_present | bool else '' }}"
+        aiGatewayUrl: >-
+          {{ claw_model_base_url if (claw_openshell_ai_gateway_enabled | bool or not claw_litellm_present | bool) else '' }}
+        modelServerUrl: "{{ claw_model_server_url }}"
+        litellmAdminSecret: >-
+          {{ claw_litellm_admin_secret if (claw_openshell_agent_keys | bool and claw_litellm_present | bool) else '' }}
+        agentTpmLimit: "{{ claw_openshell_agent_tpm_limit }}"
+        agentRpmLimit: "{{ claw_openshell_agent_rpm_limit }}"
+        userTpmLimit: "{{ claw_openshell_user_tpm_limit }}"
+        userRpmLimit: "{{ claw_openshell_user_rpm_limit }}"
+      webFetchProxy:
+        enabled: "{{ claw_web_fetch_proxy_enabled | bool }}"
+        httpProxy: "{{ http_proxy | default('') }}"
+        httpsProxy: "{{ https_proxy | default('') }}"
+        noProxy: "{{ no_proxy | default('') }}"
+
+- name: "agent_operator | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "Agent operator in namespace '{{ agent_operator_namespace }}'"
+      - "Image: {{ claw_image_repository }}:{{ claw_image_tag }}"
+      - "Default model: {{ claw_model_id }} via {{ claw_model_base_url }}"
+      - "Next: docs/claw.md — create an Agent"

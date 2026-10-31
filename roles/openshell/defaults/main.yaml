@@ -10,23 +10,33 @@
 # seccomp, credential isolation) and a GenAI Gateway provider so sandboxes
 # reach LiteLLM with a placeholder key only.
 #
+# Operator workspace mode: a workspace is a namespace of the same name (at most
+# 19 characters) that carries openshell_operator_namespace_label and the
+# openshell-workspace chart's objects. The role provisions one admin workspace,
+# openshell_sandbox_namespace; the agent operator provisions one per agent.
+#
 # In-cluster address after deployment:
 #   Gateway : {{ openshell_release_name }}.{{ openshell_namespace }}.svc.cluster.local:8080 (mTLS)
 # =============================================================================
 
 # --- Versions ---
-openshell_chart_version: "0.0.116"   # oci://ghcr.io/nvidia/openshell/helm-chart version
-openshell_image_tag: "0.0.116"
-openshell_release_tag: "v0.0.116"    # GitHub release providing the openshell CLI
+# 0.0.x mounts the gateway's client key into sandbox pods, where the agent user can read it;
+# 0.1.x does not. 0.0.x cannot be upgraded in place: delete its sandboxes first.
+openshell_chart_version: "0.1.6"     # oci://ghcr.io/nvidia/openshell/helm-chart and .../openshell-workspace
+openshell_image_tag: "0.1.6"
+openshell_release_tag: "v0.1.6"      # GitHub release providing the openshell CLI
 
 # StorageClass for sandbox workspace PVCs; empty = `local-path` when the cluster has it, else the default
 openshell_workspace_storage_class: ""
 
 # NVIDIA OpenShell configuration (policy-enforced sandboxes on top of Agent Sandbox)
 openshell_namespace: "openshell-system"             # gateway (holds provider credentials)
-openshell_sandbox_namespace: "openshell-sandboxes"  # sandbox workload + supervisor pods
+openshell_sandbox_namespace: "openshell-sandboxes"  # the admin workspace (<= 19 chars)
+# Namespaces with this label are workspaces the gateway may place sandboxes in.
+openshell_operator_namespace_label: "openshell.ai/workspace=eat"
 openshell_release_name: "openshell"
 openshell_chart_ref: "oci://ghcr.io/nvidia/openshell/helm-chart"
+openshell_workspace_chart_ref: "oci://ghcr.io/nvidia/openshell/openshell-workspace"
 helm_charts_base_openshell: "{{ role_path }}/../../charts/openshell"
 
 # CLI used from the control plane to register the GenAI Gateway provider
@@ -35,22 +45,28 @@ openshell_cli_url: "https://github.com/NVIDIA/OpenShell/releases/download/{{ ope
 # and versioned so a release bump fetches a matching CLI.
 openshell_cli_dir: ""
 
-# User authentication: OIDC when openshell_oidc_issuer is set; otherwise single-admin, with the
-# gateway ClusterIP-only and reached via `kubectl port-forward` (Kubernetes RBAC on openshell_namespace).
+# User authentication: OIDC when openshell_oidc_issuer is set; otherwise mTLS: the chart's client
+# certificate (secret openshell_client_tls_secret) is the platform admin, the gateway stays
+# ClusterIP-only and is reached via `kubectl port-forward` (Kubernetes RBAC on openshell_namespace).
 openshell_oidc_issuer: ""
 openshell_oidc_audience: "openshell-cli"
 
-# Pod-level NetworkPolicy for sandbox pods the chart leaves unselected (all-in-one pods of
-# chart <= 0.0.116; split supervisor/workload pods of newer charts carry their own policies).
-# Egress: DNS, gateway, GenAI Gateway, upstream proxy, public internet; add private CIDRs
-# that sandbox policies may target.
-openshell_sandbox_network_policy: true
-openshell_sandbox_egress_cidrs: []
-# Resolver CIDRs sandboxes may reach on port 53 besides the kube-dns pods. Empty = use the
-# NodeLocal DNSCache addresses (-localip of DaemonSet kube-system/nodelocaldns or
-# kube-system/node-local-dns); the kube-dns pods only when neither is found.
-openshell_sandbox_dns_cidrs: []
-openshell_upstream_proxy_cidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]  # proxy port only
+# NetworkPolicy on the gateway port: sandbox supervisors plus the clients below may connect.
+# Exposed sandbox services are reachable by anything that can connect, without sign-in, so
+# keep this on and the clients narrow.
+openshell_gateway_network_policy: true
+# Pods that may connect, by namespace and labels. With claw on: the agent operator (manages
+# workspaces) and the platform gateway's Envoy (routes users to openshell agents, after its
+# sign-in and owner check). Pods, not whole namespaces: the console, the API and the MCP
+# servers share the operator's namespace, and the AI Gateway's Envoy the platform gateway's.
+openshell_gateway_clients: >-
+  {{ [{'namespace': agent_operator_namespace | default('agent-operator-system'),
+       'pod_labels': {'app.kubernetes.io/name': 'agent-operator'}},
+      {'namespace': envoy_gateway_namespace | default('envoy-gateway-system'),
+       'pod_labels': {'gateway.envoyproxy.io/owning-gateway-name': gateway_name | default('eg-gateway')}}]
+     if (claw_enabled | default(false) | bool) else [] }}
+# Whole namespaces that may connect, for other clients; none by default.
+openshell_gateway_client_namespaces: []
 
 # GenAI Gateway (LiteLLM) provider: sandboxes see a placeholder, the supervisor injects a
 # per-deployment LiteLLM virtual key only toward the gateway service.
@@ -79,3 +95,5 @@ openshell_cli_env:
   NO_PROXY: "{{ openshell_cli_no_proxy }}"
   no_proxy: "{{ openshell_cli_no_proxy }}"
   OPENSHELL_GATEWAY: "eat"
+  # `gateway add --local` would otherwise copy a bundle from ~/.local/state/openshell/tls over ours.
+  OPENSHELL_LOCAL_TLS_DIR: "{{ openshell_cli_path }}/no-local-tls"

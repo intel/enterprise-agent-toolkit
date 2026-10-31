@@ -1,0 +1,107 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agent operator (claw): Agent CRD and controller. Enabled by claw_enabled.
+
+agent_operator_namespace: "agent-operator-system"
+agent_operator_release_name: "agent-operator"
+agent_operator_crds_release_name: "agent-operator-crds"
+agent_operator_wait_timeout: "5m0s"
+
+# Model every agent uses unless its spec.model overrides it.
+claw_model_id: "{{ (llm_services_autodeploy_models | default([]) | first) | default('', true) }}"
+# The tokens OpenClaw plans a conversation for: at least 32768, and at most what claw_model_id
+# serves (the install checks both). 0 = the served size where the operator can read it (openshell
+# agents, from LiteLLM), else 32768. Never OpenClaw's own 200000, which outgrows most models.
+claw_model_context_window: 32768
+claw_model_base_url: "http://{{ ai_gateway_service_name | default('ai-gateway') }}.envoy-gateway-system.svc.cluster.local/v1"
+# Each model's own URL through the AI Gateway ("{model}" for its name): KServe serves a model at
+# /<namespace>/<name>. Its /models gives the size the model serves, with or without LiteLLM.
+claw_model_server_namespace: "{{ kserve_llmisvc_namespace | default('llm-inference') }}"
+claw_model_server_url: "{{ claw_model_base_url | regex_replace('/v1/?$', '') }}/{{ claw_model_server_namespace }}/{model}/v1"
+
+# Agent requests exceed Envoy's 32 KiB default; applied only if no policy targets the gateway.
+claw_ai_gateway_name: "{{ ai_gateway_name | default('ai-gateway') }}"
+claw_ai_gateway_namespace: "{{ ai_gateway_namespace | default(kserve_llmisvc_namespace | default('llm-inference')) }}"
+claw_ai_gateway_buffer_limit: "50Mi"
+
+# Operator service account in the agent realm (realm-management/manage-clients).
+claw_keycloak_namespace: "{{ keycloak_namespace | default('keycloak') }}"
+claw_keycloak_admin_secret: "{{ keycloak_admin_secret | default('keycloak-admin-secret') }}"
+claw_keycloak_realm: "{{ keycloak_agent_realm | default('agent-toolkit') }}"
+claw_keycloak_url: "http://keycloak-service.{{ claw_keycloak_namespace }}.svc.cluster.local:8080"
+# The realm's public issuer: what its tokens carry and where browsers sign in.
+claw_keycloak_issuer: >-
+  https://{{ keycloak_hostname | default('keycloak.' ~ (base_domain_name | default('example.com'))) }}/realms/{{ claw_keycloak_realm }}
+claw_keycloak_operator_client: "agent-operator"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
+claw_keycloak_credentials_secret: "agent-operator-keycloak"
+
+# Agent memory: pgvector, embedded with claw_embedding_model through the inference gateway.
+claw_pgvector_namespace: "{{ pgvector_namespace | default('pgvector') }}"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret names, not secret values
+claw_pgvector_secret: "pgvector-credentials"
+claw_runtime_secret: "agent-operator-runtime"
+claw_embedding_model: "bge-base-en"
+claw_embedding_dim: 768
+# Where memory embeddings are made (OpenClaw's memory search and the memory tool server): the
+# embedding model's own URL. The AI Gateway's shared /v1 serves only models that have an AI
+# Gateway route, which an embedding model deployed for LiteLLM lacks.
+claw_embedding_base_url: "{{ claw_model_server_url | replace('{model}', claw_embedding_model) }}"
+
+# Per-agent web_fetch proxy enforcing spec.webFetchAllowlist; egress uses the platform proxy.
+claw_web_fetch_proxy_enabled: true
+
+# The console and each agent's dashboard: https://<claw_console_hostname>[/gw/<owner ns>/<agent>/].
+claw_console_hostname: "agents.{{ base_domain_name | default('example.com') }}"
+claw_console_enabled: true
+claw_console_oidc_client: "agent-console"
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+claw_console_oidc_secret: "agent-console-oidc"
+# An open dashboard is closed after this long and reconnects through the access check,
+# so a revoked or expired user loses it within this time.
+claw_dashboard_session: "5m"
+# Addresses the agent gateway trusts to name the user: the platform gateway's pods.
+claw_gateway_trusted_proxies: "{{ kubernetes_cluster_cidr | default('10.233.64.0/18') }}"
+
+claw_auto_suspend_idle_minutes: 240
+claw_max_agents_per_owner: 0
+# openshell agent runtime (spec.runtime: openshell): OpenClaw in an OpenShell sandbox in the agent
+# namespace. Needs the openshell component; its names are read from there when it is configured.
+claw_openshell_enabled: "{{ openshell_enabled | default(false) | bool }}"
+claw_openshell_namespace: "{{ openshell_namespace | default('openshell-system') }}"
+claw_openshell_release_name: "{{ openshell_release_name | default('openshell') }}"
+claw_openshell_workspace_label: "{{ openshell_operator_namespace_label | default('openshell.ai/workspace=eat') }}"
+claw_openshell_provider_name: "{{ openshell_genai_provider_name | default('genai-gateway') }}"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret and ConfigMap names, not secret values
+claw_openshell_client_tls_secret: "{{ openshell_client_tls_secret | default('openshell-client-tls') }}"
+claw_openshell_ca_configmap: "openshell-gateway-ca"
+# The provider profile's endpoint (LiteLLM): the only model host a sandbox gets the key for.
+claw_openshell_model_base_url: >-
+  http://{{ openshell_genai_service_host | default('litellm.' ~ (litellm_namespace | default('litellm')) ~ '.svc.cluster.local') }}:{{ openshell_genai_service_port | default(4000) }}/v1
+# openshell agents may also use the Envoy AI Gateway (claw_model_base_url) directly, without LiteLLM's
+# budgets and content-safety guardrail; false leaves them on the GenAI Gateway (LiteLLM) only.
+# Without LiteLLM, the AI Gateway is the only gateway, whatever this says.
+claw_openshell_ai_gateway_enabled: true
+# The gateways the console offers openshell agents, and the models it never lists (not for chat).
+# claw_litellm_present is found at install: without LiteLLM, the AI Gateway alone.
+claw_model_gateways: >-
+  {{ ([{'name': claw_openshell_provider_name, 'label': 'GenAI Gateway (LiteLLM)',
+        'url': claw_openshell_model_base_url | trim, 'kind': 'litellm'}]
+      if claw_litellm_present | default(true) | bool else [])
+     + ([{'name': 'ai-gateway', 'label': 'AI Gateway (Envoy)', 'url': claw_model_base_url, 'kind': 'openai'}]
+        if (claw_openshell_ai_gateway_enabled | bool or not claw_litellm_present | default(true) | bool) else []) }}
+claw_model_list_exclude: "{{ [claw_embedding_model, guardrail_model | default('qwen3guard')] }}"
+# A LiteLLM key per openshell agent, owned by its user, so model usage is tracked per agent and
+# per user; false keeps one shared key. The operator gets a key that may only manage users and
+# keys (not call models), owned by LiteLLM user claw_litellm_admin_user (proxy_admin).
+claw_openshell_agent_keys: true
+claw_litellm_admin_user: "agent-operator"
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+claw_litellm_admin_secret: "agent-operator-litellm"
+# Optional LiteLLM limits, tokens and requests per minute (0 = none), per agent key and per user.
+# LiteLLM counts tokens without model prices; its dollar budgets need prices set in LiteLLM.
+claw_openshell_agent_tpm_limit: 0
+claw_openshell_agent_rpm_limit: 0
+claw_openshell_user_tpm_limit: 0
+claw_openshell_user_rpm_limit: 0
