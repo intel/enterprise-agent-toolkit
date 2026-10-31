@@ -120,6 +120,11 @@
         modelKeySecret: "{{ claw_openshell_namespace }}/openshell-genai-key/api_key"
         modelBaseUrl: "{{ claw_openshell_model_base_url }}"
         aiGatewayUrl: "{{ claw_model_base_url if claw_openshell_ai_gateway_enabled | bool else '' }}"
+        litellmAdminSecret: "{{ claw_litellm_admin_secret if claw_openshell_agent_keys | bool else '' }}"
+        agentTpmLimit: "{{ claw_openshell_agent_tpm_limit }}"
+        agentRpmLimit: "{{ claw_openshell_agent_rpm_limit }}"
+        userTpmLimit: "{{ claw_openshell_user_tpm_limit }}"
+        userRpmLimit: "{{ claw_openshell_user_rpm_limit }}"
       webFetchProxy:
         enabled: "{{ claw_web_fetch_proxy_enabled | bool }}"
         httpProxy: "{{ http_proxy | default('') }}"

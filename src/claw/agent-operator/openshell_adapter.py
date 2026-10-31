@@ -10,9 +10,12 @@ sees a placeholder). OpenClaw serves on loopback; users reach it through the gat
 service route, which only the platform gateway may call (openshell-gateway-ingress).
 """
 import base64
+import json
 import os
 import pathlib
+import urllib.error
 import urllib.parse
+import urllib.request
 
 import claw_adapter
 
@@ -74,6 +77,16 @@ def config_from_env(env=None):
         "providerType": env.get("OPENSHELL_PROVIDER_TYPE", "eat-genai-gateway"),
         # The cluster key, from Secret <namespace>/<name>, key <key>.
         "modelKeySecret": env.get("OPENSHELL_MODEL_KEY_SECRET", "openshell-system/openshell-genai-key/api_key"),
+        # A LiteLLM key that may manage users and keys (not call models). Set, every openshell agent
+        # gets its own key, owned by its user in LiteLLM, so usage is tracked per agent and per user;
+        # empty keeps the shared cluster key above.
+        "litellmAdminKey": env.get("LITELLM_ADMIN_KEY", ""),
+        # Optional limits per agent key and per user (tokens and requests per minute; 0 = none).
+        # LiteLLM counts tokens without model prices; its dollar budgets need prices set.
+        "agentTpmLimit": claw_adapter._int(env.get("OPENSHELL_AGENT_TPM_LIMIT"), 0),
+        "agentRpmLimit": claw_adapter._int(env.get("OPENSHELL_AGENT_RPM_LIMIT"), 0),
+        "userTpmLimit": claw_adapter._int(env.get("OPENSHELL_USER_TPM_LIMIT"), 0),
+        "userRpmLimit": claw_adapter._int(env.get("OPENSHELL_USER_RPM_LIMIT"), 0),
         # The provider profile's endpoint: the only model host the supervisor injects a key for.
         "modelBaseUrl": env.get("OPENSHELL_MODEL_BASE_URL", ""),
         # The Envoy AI Gateway's URL; empty leaves openshell agents on genai-gateway only.
@@ -135,9 +148,10 @@ def _url_endpoint(url):
 class OpenShellAdapter(claw_adapter.ClawAdapter):
     """Same model, tool and identity wiring as the claw runtime; a different workload."""
 
-    def __init__(self, core, config, client_factory=None):
+    def __init__(self, core, config, client_factory=None, litellm=None):
         super().__init__(core, config)
         self.os_cfg = config["openshell"]
+        self._litellm_call = litellm or self._litellm_http
         self.mesh_ambient = bool(getattr(core, "mesh_ambient", False))
         self._client_factory = client_factory or self._connect
         self._client = None
@@ -239,6 +253,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             ("provider", lambda: self._rpc("DeleteProvider", pb.DeleteProviderRequest(
                 workspace_scope=self._scope(ctx), name=self.os_cfg["providerName"], allow_missing=True))),
             ("workspace", lambda: self._workspaces().delete(ctx.namespace, allow_missing=True)),
+            # The agent's LiteLLM key; its user and their usage history stay.
+            *((("LiteLLM key", lambda: self._litellm_call("/key/delete", {"key_aliases": [ctx.namespace]})),)
+              if self.os_cfg["litellmAdminKey"] else ()),
         )
         for what, step in steps:
             try:
@@ -329,12 +346,54 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
     def _ensure_provider(self, ctx):
         """The workspace's model provider; it holds the key, the sandbox sees a placeholder."""
         pb, dm = self._pb()
+        try:
+            self.client._stub.GetProvider(pb.GetProviderRequest(
+                workspace_scope=self._scope(ctx), name=self.os_cfg["providerName"]), timeout=30)
+            return  # a key is minted once, with the provider; the gateway keeps it
+        except Exception as e:
+            if _status(e) != "NOT_FOUND":
+                raise
+        key = self._agent_key(ctx) if self.os_cfg["litellmAdminKey"] else self._cluster_key()
         provider = dm.Provider(
             metadata=dm.ObjectMeta(name=self.os_cfg["providerName"]), type=self.os_cfg["providerType"],
-            credentials={"OPENAI_API_KEY": self._cluster_key()}, profile_workspace="")
-        if self._rpc("CreateProvider", pb.CreateProviderRequest(
-                workspace_scope=self._scope(ctx), provider=provider)) is not None:
-            ctx.logger.info(f"Created OpenShell provider in '{ctx.namespace}'")
+            credentials={"OPENAI_API_KEY": key}, profile_workspace="")
+        self._rpc("CreateProvider", pb.CreateProviderRequest(workspace_scope=self._scope(ctx), provider=provider))
+        ctx.logger.info(f"Created OpenShell provider in '{ctx.namespace}'")
+
+    # ── LiteLLM: a key per agent, owned by its user ──────────────────────────
+    def _litellm_http(self, path, body):
+        """POST to LiteLLM's management API with the admin key; (status, parsed body)."""
+        base = (self.os_cfg["modelBaseUrl"] or self.model_base_url).rstrip("/")
+        base = base[:-3] if base.endswith("/v1") else base
+        req = urllib.request.Request(f"{base}{path}", json.dumps(body).encode(), {
+            "Authorization": f"Bearer {self.os_cfg['litellmAdminKey']}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310: in-cluster LiteLLM URL
+                return resp.status, json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()[:300].decode(errors="replace")
+
+    @staticmethod
+    def _limits(tpm, rpm):
+        return {**({"tpm_limit": tpm} if tpm else {}), **({"rpm_limit": rpm} if rpm else {})}
+
+    def _agent_key(self, ctx):
+        """A new key for this agent (alias: its namespace), owned by its user, whom it creates if new."""
+        status, body = self._litellm_call("/user/new", {
+            "user_id": ctx.owner, "user_email": ctx.owner,
+            **self._limits(self.os_cfg["userTpmLimit"], self.os_cfg["userRpmLimit"])})
+        if status not in (200, 409):  # 409: the user exists
+            raise RuntimeError(f"LiteLLM user {ctx.owner}: HTTP {status}: {body}")
+        # An alias can outlive its provider (a failed create); aliases are unique.
+        self._litellm_call("/key/delete", {"key_aliases": [ctx.namespace]})
+        status, body = self._litellm_call("/key/generate", {
+            "key_alias": ctx.namespace, "user_id": ctx.owner,
+            "metadata": {"agent": ctx.name, "agent_namespace": ctx.namespace, "runtime": "openshell"},
+            **self._limits(self.os_cfg["agentTpmLimit"], self.os_cfg["agentRpmLimit"])})
+        if status != 200 or not isinstance(body, dict) or not body.get("key"):
+            raise RuntimeError(f"LiteLLM key for {ctx.namespace}: HTTP {status}: {body}")
+        ctx.logger.info(f"Minted LiteLLM key '{ctx.namespace}' for user {ctx.owner}")
+        return body["key"]
 
     # ── Sandbox ──────────────────────────────────────────────────────────────
     def _mcp_wiring(self, ctx):

@@ -146,4 +146,12 @@ openshell:
   # The Envoy AI Gateway, which openshell agents may also use (spec.model.provider ai-gateway,
   # no key); empty offers only the GenAI Gateway.
   aiGatewayUrl: ""
+  # Secret (key api_key) with a LiteLLM key that may manage users and keys: set, each agent gets
+  # its own key owned by its user; empty uses the shared key in modelKeySecret.
+  litellmAdminSecret: ""
+  # LiteLLM limits per agent key and per user, tokens and requests per minute (0 = none).
+  agentTpmLimit: 0
+  agentRpmLimit: 0
+  userTpmLimit: 0
+  userRpmLimit: 0
   pypi: true

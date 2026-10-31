@@ -131,6 +131,14 @@ spec:
             - {name: OPENSHELL_MODEL_BASE_URL, value: {{ required "openshell.modelBaseUrl is required" .modelBaseUrl | quote }}}
             - {name: OPENSHELL_PYPI_ENABLED, value: {{ .pypi | quote }}}
             - {name: OPENSHELL_AI_GATEWAY_URL, value: {{ .aiGatewayUrl | quote }}}
+            {{- if .litellmAdminSecret }}
+            - name: LITELLM_ADMIN_KEY
+              valueFrom: {secretKeyRef: {name: {{ .litellmAdminSecret }}, key: api_key}}
+            {{- end }}
+            - {name: OPENSHELL_AGENT_TPM_LIMIT, value: {{ .agentTpmLimit | quote }}}
+            - {name: OPENSHELL_AGENT_RPM_LIMIT, value: {{ .agentRpmLimit | quote }}}
+            - {name: OPENSHELL_USER_TPM_LIMIT, value: {{ .userTpmLimit | quote }}}
+            - {name: OPENSHELL_USER_RPM_LIMIT, value: {{ .userRpmLimit | quote }}}
             {{- end }}
             {{- end }}
           ports:

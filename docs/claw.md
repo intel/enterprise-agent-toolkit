@@ -198,7 +198,10 @@ is how the agent process is confined:
   Everything else, including other cluster services, is refused.
 - **The model key never enters the pod.** Each agent namespace gets an OpenShell provider
   that holds the key; the agent sees a placeholder, and the supervisor adds the key only to
-  requests to the GenAI Gateway.
+  requests to the GenAI Gateway. With `claw_openshell_agent_keys` (on), that key is the
+  agent's own LiteLLM key (alias `agent-<username>-<name>`), owned by its user in LiteLLM, so
+  LiteLLM records tokens per agent and per user; deleting the agent deletes its key. Agents on
+  the AI Gateway bypass LiteLLM and are not counted there.
 - **Code runs in the agent's own pod.** OpenClaw's `exec` is always on and runs inside the
   sandbox, so the `sandbox` MCP is not used; the agent installs packages into a venv under
   `/sandbox`.
@@ -330,6 +333,8 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
 | `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
 | `openshell_enabled` | `false` | Also enables the [`openshell` runtime](#openshell-runtime), with the OpenShell component |
+| `claw_openshell_agent_keys` | `true` | A LiteLLM key per `openshell` agent, owned by its user (usage per agent and user); `false` shares one key |
+| `claw_openshell_agent_tpm_limit`, `claw_openshell_agent_rpm_limit`, `claw_openshell_user_tpm_limit`, `claw_openshell_user_rpm_limit` | `0` | LiteLLM tokens and requests per minute, per agent key and per user; `0` = no limit. Dollar budgets need model prices set in LiteLLM |
 | `claw_openshell_ai_gateway_enabled` | `true` | Offer `openshell` agents the Envoy AI Gateway as well as the GenAI Gateway (LiteLLM). The AI Gateway skips LiteLLM's budgets and guardrail |
 | `mcp_servers_github_token_secret` | `mcp-github-token` | Secret (key `token`) with the shared GitHub token |
 | `claw_console_hostname` | `agents.<base_domain_name>` | Host of the console, the REST API and the agent dashboards |

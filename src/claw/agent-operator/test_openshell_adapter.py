@@ -79,12 +79,14 @@ class _K8s:
 
 
 class _Stub:
-    def __init__(self):
-        self.calls = []
+    def __init__(self, provider_exists=False):
+        self.calls, self.provider_exists = [], provider_exists
 
     def __getattr__(self, method):
         def call(request, timeout=None):
             self.calls.append((method, request))
+            if method == "GetProvider" and not self.provider_exists:
+                raise _Status("NOT_FOUND")
             return types.SimpleNamespace()
         return call
 
@@ -136,7 +138,7 @@ def _ctx(name="oss", username="vkumar4", skills=("shell", "github"), allowlist=(
         spec={"webFetchAllowlist": list(allowlist)}, logger=_Logger())
 
 
-def _adapter(env=None, client=None, workspaces=None, mesh=False):
+def _adapter(env=None, client=None, workspaces=None, mesh=False, litellm=None):
     k8s = _K8s()
     routes_applied = []
     core = types.SimpleNamespace(
@@ -149,7 +151,7 @@ def _adapter(env=None, client=None, workspaces=None, mesh=False):
                               "OPENSHELL_MODEL_BASE_URL": LITELLM,
                               "OPENSHELL_SANDBOX_IMAGE": "registry/openclaw-sandbox:1", **(env or {})})
     client = client or _Client()
-    a = oa.OpenShellAdapter(core, cfg, client_factory=lambda: client)
+    a = oa.OpenShellAdapter(core, cfg, client_factory=lambda: client, litellm=litellm)
     a._workspaces = lambda: workspaces or _Workspaces()
     return a, client, k8s, routes_applied
 
@@ -227,6 +229,71 @@ class ConfigTest(unittest.TestCase):
 AIGW = "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1"
 
 
+class _LiteLLM:
+    """LiteLLM's management API: records calls, answers like the real one."""
+
+    def __init__(self, user_exists=False, generate_status=200):
+        self.calls, self.user_exists, self.generate_status = [], user_exists, generate_status
+
+    def __call__(self, path, body):
+        self.calls.append((path, body))
+        if path == "/user/new":
+            return (409, "exists") if self.user_exists else (200, {"user_id": body["user_id"]})
+        if path == "/key/generate":
+            return (self.generate_status, {"key": "sk-agent-own"} if self.generate_status == 200 else "denied")
+        return 200, {}
+
+
+ADMIN = {"LITELLM_ADMIN_KEY": "sk-admin", "OPENSHELL_AGENT_TPM_LIMIT": "50000", "OPENSHELL_USER_RPM_LIMIT": "60"}
+
+
+class AgentKeyTest(unittest.TestCase):
+    def test_each_agent_gets_its_own_key_owned_by_its_user(self):
+        ll = _LiteLLM()
+        a, client, *_ = _adapter(ADMIN, litellm=ll)
+        a.create(_ctx())
+        paths = [p for p, _ in ll.calls]
+        self.assertEqual(paths, ["/user/new", "/key/delete", "/key/generate"])
+        user, gen = ll.calls[0][1], ll.calls[2][1]
+        self.assertEqual((user["user_id"], user.get("rpm_limit")), ("vkumar4@example.com", 60))
+        self.assertEqual((gen["key_alias"], gen["user_id"], gen.get("tpm_limit")),
+                         ("agent-vkumar4-oss", "vkumar4@example.com", 50000))
+        req = next(r for m, r in client._stub.calls if m == "CreateProvider")
+        self.assertEqual(dict(req.provider.credentials), {"OPENAI_API_KEY": "sk-agent-own"})  # not the cluster key
+
+    def test_an_existing_user_is_fine_and_an_existing_provider_mints_nothing(self):
+        ll = _LiteLLM(user_exists=True)
+        a, *_ = _adapter(ADMIN, litellm=ll)
+        a.create(_ctx())
+        self.assertIn("/key/generate", [p for p, _ in ll.calls])
+        ll2 = _LiteLLM()
+        client = _Client()
+        client._stub = _Stub(provider_exists=True)
+        a2, *_ = _adapter(ADMIN, client=client, litellm=ll2)
+        a2.create(_ctx())
+        self.assertEqual(ll2.calls, [])  # a key is minted once, with the provider
+
+    def test_a_refused_key_stops_the_create(self):
+        a, client, *_ = _adapter(ADMIN, litellm=_LiteLLM(generate_status=403))
+        with self.assertRaises(RuntimeError):
+            a.create(_ctx())
+        self.assertFalse(any(m == "CreateProvider" for m, _ in client._stub.calls))
+
+    def test_without_an_admin_key_the_cluster_key_is_used(self):
+        ll = _LiteLLM()
+        a, client, *_ = _adapter(litellm=ll)
+        a.create(_ctx())
+        self.assertEqual(ll.calls, [])
+        req = next(r for m, r in client._stub.calls if m == "CreateProvider")
+        self.assertEqual(dict(req.provider.credentials), {"OPENAI_API_KEY": KEY})
+
+    def test_delete_removes_the_agent_s_key(self):
+        ll = _LiteLLM()
+        a, *_ = _adapter(ADMIN, litellm=ll)
+        a.delete(_ctx())
+        self.assertIn(("/key/delete", {"key_aliases": ["agent-vkumar4-oss"]}), ll.calls)
+
+
 class ModelGatewayTest(unittest.TestCase):
     def _config(self, model, env=None):
         a, *_ = _adapter(env)
@@ -278,8 +345,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(binding["role_ref"]["name"], "agent-operator-openshell-workspace")
         self.assertEqual(binding["subjects"][0]["namespace"], "openshell-system")
         self.assertEqual(ws.created, ["agent-vkumar4-oss"])
-        method, req = client._stub.calls[0]
-        self.assertEqual(method, "CreateProvider")
+        method, req = next(c for c in client._stub.calls if c[0] == "CreateProvider")
         self.assertEqual(dict(req.provider.credentials), {"OPENAI_API_KEY": KEY})
         self.assertEqual(req.provider.profile_workspace, "")  # the global profile
         self.assertTrue(routes_applied)  # the identity proxy before the sandbox calls it

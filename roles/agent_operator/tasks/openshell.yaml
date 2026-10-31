@@ -57,3 +57,69 @@
         labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
       data:
         ca.crt: "{{ _ao_os_tls.resources[0].data['ca.crt'] | b64decode }}"
+
+# A key per agent, owned by its user, needs a key that may create users and keys: owned by a
+# proxy_admin LiteLLM user (LiteLLM lets other keys create keys only for themselves), and limited to
+# the management routes so it cannot call models. Minted once, inside the LiteLLM pod, so the
+# master key never leaves it.
+- name: "agent_operator | openshell | LiteLLM key for per-agent keys"
+  when: claw_openshell_agent_keys | bool
+  block:
+    - name: "agent_operator | openshell | Check for the LiteLLM admin key"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ claw_litellm_admin_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+      register: _ao_ll_admin
+      no_log: true
+
+    - name: "agent_operator | openshell | Mint the LiteLLM admin key"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ litellm_namespace | default('litellm') }}"
+          - "deploy/{{ openshell_genai_deployment | default('litellm') }}"
+          - -c
+          - litellm
+          - --
+          - python
+          - -c
+          - |
+            import json, os, urllib.error, urllib.request
+            def post(path, body, ok=(200,)):
+                req = urllib.request.Request("http://127.0.0.1:4000" + path, json.dumps(body).encode(),
+                    {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
+                try:
+                    return json.load(urllib.request.urlopen(req))
+                except urllib.error.HTTPError as e:
+                    if e.code not in ok:
+                        raise
+                    return {}
+            post("/user/new", {"user_id": "{{ claw_litellm_admin_user }}", "user_role": "proxy_admin"}, ok=(200, 409))
+            post("/key/delete", {"key_aliases": ["{{ claw_litellm_admin_user }}-keys"]}, ok=(200, 400, 404))
+            print(post("/key/generate", {"key_alias": "{{ claw_litellm_admin_user }}-keys",
+                "user_id": "{{ claw_litellm_admin_user }}", "max_budget": 0.01,
+                "allowed_routes": ["/key/generate", "/key/delete", "/key/info", "/user/new", "/user/info", "/user/update"]})["key"])
+      register: _ao_ll_mint
+      changed_when: true
+      no_log: true
+      when: _ao_ll_admin.resources | default([]) | length == 0
+
+    - name: "agent_operator | openshell | Store the LiteLLM admin key"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ claw_litellm_admin_secret }}"
+            namespace: "{{ agent_operator_namespace }}"
+            labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+          stringData:
+            api_key: "{{ _ao_ll_mint.stdout | trim }}"
+      no_log: true
+      when: _ao_ll_mint is changed

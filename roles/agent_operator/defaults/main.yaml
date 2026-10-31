@@ -79,3 +79,16 @@ claw_model_gateways: >-
      + ([{'name': 'ai-gateway', 'label': 'AI Gateway (Envoy)', 'url': claw_model_base_url, 'kind': 'openai'}]
         if claw_openshell_ai_gateway_enabled | bool else []) }}
 claw_model_list_exclude: "{{ [claw_embedding_model, guardrail_model | default('qwen3guard')] }}"
+# A LiteLLM key per openshell agent, owned by its user, so model usage is tracked per agent and
+# per user; false keeps one shared key. The operator gets a key that may only manage users and
+# keys (not call models), owned by LiteLLM user claw_litellm_admin_user (proxy_admin).
+claw_openshell_agent_keys: true
+claw_litellm_admin_user: "agent-operator"
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+claw_litellm_admin_secret: "agent-operator-litellm"
+# Optional LiteLLM limits, tokens and requests per minute (0 = none), per agent key and per user.
+# LiteLLM counts tokens without model prices; its dollar budgets need prices set in LiteLLM.
+claw_openshell_agent_tpm_limit: 0
+claw_openshell_agent_rpm_limit: 0
+claw_openshell_user_tpm_limit: 0
+claw_openshell_user_rpm_limit: 0
