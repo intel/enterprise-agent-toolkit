@@ -136,7 +136,12 @@ reach only its own memory. Calls without a valid token are refused, and agent po
 the server except through their proxy. Each call is logged with the caller, for example
 `AUDIT memory_read azp=agent-alice-demo schema=agent_alice_demo tier=auto hits=1`.
 
-OpenClaw's built-in memory search uses the same embedding model through the inference gateway.
+OpenClaw's built-in memory search uses the same embedding model. Both reach it at
+`claw_embedding_base_url`: by default, the embedding model's own KServe URL through the AI
+Gateway (`…/llm-inference/bge-base-en/v1`). The AI Gateway's shared `/v1` serves only models
+that have an AI Gateway route, and an embedding model deployed for LiteLLM has none, so there
+`memory_write` would fail with `404`. `openshell` agents with LiteLLM embed through LiteLLM
+instead, with their own key.
 
 ---
 
@@ -244,7 +249,7 @@ from `claw`:
 Gateway is the only gateway, whatever `claw_openshell_ai_gateway_enabled` says:
 - Agents get no OpenShell provider and no key.
 - Chat goes to the AI Gateway, which their policy allows. Memory embeddings go to the embedding
-  model's own URL through it (`claw_model_server_url`): the AI Gateway's shared `/v1` serves
+  model's own URL through it (`claw_embedding_base_url`): the AI Gateway's shared `/v1` serves
   only models that have an AI Gateway route, which the embedding model may not have.
 - An agent whose `spec.model.provider` is `genai-gateway` fails, with a message to switch it
   to `ai-gateway`, rather than silently losing LiteLLM's accounting and guardrail.
@@ -384,6 +389,7 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 | `claw_model_id` | first of `llm_services_autodeploy_models` | Model every agent uses unless its `spec.model` overrides it |
 | `claw_model_context_window` | `32768` | Tokens OpenClaw plans a conversation for with `claw_model_id`: at least `32768` and at most what the model serves, both checked by the install; `0` for the served size (see [Context size](#context-size)) |
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
+| `claw_embedding_base_url` | The embedding model's own URL (`claw_model_server_url`) | Where memory embeddings are made, by OpenClaw and the memory server |
 | `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
 | `openshell_enabled` | `false` | Also enables the [`openshell` runtime](#openshell-runtime), with the OpenShell component |
 | `claw_openshell_agent_keys` | `true` | A LiteLLM key per `openshell` agent, owned by its user (usage per agent and user); `false` shares one key |

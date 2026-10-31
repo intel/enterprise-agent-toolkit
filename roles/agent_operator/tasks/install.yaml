@@ -105,7 +105,7 @@
           contextWindow: "{{ claw_model_context_window }}"
         controlUiAllowedOrigins: "https://{{ claw_console_hostname }}"
         embedding:
-          baseUrl: "{{ claw_model_base_url }}"
+          baseUrl: "{{ claw_embedding_base_url }}"
           model: "{{ claw_embedding_model }}"
       isolation:
         meshAmbient: "{{ istio_enabled | default(false) | bool }}"

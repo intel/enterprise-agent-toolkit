@@ -44,6 +44,10 @@ claw_pgvector_secret: "pgvector-credentials"
 claw_runtime_secret: "agent-operator-runtime"
 claw_embedding_model: "bge-base-en"
 claw_embedding_dim: 768
+# Where memory embeddings are made (OpenClaw's memory search and the memory tool server): the
+# embedding model's own URL. The AI Gateway's shared /v1 serves only models that have an AI
+# Gateway route, which an embedding model deployed for LiteLLM lacks.
+claw_embedding_base_url: "{{ claw_model_server_url | replace('{model}', claw_embedding_model) }}"
 
 # Per-agent web_fetch proxy enforcing spec.webFetchAllowlist; egress uses the platform proxy.
 claw_web_fetch_proxy_enabled: true

@@ -35,7 +35,7 @@ mcp_servers:
     env:
       - name: PGVECTOR_DSN
         valueFrom: {secretKeyRef: {name: "{{ claw_runtime_secret }}", key: pgvector-dsn}}
-      - {name: EMBEDDING_URL, value: "{{ claw_model_base_url }}"}
+      - {name: EMBEDDING_URL, value: "{{ claw_embedding_base_url }}"}
       - {name: EMBEDDING_MODEL, value: "{{ claw_embedding_model }}"}
   - name: sandbox
     script: sandbox.py
