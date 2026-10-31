@@ -79,14 +79,17 @@ class _K8s:
 
 
 class _Stub:
-    def __init__(self, provider_exists=False):
-        self.calls, self.provider_exists = [], provider_exists
+    def __init__(self, provider_exists=False, sandbox_providers=("genai-gateway",)):
+        self.calls, self.provider_exists, self.sandbox_providers = [], provider_exists, list(sandbox_providers)
 
     def __getattr__(self, method):
         def call(request, timeout=None):
             self.calls.append((method, request))
             if method == "GetProvider" and not self.provider_exists:
                 raise _Status("NOT_FOUND")
+            if method == "GetSandbox":
+                return types.SimpleNamespace(sandbox=types.SimpleNamespace(
+                    spec=types.SimpleNamespace(providers=self.sandbox_providers)))
             return types.SimpleNamespace()
         return call
 
@@ -631,6 +634,29 @@ class LifecycleTest(unittest.TestCase):
         writes = [stdin for argv, stdin in client.execs if argv[-1] == oa.CONFIG_PATH and stdin]
         self.assertEqual(len(writes), 1)  # the fake's config is empty, so it differs
         self.assertTrue(any("pkill" in " ".join(argv) for argv, _ in client.execs))
+
+    def test_a_sandbox_made_before_litellm_gets_the_provider_attached(self):
+        client = _Client(exists=True)
+        client.unavailable = ()
+        client._stub = _Stub(provider_exists=True, sandbox_providers=())
+        a, client, *_ = _adapter(client=client)
+        ctx = _ctx()
+        a.create(ctx)
+        attach = [r for m, r in client._stub.calls if m == "AttachSandboxProvider"]
+        self.assertEqual([(r.sandbox, r.provider) for r in attach], [("oss", "genai-gateway")])
+        self.assertIn("wait_ready", client.calls)  # attaching restarts its pods; the config waits
+        self.assertTrue(any("Attached the genai-gateway provider" in m for m in ctx.logger.infos))
+
+    def test_a_sandbox_with_the_provider_or_without_litellm_is_not_touched(self):
+        client = _Client(exists=True)
+        a, client, *_ = _adapter(client=client)
+        a.create(_ctx())
+        self.assertNotIn("AttachSandboxProvider", [m for m, _ in client._stub.calls])
+        client = _Client(exists=True)
+        client._stub = _Stub(sandbox_providers=())
+        a, client, *_ = _adapter({"OPENSHELL_MODEL_BASE_URL": ""}, client=client)
+        a.create(_ctx())
+        self.assertNotIn("AttachSandboxProvider", [m for m, _ in client._stub.calls])
 
     def test_an_unchanged_config_is_not_rewritten_or_restarted(self):
         client = _Client(exists=True)

@@ -263,6 +263,20 @@ Gateway is the only gateway, whatever `claw_openshell_ai_gateway_enabled` says:
 The fence is the same: the agent reaches only the AI Gateway, its identity proxy, its allowlist
 and PyPI.
 
+**Adding LiteLLM later.** Each component reads whether LiteLLM is there when it is installed, so
+after deploying LiteLLM (`litellm_enabled: true`, then `install postgresql` and `install litellm`):
+
+1. Register the models already running: model-manager registers a model only when it deploys
+   it, and reads `auth_type` from the inference config, so
+   `MM_LITELLM_ENABLED=true ./model-manager deploy <model> --wait` for each. With an unchanged
+   spec this only registers it.
+2. Re-install `openshell`, `agent_operator` and `agent_backend` (`--only`).
+
+The console then offers the GenAI Gateway. Each existing agent gets its own LiteLLM key, and the
+GenAI Gateway provider is attached to its sandbox. That restarts the sandbox once, and its
+workspace stays. Its memory embeddings then go through LiteLLM, and its chat stays on the gateway
+its spec names.
+
 Users reach an `openshell` agent at the same `/gw/<owner ns>/<name>/` path. The route goes to
 the OpenShell gateway, which relays to the agent's sandbox; OpenClaw listens on loopback only
 and trusts the user name only from that relay. The gateway's port accepts only the

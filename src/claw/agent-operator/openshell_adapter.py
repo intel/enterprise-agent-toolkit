@@ -241,6 +241,7 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         policy applies live; the config is rewritten, and OpenClaw restarted, only if it changed.
         Never raises: the agent keeps running on what it has."""
         try:
+            self._attach_provider(ctx)
             self.update_policy(ctx)
             if not self.ready(ctx):
                 return  # stopped or starting: an update or the next restart catches up
@@ -252,6 +253,22 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             ctx.logger.info(f"Rewrote the OpenClaw config of '{ctx.name}' and restarted it")
         except Exception as e:
             ctx.logger.warning(f"Could not bring '{ctx.name}' up to date (continuing): {e}")
+
+    def _attach_provider(self, ctx):
+        """Attach the GenAI Gateway provider to a sandbox created before LiteLLM was there. The
+        config this operator writes then embeds through LiteLLM, which the sandbox reaches only
+        with the provider. Attaching restarts the sandbox's pods once; its workspace stays."""
+        if not self.genai:
+            return
+        pb, _ = self._pb()
+        sandbox = self.client._stub.GetSandbox(pb.GetSandboxRequest(
+            workspace_scope=self._scope(ctx), name=ctx.name), timeout=30).sandbox
+        if self.os_cfg["providerName"] in sandbox.spec.providers:
+            return
+        self._rpc("AttachSandboxProvider", pb.AttachSandboxProviderRequest(
+            workspace_scope=self._scope(ctx), sandbox=ctx.name, provider=self.os_cfg["providerName"]))
+        ctx.logger.info(f"Attached the {self.os_cfg['providerName']} provider to '{ctx.name}' (its pods restart)")
+        self.client.wait_ready(ctx.name, workspace=ctx.namespace)
 
     def update_policy(self, ctx):
         _, routes = self._mcp_wiring(ctx)
