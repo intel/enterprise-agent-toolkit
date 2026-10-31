@@ -387,6 +387,14 @@ class LifecycleTest(unittest.TestCase):
         a.resume(_ctx())
         self.assertEqual(client.calls, ["suspend", "stop", "resume", "start", "wait_ready"])
 
+    def test_an_update_restarts_openclaw_without_matching_its_own_shell(self):
+        a, client, *_ = _adapter()
+        a.update(_ctx(), reseed=False)
+        restart = [argv for argv, _ in client.execs if "pkill" in " ".join(argv)]
+        self.assertEqual(len(restart), 1)
+        self.assertIn("'[o]penclaw-gateway'", restart[0][-1])  # 'openclaw-gateway' would match sh -c itself
+        self.assertNotIn(" openclaw-gateway", restart[0][-1])
+
     def test_seeding_writes_safe_paths_only_and_decodes_base64(self):
         a, client, *_ = _adapter()
         ctx = _ctx(files={"AGENTS.md": "hi", "../etc/x": "no", "bin/run": "base64:" + base64.b64encode(b"\x01").decode()})

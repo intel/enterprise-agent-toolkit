@@ -211,8 +211,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
                                        tool_credentials=self._tool_credentials(ctx))
         self.update_policy(ctx)
         self._write(ctx, CONFIG_PATH, self._config_json(ctx))
-        # The supervisor restarts the main process (restart policy always) with the new file.
-        self._exec(ctx, ["sh", "-c", "pkill -f openclaw-gateway || true"])
+        # The supervisor restarts the main process (restart policy always) with the new file. The
+        # bracket keeps pkill -f from matching this shell's own command line, which would kill it.
+        self._exec(ctx, ["sh", "-c", "pkill -f '[o]penclaw-gateway' || true"])
         if reseed and ctx.workspace_files:
             self.client.wait_ready(ctx.name, workspace=ctx.namespace)
             self._seed_files(ctx, ctx.workspace_files)
