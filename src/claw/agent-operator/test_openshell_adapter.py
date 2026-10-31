@@ -436,7 +436,7 @@ class LifecycleTest(unittest.TestCase):
         ws = _Workspaces()
         a, client, k8s, routes_applied = _adapter(workspaces=ws)
         ref = a.create(_ctx())
-        self.assertEqual(ref["kind"], "Sandbox")
+        self.assertEqual(ref, {"apiVersion": "openshell.ai/v1", "kind": "Sandbox", "name": "oss"})  # the CRD's fields only
         made = [name for name, _ in k8s.calls]
         for call in ("patch_namespace", "create_namespaced_service_account",
                      "create_namespaced_role_binding", "create_namespaced_network_policy"):

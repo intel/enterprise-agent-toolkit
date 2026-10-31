@@ -203,8 +203,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             if _status(e) != "NOT_FOUND":
                 raise
             self._create_sandbox(ctx)
-        return {"apiVersion": "openshell.ai/v1", "kind": "Sandbox", "name": ctx.name,
-                "workspace": ctx.namespace}
+        # Only the fields status.backendRef has; the workspace is the agent namespace.
+        return {"apiVersion": "openshell.ai/v1", "kind": "Sandbox", "name": ctx.name}
 
     def update(self, ctx, reseed=True):
         """Network policy and config follow the spec; the filesystem policy is fixed at create."""
