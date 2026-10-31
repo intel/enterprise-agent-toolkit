@@ -51,16 +51,22 @@ openshell_cli_dir: ""
 openshell_oidc_issuer: ""
 openshell_oidc_audience: "openshell-cli"
 
-# NetworkPolicy on the gateway port: sandbox supervisors plus these namespaces may connect
-# (for example the agent operator's and the platform gateway's). Exposed sandbox services
-# are reachable by anything that can connect, so keep this on.
+# NetworkPolicy on the gateway port: sandbox supervisors plus the clients below may connect.
+# Exposed sandbox services are reachable by anything that can connect, without sign-in, so
+# keep this on and the clients narrow.
 openshell_gateway_network_policy: true
-# With claw on, the agent operator (manages workspaces) and the platform gateway (routes users to
-# openshell agents, after its sign-in and owner check).
-openshell_gateway_client_namespaces: >-
-  {{ [agent_operator_namespace | default('agent-operator-system'),
-      envoy_gateway_namespace | default('envoy-gateway-system')]
+# Pods that may connect, by namespace and labels. With claw on: the agent operator (manages
+# workspaces) and the platform gateway's Envoy (routes users to openshell agents, after its
+# sign-in and owner check). Pods, not whole namespaces: the console, the API and the MCP
+# servers share the operator's namespace, and the AI Gateway's Envoy the platform gateway's.
+openshell_gateway_clients: >-
+  {{ [{'namespace': agent_operator_namespace | default('agent-operator-system'),
+       'pod_labels': {'app.kubernetes.io/name': 'agent-operator'}},
+      {'namespace': envoy_gateway_namespace | default('envoy-gateway-system'),
+       'pod_labels': {'gateway.envoyproxy.io/owning-gateway-name': gateway_name | default('eg-gateway')}}]
      if (claw_enabled | default(false) | bool) else [] }}
+# Whole namespaces that may connect, for other clients; none by default.
+openshell_gateway_client_namespaces: []
 
 # GenAI Gateway (LiteLLM) provider: sandboxes see a placeholder, the supervisor injects a
 # per-deployment LiteLLM virtual key only toward the gateway service.

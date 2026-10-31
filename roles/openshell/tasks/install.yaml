@@ -120,7 +120,7 @@
 # Sandbox routes are served on the gateway port without authentication (0.1.x: client
 # certificates are optional, and only the RPCs check identity), so whoever reaches the
 # port reaches every exposed sandbox service. Allow only the supervisors and the
-# namespaces that call the gateway. kubectl port-forward enters through the kubelet,
+# pods that call the gateway. kubectl port-forward enters through the kubelet,
 # which NetworkPolicy does not filter. Sandbox pods get their policies from OpenShell.
 - name: "openshell | Restrict who can reach the gateway"
   kubernetes.core.k8s:
@@ -146,6 +146,12 @@
           - namespaceSelector: {}
             podSelector:
               matchLabels: {openshell.ai/boundary-role: supervisor}
+      {% for c in openshell_gateway_clients %}
+          - namespaceSelector:
+              matchLabels: {kubernetes.io/metadata.name: {{ c.namespace }}}
+            podSelector:
+              matchLabels: {{ c.pod_labels | default({}) | to_json }}
+      {% endfor %}
       {% for ns in openshell_gateway_client_namespaces %}
           - namespaceSelector:
               matchLabels: {kubernetes.io/metadata.name: {{ ns }}}

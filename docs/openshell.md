@@ -141,7 +141,7 @@ sandboxes coexist on the same controller. Fluent Bit does not collect OpenShell 
 | `openshell` | StatefulSet + Service (ClusterIP :8080, TLS) | `openshell-system` | Upstream Helm chart with `charts/openshell/values.yaml`, operator workspace mode |
 | `openshell-client-tls` | Secret | `openshell-system` | Client certificate: the gateway admin credential |
 | `openshell-genai-key` | Secret | `openshell-system` | LiteLLM virtual key minted inside the LiteLLM pod (master key never leaves it) |
-| `openshell-gateway-ingress` | NetworkPolicy | `openshell-system` | Gateway port open to sandbox supervisors and `openshell_gateway_client_namespaces` only (see [Network isolation](#network-isolation)) |
+| `openshell-gateway-ingress` | NetworkPolicy | `openshell-system` | Gateway port open to sandbox supervisors and `openshell_gateway_clients` only (see [Network isolation](#network-isolation)) |
 | `openshell-sandboxes` | Namespace + `openshell-workspace` release | `openshell-sandboxes` | The admin workspace |
 | `eat-genai-gateway` | Provider profile | gateway (global) | LiteLLM endpoint, bearer credential, allowed binaries |
 | `genai-gateway` | Provider | admin workspace | Attach to sandboxes with `--workspace openshell-sandboxes --provider genai-gateway` |
@@ -193,7 +193,8 @@ OpenShell 0.0.x cannot be upgraded in place: delete its sandboxes, uninstall it 
 | `openshell_cli_dir` | `""` | Where the playbook keeps the CLI; empty = `~/.cache/eat/openshell-cli-<release tag>` (mode `0700`) |
 | `openshell_workspace_storage_class` | `""` | StorageClass for sandbox workspace volumes; empty = `local-path` when the cluster has it, else the default class. Multi-node NFS clusters get a non-default `local-path` class for this: seeding a workspace on NFS takes about 16 minutes |
 | `openshell_gateway_network_policy` | `true` | Apply `openshell-gateway-ingress` |
-| `openshell_gateway_client_namespaces` | `[]` | Namespaces besides the supervisors that may connect to the gateway port |
+| `openshell_gateway_clients` | With claw on: the agent operator's pod and the platform gateway's Envoy pods | Pods (`namespace`, `pod_labels`) besides the supervisors that may connect to the gateway port |
+| `openshell_gateway_client_namespaces` | `[]` | Whole namespaces that may also connect |
 
 > **Note:** `openshell_allow_unauthenticated_clusterip_only` is not available in this release.
 
@@ -599,8 +600,11 @@ things are needed, and the agent operator adds both for `openshell` agents:
 The toolkit adds `openshell-gateway-ingress` on the gateway. In 0.1.x client certificates are
 optional on the gateway port and only the RPCs check identity, while sandbox service routes
 (`openshell service expose`) do no authentication: anything that can connect to the port
-reaches every exposed sandbox service. The policy admits only sandbox supervisors and the
-namespaces in `openshell_gateway_client_namespaces`. `kubectl port-forward` enters through the
+reaches every exposed sandbox service. The policy admits only sandbox supervisors and the pods
+in `openshell_gateway_clients`: with claw on, the agent operator and the platform gateway's
+Envoy, which signs users in and checks the owner first. It names pods, not their namespaces:
+when it admitted the operator's whole namespace, the console and API pods could fetch any
+agent's dashboard through the gateway, with a made-up `x-gw-user`. `kubectl port-forward` enters through the
 kubelet, which NetworkPolicy does not filter, so admin access keeps working.
 
 ---
