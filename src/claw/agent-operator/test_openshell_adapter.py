@@ -232,14 +232,16 @@ AIGW = "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1"
 class _LiteLLM:
     """LiteLLM's management API: records calls, answers like the real one."""
 
-    def __init__(self, user_exists=False, generate_status=200, models=None):
+    def __init__(self, user_exists=False, generate_status=200, models=None, keys=None):
         self.calls, self.user_exists, self.generate_status = [], user_exists, generate_status
-        self.models = models or []
+        self.models, self.keys = models or [], keys or []
 
     def __call__(self, path, body):
         self.calls.append((path, body))
         if path == "/model/info":
             return 200, {"data": self.models}
+        if path.startswith("/key/list"):
+            return 200, {"keys": self.keys}
         if path == "/user/new":
             return (409, "exists") if self.user_exists else (200, {"user_id": body["user_id"]})
         if path == "/key/generate":
@@ -259,6 +261,7 @@ class AgentKeyTest(unittest.TestCase):
         self.assertEqual(paths, ["/user/new", "/key/delete", "/key/generate"])
         user, gen = ll.calls[0][1], ll.calls[2][1]
         self.assertEqual((user["user_id"], user.get("rpm_limit")), ("vkumar4@example.com", 60))
+        self.assertIs(user["auto_create_key"], False)  # else LiteLLM mints the user a key nobody holds
         self.assertEqual((gen["key_alias"], gen["user_id"], gen.get("tpm_limit")),
                          ("agent-vkumar4-oss", "vkumar4@example.com", 50000))
         req = next(r for m, r in client._stub.calls if m == "CreateProvider")
@@ -274,7 +277,47 @@ class AgentKeyTest(unittest.TestCase):
         client._stub = _Stub(provider_exists=True)
         a2, *_ = _adapter(ADMIN, client=client, litellm=ll2)
         a2.create(_ctx())
-        self.assertEqual([p for p, _ in ll2.calls if p != "/model/info"], [])  # a key is minted once, with the provider
+        # A key is minted once, with the provider; an existing one is only checked.
+        self.assertFalse([p for p, _ in ll2.calls if p in ("/user/new", "/key/generate", "/key/delete")])
+
+    def test_an_agent_key_may_call_models_only(self):
+        ll = _LiteLLM()
+        a, *_ = _adapter(ADMIN, litellm=ll)
+        a.create(_ctx())
+        routes = next(b for p, b in ll.calls if p == "/key/generate")["allowed_routes"]
+        self.assertIn("/v1/chat/completions", routes)
+        self.assertIn("/v1/embeddings", routes)
+        for route in ("/key/generate", "/key/list", "/key/info", "/user/new", "/model/info"):
+            self.assertNotIn(route, routes)  # the supervisor adds the key to anything the sandbox sends
+
+    def _existing(self, keys):
+        ll = _LiteLLM(keys=keys)
+        client = _Client()
+        client._stub = _Stub(provider_exists=True)
+        a, *_ = _adapter(ADMIN, client=client, litellm=ll)
+        ctx = _ctx()
+        a.create(ctx)
+        return ll, ctx
+
+    def test_an_existing_key_with_every_route_is_limited(self):
+        ll, ctx = self._existing([{"token": "hash-1", "key_alias": "agent-vkumar4-oss", "allowed_routes": []}])
+        self.assertIn("/key/list?key_alias=agent-vkumar4-oss&return_full_object=true", [p for p, _ in ll.calls])
+        self.assertIn(("/key/update", {"key": "hash-1", "allowed_routes": oa.AGENT_KEY_ROUTES}), ll.calls)
+        ll, _ = self._existing([{"token": "hash-1", "key_alias": "agent-vkumar4-oss",
+                                 "allowed_routes": list(reversed(oa.AGENT_KEY_ROUTES))}])
+        self.assertNotIn("/key/update", [p for p, _ in ll.calls])  # already limited
+
+    def test_a_failed_limit_is_a_warning_not_a_failed_agent(self):
+        def refuses(path, body):
+            if path.startswith("/key/list"):
+                return 200, {"keys": [{"token": "hash-1", "allowed_routes": []}]}
+            return (403, "denied") if path == "/key/update" else (200, {})
+        client = _Client()
+        client._stub = _Stub(provider_exists=True)
+        a, *_ = _adapter(ADMIN, client=client, litellm=refuses)
+        ctx = _ctx()
+        a.create(ctx)
+        self.assertTrue(any("Could not limit" in w for w in ctx.logger.warnings))
 
     def test_a_refused_key_stops_the_create(self):
         a, client, *_ = _adapter(ADMIN, litellm=_LiteLLM(generate_status=403))
@@ -321,6 +364,23 @@ class ModelGatewayTest(unittest.TestCase):
     def test_ai_gateway_falls_back_to_genai_gateway_when_not_enabled(self):
         _, _, cfg = self._config({"provider": "ai-gateway", "id": "qwen3-coder-30b"})
         self.assertEqual(list(cfg["models"]["providers"]), ["genai-gateway"])
+
+    def test_embeddings_go_through_litellm_with_the_agent_s_key_and_no_ai_gateway_rule(self):
+        env = {"EMBEDDING_BASE_URL": AIGW, "EMBEDDING_MODEL": "bge-base-en", "OPENSHELL_AI_GATEWAY_URL": AIGW}
+        a, ctx, cfg = self._config({"provider": "genai-gateway", "id": "qwen3-coder-30b"}, env)
+        search = cfg["agents"]["defaults"]["memorySearch"]
+        self.assertEqual((search["model"], search["remote"]), ("bge-base-en", {"baseUrl": LITELLM, "apiKey": "${OPENAI_API_KEY}"}))
+        rules = _rules(a, ctx)["network_policies"]
+        hosts = [e["host"] for r in rules.values() for e in r["endpoints"]]
+        # The AI Gateway answers any model with no key, past LiteLLM's accounting and guardrail.
+        self.assertNotIn("ai-gateway.envoy-gateway-system.svc.cluster.local", hosts)
+
+    def test_the_ai_gateway_rule_is_only_for_agents_that_chose_it(self):
+        env = {"EMBEDDING_BASE_URL": AIGW, "OPENSHELL_AI_GATEWAY_URL": AIGW}
+        a, ctx, cfg = self._config({"provider": "ai-gateway", "id": "qwen3-coder-30b"}, env)
+        hosts = [e["host"] for e in _rules(a, ctx)["network_policies"]["agent_services"]["endpoints"]]
+        self.assertEqual(hosts, ["ai-gateway.envoy-gateway-system.svc.cluster.local"])
+        self.assertEqual(cfg["agents"]["defaults"]["memorySearch"]["remote"]["baseUrl"], LITELLM)
 
     def test_the_agent_s_context_size_is_used(self):
         _, _, cfg = self._config({"id": "qwen3-4b", "contextWindow": 40960})
@@ -479,6 +539,24 @@ class LifecycleTest(unittest.TestCase):
         a, client, *_ = _adapter(client=client, workspaces=_Workspaces(exists=True))
         a.create(_ctx())
         self.assertEqual(client.created, [])
+
+    def test_an_existing_sandbox_gets_the_current_policy_and_a_changed_config(self):
+        client = _Client(exists=True)
+        a, client, *_ = _adapter(client=client)
+        a.create(_ctx())
+        self.assertIn("UpdateConfig", [m for m, _ in client._stub.calls])
+        writes = [stdin for argv, stdin in client.execs if argv[-1] == oa.CONFIG_PATH and stdin]
+        self.assertEqual(len(writes), 1)  # the fake's config is empty, so it differs
+        self.assertTrue(any("pkill" in " ".join(argv) for argv, _ in client.execs))
+
+    def test_an_unchanged_config_is_not_rewritten_or_restarted(self):
+        client = _Client(exists=True)
+        a, client, *_ = _adapter(client=client)
+        current = a._config_json(_ctx())
+        client.exec = lambda name, argv, **kw: (client.execs.append((argv, kw.get("stdin"))),
+                                               types.SimpleNamespace(exit_code=0, stdout=current, stderr=""))[1]
+        a.create(_ctx())
+        self.assertEqual([argv for argv, _ in client.execs], [["cat", oa.CONFIG_PATH]])
 
     def test_suspend_and_resume_fall_back_to_stop_and_start(self):
         client = _Client()

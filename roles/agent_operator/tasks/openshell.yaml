@@ -60,12 +60,14 @@
 
 # A key per agent, owned by its user, needs a key that may create users and keys: owned by a
 # proxy_admin LiteLLM user (LiteLLM lets other keys create keys only for themselves), and limited to
-# the management routes so it cannot call models (/model/info gives the models' context sizes).
+# the management routes so it cannot call models (/model/info gives the models' context sizes;
+# /key/list and /key/update limit agent keys minted before their routes were).
 # Minted once, inside the LiteLLM pod, so the master key never leaves it.
 - name: "agent_operator | openshell | LiteLLM key for per-agent keys"
   when: claw_openshell_agent_keys | bool
   vars:
-    _ao_ll_admin_routes: ["/key/generate", "/key/delete", "/key/info", "/user/new", "/user/info", "/user/update", "/model/info"]
+    _ao_ll_admin_routes: ["/key/generate", "/key/delete", "/key/info", "/key/list", "/key/update",
+                          "/user/new", "/user/info", "/user/update", "/model/info"]
   block:
     - name: "agent_operator | openshell | Check for the LiteLLM admin key"
       kubernetes.core.k8s_info:
@@ -100,7 +102,9 @@
                     if e.code not in ok:
                         raise
                     return {}
-            post("/user/new", {"user_id": "{{ claw_litellm_admin_user }}", "user_role": "proxy_admin"}, ok=(200, 409))
+            # auto_create_key: LiteLLM otherwise mints this admin user a full key nobody holds.
+            post("/user/new", {"user_id": "{{ claw_litellm_admin_user }}", "user_role": "proxy_admin",
+                               "auto_create_key": False}, ok=(200, 409))
             post("/key/delete", {"key_aliases": ["{{ claw_litellm_admin_user }}-keys"]}, ok=(200, 400, 404))
             print(post("/key/generate", {"key_alias": "{{ claw_litellm_admin_user }}-keys",
                 "user_id": "{{ claw_litellm_admin_user }}", "max_budget": 0.01,
@@ -110,7 +114,8 @@
       no_log: true
       when: _ao_ll_admin.resources | default([]) | length == 0
 
-    # An upgrade keeps the key the operator holds and brings its routes up to date, by alias.
+    # An upgrade keeps the key the operator holds and brings its routes up to date, by alias, and
+    # removes keys of the admin user that nobody holds.
     - name: "agent_operator | openshell | Keep the LiteLLM admin key's routes"
       ansible.builtin.command:
         argv:
@@ -135,10 +140,15 @@
             stale = [k["token"] for k in keys if isinstance(k, dict) and sorted(k.get("allowed_routes") or []) != sorted(routes)]
             for token in stale:
                 call("/key/update", {"key": token, "allowed_routes": routes})
-            print("updated" if stale else "current")
+            # Before auto_create_key was off, creating the admin user also minted it a full key
+            # without an alias, which nobody holds; only the aliased key above is the operator's.
+            owned = call("/key/list?user_id={{ claw_litellm_admin_user }}&return_full_object=true").get("keys") or []
+            unheld = [k["token"] for k in owned if isinstance(k, dict) and not k.get("key_alias")]
+            if unheld:
+                call("/key/delete", {"keys": unheld})
+            print("updated" if stale or unheld else "current")
       register: _ao_ll_routes
       changed_when: _ao_ll_routes.stdout | trim == 'updated'
-      when: _ao_ll_admin.resources | default([]) | length > 0
 
     - name: "agent_operator | openshell | Store the LiteLLM admin key"
       kubernetes.core.k8s:

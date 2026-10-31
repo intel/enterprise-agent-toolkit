@@ -200,8 +200,13 @@ is how the agent process is confined:
   that holds the key; the agent sees a placeholder, and the supervisor adds the key only to
   requests to the GenAI Gateway. With `claw_openshell_agent_keys` (on), that key is the
   agent's own LiteLLM key (alias `agent-<username>-<name>`), owned by its user in LiteLLM, so
-  LiteLLM records tokens per agent and per user; deleting the agent deletes its key. Agents on
-  the AI Gateway bypass LiteLLM and are not counted there.
+  LiteLLM records tokens per agent and per user; deleting the agent deletes its key.
+  - The supervisor adds the key to any request from the sandbox to LiteLLM, so the key may call
+    only model routes (chat, completions, responses, embeddings, model list). Code in the sandbox
+    can't use it to mint or list keys.
+  - Memory embeddings go through LiteLLM with the same key.
+  - Only agents whose provider is `ai-gateway` may reach the AI Gateway. Their chats bypass
+    LiteLLM and are not counted there.
 - **Code runs in the agent's own pod.** OpenClaw's `exec` is always on and runs inside the
   sandbox, so the `sandbox` MCP is not used; the agent installs packages into a venv under
   `/sandbox`.

@@ -47,6 +47,11 @@ MESH_POLICY = "openshell-sandbox-mesh"
 # content-safety guardrail; its key is injected by the workspace's provider. ai-gateway (Envoy AI
 # Gateway) needs no key in-cluster and is reached directly, when the cluster enables it.
 AI_GATEWAY_PROVIDER = "ai-gateway"
+# What an agent's LiteLLM key may call. The supervisor adds the key to any request from the sandbox
+# to LiteLLM, so with the default (every route) code in the sandbox could mint itself new keys
+# (/key/generate) and read them in plain text.
+AGENT_KEY_ROUTES = ["/v1/chat/completions", "/chat/completions", "/v1/completions", "/completions",
+                    "/v1/responses", "/responses", "/v1/embeddings", "/embeddings", "/v1/models", "/models"]
 NO_KEY = claw_adapter.NO_KEY
 # Code runs with OpenClaw's own exec in the sandboxed pod, so the sandbox MCP is not wired.
 EXCLUDED_SKILLS = {"sandbox"}
@@ -203,6 +208,8 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             if _status(e) != "NOT_FOUND":
                 raise
             self._create_sandbox(ctx)
+        else:
+            self._refresh(ctx)
         # Only the fields status.backendRef has; the workspace is the agent namespace.
         return {"apiVersion": "openshell.ai/v1", "kind": "Sandbox", "name": ctx.name}
 
@@ -219,6 +226,23 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         if reseed and ctx.workspace_files:
             self.client.wait_ready(ctx.name, workspace=ctx.namespace)
             self._seed_files(ctx, ctx.workspace_files)
+
+    def _refresh(self, ctx):
+        """An existing sandbox follows this operator's policy and config, as after an upgrade. The
+        policy applies live; the config is rewritten, and OpenClaw restarted, only if it changed.
+        Never raises: the agent keeps running on what it has."""
+        try:
+            self.update_policy(ctx)
+            if not self.ready(ctx):
+                return  # stopped or starting: an update or the next restart catches up
+            config = self._config_json(ctx)
+            if self._exec(ctx, ["cat", CONFIG_PATH]).stdout.strip() == config.strip():
+                return
+            self._write(ctx, CONFIG_PATH, config)
+            self._exec(ctx, ["sh", "-c", "pkill -f '[o]penclaw-gateway' || true"])
+            ctx.logger.info(f"Rewrote the OpenClaw config of '{ctx.name}' and restarted it")
+        except Exception as e:
+            ctx.logger.warning(f"Could not bring '{ctx.name}' up to date (continuing): {e}")
 
     def update_policy(self, ctx):
         _, routes = self._mcp_wiring(ctx)
@@ -352,7 +376,11 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         try:
             self.client._stub.GetProvider(pb.GetProviderRequest(
                 workspace_scope=self._scope(ctx), name=self.os_cfg["providerName"]), timeout=30)
-            return  # a key is minted once, with the provider; the gateway keeps it
+            # A key is minted once, with the provider; the gateway keeps it. Keys minted before
+            # their routes were limited are limited now.
+            if self.os_cfg["litellmAdminKey"]:
+                self._limit_key_routes(ctx)
+            return
         except Exception as e:
             if _status(e) != "NOT_FOUND":
                 raise
@@ -426,21 +454,39 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
 
     def _agent_key(self, ctx):
         """A new key for this agent (alias: its namespace), owned by its user, whom it creates if new."""
+        # auto_create_key: LiteLLM otherwise mints the new user a key that nobody would hold.
         status, body = self._litellm_call("/user/new", {
-            "user_id": ctx.owner, "user_email": ctx.owner,
+            "user_id": ctx.owner, "user_email": ctx.owner, "auto_create_key": False,
             **self._limits(self.os_cfg["userTpmLimit"], self.os_cfg["userRpmLimit"])})
         if status not in (200, 409):  # 409: the user exists
             raise RuntimeError(f"LiteLLM user {ctx.owner}: HTTP {status}: {body}")
         # An alias can outlive its provider (a failed create); aliases are unique.
         self._litellm_call("/key/delete", {"key_aliases": [ctx.namespace]})
         status, body = self._litellm_call("/key/generate", {
-            "key_alias": ctx.namespace, "user_id": ctx.owner,
+            "key_alias": ctx.namespace, "user_id": ctx.owner, "allowed_routes": AGENT_KEY_ROUTES,
             "metadata": {"agent": ctx.name, "agent_namespace": ctx.namespace, "runtime": "openshell"},
             **self._limits(self.os_cfg["agentTpmLimit"], self.os_cfg["agentRpmLimit"])})
         if status != 200 or not isinstance(body, dict) or not body.get("key"):
             raise RuntimeError(f"LiteLLM key for {ctx.namespace}: HTTP {status}: {body}")
         ctx.logger.info(f"Minted LiteLLM key '{ctx.namespace}' for user {ctx.owner}")
         return body["key"]
+
+    def _limit_key_routes(self, ctx):
+        """Limit the agent's key, found by its alias, to AGENT_KEY_ROUTES. Never raises: a key
+        left unlimited is logged, and the agent still runs."""
+        try:
+            status, body = self._litellm_call(
+                f"/key/list?key_alias={urllib.parse.quote(ctx.namespace)}&return_full_object=true", None)
+            keys = (body.get("keys") or []) if status == 200 and isinstance(body, dict) else []
+            for key in keys:
+                if not isinstance(key, dict) or sorted(key.get("allowed_routes") or []) == sorted(AGENT_KEY_ROUTES):
+                    continue
+                status, body = self._litellm_call("/key/update", {"key": key["token"], "allowed_routes": AGENT_KEY_ROUTES})
+                if status != 200:
+                    raise RuntimeError(f"HTTP {status}: {body}")
+                ctx.logger.info(f"Limited LiteLLM key '{ctx.namespace}' to model routes")
+        except Exception as e:
+            ctx.logger.warning(f"Could not limit LiteLLM key '{ctx.namespace}' to model routes: {e}")
 
     # ── Sandbox ──────────────────────────────────────────────────────────────
     def _mcp_wiring(self, ctx):
@@ -490,6 +536,12 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         # What the OpenClaw operator adds on the claw runtime: without gateway.mode OpenClaw
         # refuses to start. Loopback only: the supervisor's relay is the way in.
         config["gateway"].update(mode="local", bind="loopback", port=SERVICE_PORT)
+        # Memory embeddings go through LiteLLM with the agent's own key, like its chats, so no
+        # rule needs the AI Gateway, where any model answers with no key and no accounting.
+        search = config["agents"]["defaults"].get("memorySearch")
+        if search:
+            search["remote"] = {"baseUrl": self.os_cfg["modelBaseUrl"] or self.model_base_url,
+                                "apiKey": "${OPENAI_API_KEY}"}
         return json.dumps(config, indent=2)
 
     def _policy(self, ctx, routes):
@@ -503,8 +555,6 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             rules["identity_proxy"] = {"name": "agent-identity-proxy", "binaries": node, "endpoints": [
                 _endpoint(proxy, port, "rest") for port in sorted(routes)]}
         direct = [_url_endpoint(t["url"]) for t in ctx.custom_tools or [] if t.get("url")]
-        if self.cfg.get("embeddingBaseUrl"):
-            direct.append(_url_endpoint(self.cfg["embeddingBaseUrl"]))
         provider, base_url, _ = self.model_gateway(ctx)
         if provider == AI_GATEWAY_PROVIDER:
             direct.append(_url_endpoint(base_url))  # genai-gateway's endpoint comes with the provider
