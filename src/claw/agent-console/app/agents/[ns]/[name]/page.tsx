@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/ui/table";
 import { AlertTriangle, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import GatewayModelPicker, { type ModelChoice } from "@/components/GatewayModelPicker";
 
 // What a grant may confer; `converse` opens the dashboard and chat.
 const CAPS = ["view", "suspend-resume", "converse", "delete"] as const;
@@ -254,7 +255,9 @@ export default function AgentDetail() {
                     {spec.modelSecretRef && <div className="text-xs text-muted-foreground">key: {spec.modelSecretRef}</div>}
                   </>
                 ) : (
-                  <span className="text-muted-foreground">cluster default</span>
+                  <span className="text-muted-foreground">
+                    cluster default{spec.runtime === "openshell" ? " (GenAI Gateway)" : ""}
+                  </span>
                 )
               }
             />
@@ -330,7 +333,9 @@ export default function AgentDetail() {
       </section>
 
       {isOwner && (
-        <ModelEditor ns={ns} name={name} model={spec.model || {}} modelSecretRef={spec.modelSecretRef} reload={load} />
+        spec.runtime === "openshell"
+          ? <OpenShellModelEditor ns={ns} name={name} model={spec.model || {}} reload={load} />
+          : <ModelEditor ns={ns} name={name} model={spec.model || {}} modelSecretRef={spec.modelSecretRef} reload={load} />
       )}
 
       {isOwner && (
@@ -450,6 +455,63 @@ function ModelEditor({
         </CardContent>
         <CardFooter>
           <Button disabled={busy} onClick={save}>{busy ? "Saving…" : "Save model"}</Button>
+        </CardFooter>
+      </Card>
+    </section>
+  );
+}
+
+// An openshell agent reaches models only through the cluster's gateways, which hold any key: the
+// owner picks a gateway and a model it serves; no base URL or key.
+function OpenShellModelEditor({
+  ns, name, model, reload,
+}: {
+  ns: string; name: string; model: { provider?: string; id?: string }; reload: () => void;
+}) {
+  const [choice, setChoice] = useState<ModelChoice | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [msg, setMsg] = useState("");
+  const unchanged = choice?.provider === model.provider && choice?.id === model.id;
+
+  async function save() {
+    if (!choice) return;
+    setBusy(true); setError(""); setMsg("");
+    try {
+      const res = await fetch(`/api/agents/${ns}/${name}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: choice }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      setMsg("Saved — the agent restarts on the new model in a few seconds.");
+      reload();
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="space-y-2">
+      <div>
+        <h2 className="text-base font-semibold">Model</h2>
+        <p className="text-xs text-muted-foreground">
+          The sandbox reaches models only through the cluster&apos;s gateways, which hold any key. GenAI
+          Gateway (LiteLLM) applies budgets and the content-safety guardrail and counts usage per agent;
+          AI Gateway (Envoy) goes to the model directly. The lists show what each gateway serves now.
+        </p>
+      </div>
+      <ErrorBanner error={error} />
+      <SuccessNote msg={msg} />
+      <Card>
+        <CardContent className="pt-4">
+          <GatewayModelPicker initial={model} onChange={setChoice} />
+        </CardContent>
+        <CardFooter>
+          <Button disabled={busy || !choice || unchanged} onClick={save}>{busy ? "Saving…" : "Save model"}</Button>
         </CardFooter>
       </Card>
     </section>

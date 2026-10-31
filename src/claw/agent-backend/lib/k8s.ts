@@ -209,10 +209,19 @@ const modelSpecOf = (m: ModelFields) =>
     contextWindow: Number.isInteger(m.contextWindow) && m.contextWindow! > 0 ? m.contextWindow : undefined,
   }).filter(([, v]) => v));
 
-export async function updateAgentModel(namespace: string, name: string, model: ModelFields, apiKey?: string, rv?: string) {
-  if ((model.baseUrl || apiKey) && (await getAgent(namespace, name))?.spec?.runtime === "openshell") {
+/** A model change on an openshell agent: one of the cluster's gateways, no base URL or key. */
+export function validateOpenShellModel(model: ModelFields, apiKey?: string): void {
+  if (model.baseUrl || apiKey) {
     badRequest("openshell agents use the cluster's model gateway: a model base URL or API key is not supported");
   }
+  const gateways = gatewayConfig().map((g) => g.name);
+  if (model.provider && gateways.length && !gateways.includes(model.provider)) {
+    badRequest(`openshell agents use model provider ${gateways.join(" or ")}, not '${model.provider}'`);
+  }
+}
+
+export async function updateAgentModel(namespace: string, name: string, model: ModelFields, apiKey?: string, rv?: string) {
+  if ((await getAgent(namespace, name))?.spec?.runtime === "openshell") validateOpenShellModel(model, apiKey);
   const spec: any = {};
   if (Object.keys(modelSpecOf(model)).length) spec.model = modelSpecOf(model);
   const backendNs = apiKey ? await backendNamespaceOf(namespace, name) : "";

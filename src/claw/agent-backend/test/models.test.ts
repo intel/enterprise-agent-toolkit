@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { listGateways, resetModelCache, gatewayConfig } from "../lib/models.js";
-import { validateRuntime } from "../lib/k8s.js";
+import { validateRuntime, validateOpenShellModel } from "../lib/k8s.js";
 
 const LITELLM = "http://litellm.litellm.svc.cluster.local:4000/v1";
 const AIGW = "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1";
@@ -73,6 +73,19 @@ test("bad gateway config is ignored; an openshell agent must name a configured g
     assert.equal(validateRuntime("openshell", "oss", "vkumar4", { provider: "ai-gateway", id: "qwen3-coder-30b" }), "openshell");
     assert.throws(() => validateRuntime("openshell", "oss", "vkumar4", { provider: "openai", id: "gpt" }),
       (e: any) => e.status === 400 && /genai-gateway or ai-gateway/.test(e.message));
+  } finally {
+    process.env = saved;
+  }
+});
+
+test("a model change on an openshell agent: a configured gateway, no URL or key", () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { MODEL_GATEWAYS: ENV.MODEL_GATEWAYS });
+  try {
+    assert.doesNotThrow(() => validateOpenShellModel({ provider: "ai-gateway", id: "qwen3-4b", contextWindow: 262144 }));
+    assert.throws(() => validateOpenShellModel({ provider: "openai", id: "gpt" }), (e: any) => e.status === 400);
+    assert.throws(() => validateOpenShellModel({ provider: "genai-gateway", id: "x", baseUrl: "http://x/v1" }), (e: any) => e.status === 400);
+    assert.throws(() => validateOpenShellModel({ provider: "genai-gateway", id: "x" }, "sk-own"), (e: any) => e.status === 400);
   } finally {
     process.env = saved;
   }
