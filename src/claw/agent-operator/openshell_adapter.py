@@ -148,10 +148,12 @@ def _url_endpoint(url):
 class OpenShellAdapter(claw_adapter.ClawAdapter):
     """Same model, tool and identity wiring as the claw runtime; a different workload."""
 
-    def __init__(self, core, config, client_factory=None, litellm=None):
+    def __init__(self, core, config, client_factory=None, litellm=None, fetch_json=None):
         super().__init__(core, config)
         self.os_cfg = config["openshell"]
         self._litellm_call = litellm or self._litellm_http
+        self._fetch_json = fetch_json or self._get_json
+        self._sizes = {}  # model: (looked up at, served context size or None)
         self.mesh_ambient = bool(getattr(core, "mesh_ambient", False))
         self._client_factory = client_factory or self._connect
         self._client = None
@@ -362,17 +364,61 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         ctx.logger.info(f"Created OpenShell provider in '{ctx.namespace}'")
 
     # ── LiteLLM: a key per agent, owned by its user ──────────────────────────
-    def _litellm_http(self, path, body):
-        """POST to LiteLLM's management API with the admin key; (status, parsed body)."""
+    def _litellm_http(self, path, body=None):
+        """POST (GET with no body) to LiteLLM's API with the admin key; (status, parsed body)."""
         base = (self.os_cfg["modelBaseUrl"] or self.model_base_url).rstrip("/")
         base = base[:-3] if base.endswith("/v1") else base
-        req = urllib.request.Request(f"{base}{path}", json.dumps(body).encode(), {
+        req = urllib.request.Request(f"{base}{path}", json.dumps(body).encode() if body is not None else None, {
             "Authorization": f"Bearer {self.os_cfg['litellmAdminKey']}", "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310: in-cluster LiteLLM URL
                 return resp.status, json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as e:
             return e.code, e.read()[:300].decode(errors="replace")
+
+    @staticmethod
+    def _get_json(url):
+        """GET a model server's JSON, with no key: only its public model list is read."""
+        with urllib.request.urlopen(url, timeout=5) as resp:  # nosec B310: the upstream LiteLLM lists
+            return json.loads(resp.read() or b"null")
+
+    def served_context(self, model_id):
+        """The model's served context size, cached a minute; None when unknown.
+
+        The model server's own figure (vLLM's max_model_len, at the upstream LiteLLM lists for the
+        model) is what it enforces. LiteLLM's max_input_tokens is only a fallback: it is empty for a
+        newly registered model and can be the model's published size rather than the served one.
+        The AI Gateway serves the same models under the same names."""
+        import time  # noqa: PLC0415
+        cached = self._sizes.get(model_id)
+        if cached and time.time() - cached[0] < 60:
+            return cached[1]
+        size = None
+        try:
+            size = self._lookup_context(model_id)
+        except Exception:  # an unreachable LiteLLM or model leaves the size unknown, never the agent broken
+            pass
+        self._sizes[model_id] = (time.time(), size)
+        return size
+
+    def _lookup_context(self, model_id):
+        if not self.os_cfg["litellmAdminKey"]:
+            return None
+        status, body = self._litellm_call("/model/info", None)
+        entries = (body.get("data") or []) if status == 200 and isinstance(body, dict) else []
+        entry = next((e for e in entries if e.get("model_name") == model_id), None)
+        if not entry:
+            return None
+        api_base = (entry.get("litellm_params") or {}).get("api_base") or ""
+        if api_base.startswith(("http://", "https://")):
+            try:
+                served = self._fetch_json(f"{api_base.rstrip('/')}/models")
+                sizes = [int(m.get("max_model_len") or 0) for m in (served or {}).get("data") or []]
+                if any(sizes):
+                    return max(sizes)
+            except Exception:  # not a vLLM server, or unreachable: fall back to LiteLLM's figure
+                pass
+        return int((entry.get("model_info") or {}).get("max_input_tokens") or 0) or None
 
     @staticmethod
     def _limits(tpm, rpm):

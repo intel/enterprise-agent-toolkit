@@ -10,7 +10,9 @@ agent_operator_wait_timeout: "5m0s"
 
 # Model every agent uses unless its spec.model overrides it.
 claw_model_id: "{{ (llm_services_autodeploy_models | default([]) | first) | default('', true) }}"
-# The model's served max_model_len (qwen2-5-coder-14b serves 32768); 0 = OpenClaw's default.
+# The tokens OpenClaw plans a conversation for: at least 32768, and at most what claw_model_id
+# serves (the install checks both). 0 = the served size where the operator can read it (openshell
+# agents, from LiteLLM), else 32768. Never OpenClaw's own 200000, which outgrows most models.
 claw_model_context_window: 32768
 claw_model_base_url: "http://{{ ai_gateway_service_name | default('ai-gateway') }}.envoy-gateway-system.svc.cluster.local/v1"
 

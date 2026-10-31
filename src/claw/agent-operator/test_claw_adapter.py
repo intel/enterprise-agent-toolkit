@@ -162,9 +162,24 @@ class ModelTest(unittest.TestCase):
         v = _adapter()._model_vars(_Ctx([]))
         self.assertEqual((v["model_ref"], v["context_window"]), ("ai-gateway/qwen", 32768))
 
-    def test_an_override_drops_the_cluster_context_window(self):
-        v = _adapter()._model_vars(_Ctx([], model={"id": "other"}))
-        self.assertEqual((v["model_id"], v["context_window"]), ("other", 0))
+    def test_an_override_without_a_size_gets_the_fallback_not_openclaw_s_200000(self):
+        ctx = _Ctx([], model={"id": "other"})
+        v = _adapter()._model_vars(ctx)
+        self.assertEqual((v["model_id"], v["context_window"]), ("other", claw_adapter.FALLBACK_CONTEXT_WINDOW))
+        self.assertIn("unknown", ctx.model_notes[0])
+
+    def test_the_cluster_size_and_an_agent_s_own_size_carry_no_note(self):
+        ctx = _Ctx([])
+        _adapter()._model_vars(ctx)
+        self.assertEqual((ctx.context_window, ctx.model_notes), (32768, []))
+        ctx = _Ctx([], model={"id": "other", "contextWindow": 65536})
+        self.assertEqual(_adapter()._model_vars(ctx)["context_window"], 65536)
+        self.assertEqual(ctx.model_notes, [])
+
+    def test_a_size_under_the_minimum_is_noted(self):
+        ctx = _Ctx([], model={"id": "other", "contextWindow": 16384})
+        self.assertEqual(_adapter()._model_vars(ctx)["context_window"], 16384)
+        self.assertIn("under the 32768", ctx.model_notes[0])
 
     def test_the_cluster_key_never_goes_to_an_agent_chosen_endpoint(self):
         adapter = _adapter(env={"MODEL_API_KEY": "cluster-key"})
@@ -298,8 +313,10 @@ class RenderTest(unittest.TestCase):
         model = raw["models"]["providers"]["ai-gateway"]["models"][0]
         self.assertEqual(model["contextWindow"], 32768)
         self.assertEqual(raw["agents"]["defaults"]["compaction"]["reserveTokensFloor"], 0)
+        # An unknown size is never left to OpenClaw's 200000.
         raw = self._spec(_Ctx([], model={"id": "other"}))["config"]["raw"]
-        self.assertNotIn("compaction", raw["agents"]["defaults"])
+        model = raw["models"]["providers"]["ai-gateway"]["models"][0]
+        self.assertEqual(model["contextWindow"], claw_adapter.FALLBACK_CONTEXT_WINDOW)
 
     def test_agent_supplied_model_fields_cannot_inject_yaml(self):
         evil = 'x"\n  sidecars: [{name: pwn, image: evil}]\n#'

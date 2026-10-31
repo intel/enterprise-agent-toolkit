@@ -60,10 +60,12 @@
 
 # A key per agent, owned by its user, needs a key that may create users and keys: owned by a
 # proxy_admin LiteLLM user (LiteLLM lets other keys create keys only for themselves), and limited to
-# the management routes so it cannot call models. Minted once, inside the LiteLLM pod, so the
-# master key never leaves it.
+# the management routes so it cannot call models (/model/info gives the models' context sizes).
+# Minted once, inside the LiteLLM pod, so the master key never leaves it.
 - name: "agent_operator | openshell | LiteLLM key for per-agent keys"
   when: claw_openshell_agent_keys | bool
+  vars:
+    _ao_ll_admin_routes: ["/key/generate", "/key/delete", "/key/info", "/user/new", "/user/info", "/user/update", "/model/info"]
   block:
     - name: "agent_operator | openshell | Check for the LiteLLM admin key"
       kubernetes.core.k8s_info:
@@ -102,11 +104,41 @@
             post("/key/delete", {"key_aliases": ["{{ claw_litellm_admin_user }}-keys"]}, ok=(200, 400, 404))
             print(post("/key/generate", {"key_alias": "{{ claw_litellm_admin_user }}-keys",
                 "user_id": "{{ claw_litellm_admin_user }}", "max_budget": 0.01,
-                "allowed_routes": ["/key/generate", "/key/delete", "/key/info", "/user/new", "/user/info", "/user/update"]})["key"])
+                "allowed_routes": {{ _ao_ll_admin_routes | to_json }}})["key"])
       register: _ao_ll_mint
       changed_when: true
       no_log: true
       when: _ao_ll_admin.resources | default([]) | length == 0
+
+    # An upgrade keeps the key the operator holds and brings its routes up to date, by alias.
+    - name: "agent_operator | openshell | Keep the LiteLLM admin key's routes"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ litellm_namespace | default('litellm') }}"
+          - "deploy/{{ openshell_genai_deployment | default('litellm') }}"
+          - -c
+          - litellm
+          - --
+          - python
+          - -c
+          - |
+            import json, os, urllib.request
+            H = {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"}
+            def call(path, body=None):
+                req = urllib.request.Request("http://127.0.0.1:4000" + path, json.dumps(body).encode() if body else None, H)
+                return json.load(urllib.request.urlopen(req))
+            routes = {{ _ao_ll_admin_routes | to_json }}
+            keys = call("/key/list?key_alias={{ claw_litellm_admin_user }}-keys&return_full_object=true").get("keys") or []
+            stale = [k["token"] for k in keys if isinstance(k, dict) and sorted(k.get("allowed_routes") or []) != sorted(routes)]
+            for token in stale:
+                call("/key/update", {"key": token, "allowed_routes": routes})
+            print("updated" if stale else "current")
+      register: _ao_ll_routes
+      changed_when: _ao_ll_routes.stdout | trim == 'updated'
+      when: _ao_ll_admin.resources | default([]) | length > 0
 
     - name: "agent_operator | openshell | Store the LiteLLM admin key"
       kubernetes.core.k8s:

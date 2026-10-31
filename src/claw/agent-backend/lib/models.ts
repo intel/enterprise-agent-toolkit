@@ -18,6 +18,9 @@ type Fetch = (url: string, init?: { headers?: Record<string, string>; signal?: A
 }>;
 
 const CACHE_MS = 60_000;
+// OpenClaw's system prompt alone is about 19,500 tokens a turn: a model serving less than this
+// cannot hold a conversation, so it is not offered for agents (the operator uses the same figure).
+export const MIN_CONTEXT_WINDOW = 32768;
 let cache: { at: number; gateways: Gateway[] } | undefined;
 
 /** MODEL_GATEWAYS, as the agent_backend role writes it; empty when OpenShell is off. */
@@ -44,12 +47,25 @@ async function getJson(fetchImpl: Fetch, url: string, key?: string): Promise<any
   return res.json();
 }
 
-/** LiteLLM's model names and context sizes; it alone reports sizes, so the AI Gateway reuses them. */
+/** The size a model server enforces (vLLM's max_model_len), asked with no key; 0 when it does not say. */
+async function servedSize(fetchImpl: Fetch, apiBase: unknown): Promise<number> {
+  if (typeof apiBase !== "string" || !/^https?:\/\//.test(apiBase)) return 0;
+  try {
+    const list = await getJson(fetchImpl, `${apiBase.replace(/\/+$/, "")}/models`);
+    return Math.max(0, ...(list?.data ?? []).map((m: any) => Number(m?.max_model_len) || 0));
+  } catch {
+    return 0;
+  }
+}
+
+/** LiteLLM's model names and context sizes; it alone knows each model's server, so the AI Gateway
+ *  reuses them. The server's own figure first: LiteLLM's max_input_tokens is empty for a newly
+ *  registered model and can be the model's published size rather than the one it is served with. */
 async function liteLlmModels(fetchImpl: Fetch, g: GatewayConfig, key: string): Promise<GatewayModel[]> {
   const info = await getJson(fetchImpl, `${g.url.replace(/\/v1\/?$/, "")}/model/info`, key);
-  return (info?.data ?? []).map((m: any) => ({
-    id: String(m?.model_name ?? ""),
-    ...(Number(m?.model_info?.max_input_tokens) > 0 ? { contextWindow: Number(m.model_info.max_input_tokens) } : {}),
+  return Promise.all((info?.data ?? []).map(async (m: any) => {
+    const size = await servedSize(fetchImpl, m?.litellm_params?.api_base) || Number(m?.model_info?.max_input_tokens) || 0;
+    return { id: String(m?.model_name ?? ""), ...(size > 0 ? { contextWindow: size } : {}) };
   }));
 }
 
@@ -89,6 +105,33 @@ export async function listGateways(fetchImpl: Fetch = fetch as unknown as Fetch,
   gateways.sort((a, b) => configs.findIndex((c) => c.name === a.name) - configs.findIndex((c) => c.name === b.name));
   cache = { at: now, gateways };
   return gateways;
+}
+
+/** Why an openshell agent may not use this model, or undefined. No provider means the first LiteLLM
+ *  gateway and no id the cluster default, as the operator does. A gateway that did not answer is
+ *  not checked: the operator still caps the size at what the model serves. */
+export function gatewayModelProblem(model: { provider?: string; id?: string; contextWindow?: number },
+                                    gateways: Gateway[], defaultModel = ""): string | undefined {
+  const configs = gatewayConfig();
+  const provider = model.provider || (configs.find((c) => c.kind === "litellm") ?? configs[0])?.name;
+  const id = model.id || defaultModel;
+  const g = gateways.find((x) => x.name === provider);
+  if (model.contextWindow && model.contextWindow < MIN_CONTEXT_WINDOW) {
+    return `a context size of ${model.contextWindow} is too small for an agent: it needs at least ${MIN_CONTEXT_WINDOW}`;
+  }
+  if (!id || !g || g.error) return undefined;
+  const served = g.models.find((m) => m.id === id);
+  if (!served) {
+    return `${g.label} does not serve '${id}'` +
+      (g.models.length ? `; it serves ${g.models.map((m) => m.id).join(", ")}` : "");
+  }
+  if (served.contextWindow && served.contextWindow < MIN_CONTEXT_WINDOW) {
+    return `'${id}' serves ${served.contextWindow} tokens, too few for an agent: it needs at least ${MIN_CONTEXT_WINDOW}`;
+  }
+  if (served.contextWindow && model.contextWindow && model.contextWindow > served.contextWindow) {
+    return `a context size of ${model.contextWindow} is more than '${id}' serves (${served.contextWindow})`;
+  }
+  return undefined;
 }
 
 /** For tests: forget the cached lists. */

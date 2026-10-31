@@ -12,6 +12,14 @@ interface Gateway { name: string; label: string; models: GatewayModel[]; error?:
 export interface ModelChoice { provider: string; id: string; contextWindow?: number }
 
 const SELECT = "h-9 w-full rounded-md border border-border bg-background px-2 text-sm";
+// OpenClaw's system prompt alone is about 19,500 tokens; the API refuses models serving less.
+const MIN_CONTEXT_WINDOW = 32768;
+const tooSmall = (m: GatewayModel) => Boolean(m.contextWindow && m.contextWindow < MIN_CONTEXT_WINDOW);
+
+function sizeLabel(m: GatewayModel): string {
+  if (!m.contextWindow) return " · size unknown";
+  return ` · ${Math.round(m.contextWindow / 1024)}k context${tooSmall(m) ? ", too small for agents" : ""}`;
+}
 
 /** Provider and model dropdowns for an openshell agent. Starts on `initial` when the gateway still
  *  serves it, else on the first gateway with the cluster default model. */
@@ -27,13 +35,13 @@ export default function GatewayModelPicker({ initial, onChange }: {
 
   const pick = (gws: Gateway[], p: string, m: string) => {
     const g = gws.find((x) => x.name === p);
-    const model = g?.models.find((x) => x.id === m);
+    const model = g?.models.find((x) => x.id === m && !tooSmall(x));
     setProvider(p);
     setId(m);
     onChange(g && model ? { provider: p, id: m, ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}) } : undefined);
   };
   const firstModel = (g: Gateway | undefined, dflt: string) =>
-    g?.models.some((m) => m.id === dflt) ? dflt : g?.models[0]?.id ?? "";
+    g?.models.some((m) => m.id === dflt && !tooSmall(m)) ? dflt : g?.models.find((m) => !tooSmall(m))?.id ?? "";
 
   useEffect(() => {
     fetch("/api/models", { cache: "no-store" })
@@ -68,13 +76,23 @@ export default function GatewayModelPicker({ initial, onChange }: {
           <select id="m-model" value={id} className={SELECT} disabled={!gateway?.models.length}
             onChange={(e) => pick(gateways, provider, e.target.value)}>
             {gateway?.models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.id}{m.id === defaultModel ? " (default)" : ""}{m.contextWindow ? ` · ${Math.round(m.contextWindow / 1024)}k context` : ""}
+              <option key={m.id} value={m.id} disabled={tooSmall(m)}>
+                {m.id}{m.id === defaultModel ? " (default)" : ""}{sizeLabel(m)}
               </option>
             ))}
           </select>
         </Field>
       </div>
+      {gateway?.models.find((m) => m.id === id && !m.contextWindow) && (
+        <p className="text-xs text-muted-foreground">
+          The gateway does not report this model&apos;s context size; the agent assumes {MIN_CONTEXT_WINDOW} tokens.
+        </p>
+      )}
+      {gateway?.models.find((m) => m.id === id && tooSmall(m)) && (
+        <p className="text-xs text-destructive">
+          This model serves fewer than {MIN_CONTEXT_WINDOW} tokens, too few for an agent; pick another.
+        </p>
+      )}
       {gateway?.error && <p className="text-xs text-destructive">{gateway.label} did not answer: {gateway.error}</p>}
       {gateway && !gateway.error && !gateway.models.length && (
         <p className="text-xs text-muted-foreground">{gateway.label} serves no chat models right now.</p>

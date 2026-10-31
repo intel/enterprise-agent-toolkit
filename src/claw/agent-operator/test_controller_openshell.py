@@ -88,5 +88,19 @@ class OpenShellRouteTest(unittest.TestCase):
         self.assertEqual(self.policy["spec"]["authorization"]["defaultAction"], "Deny")
 
 
+class ModelContextConditionTest(unittest.TestCase):
+    def test_a_resolved_size_is_true_and_an_assumed_or_capped_one_is_a_false_warning(self):
+        ok = C._model_context_condition(types.SimpleNamespace(context_window=40960, model_notes=[]))
+        self.assertEqual((ok["type"], ok["status"], ok["reason"], ok["message"]),
+                         ("ModelContext", "True", "Resolved", "40960 tokens"))
+        warn = C._model_context_condition(types.SimpleNamespace(
+            context_window=32768, model_notes=["the context size of 'x' is unknown; assumed 32768"]))
+        self.assertEqual((warn["status"], warn["reason"]), ("False", "SizeAdjusted"))
+        self.assertIn("assumed 32768", warn["message"])
+
+    def test_no_condition_before_the_model_is_rendered(self):
+        self.assertIsNone(C._model_context_condition(types.SimpleNamespace()))
+
+
 if __name__ == "__main__":
     unittest.main()

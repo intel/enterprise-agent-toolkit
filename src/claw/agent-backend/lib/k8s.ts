@@ -5,7 +5,7 @@
 import * as k8s from "@kubernetes/client-node";
 import { ownerNamespace } from "./identity.js";
 import { expandCaps } from "./capabilities.js";
-import { gatewayConfig } from "./models.js";
+import { gatewayConfig, gatewayModelProblem, listGateways } from "./models.js";
 
 const GROUP = "intel-stack.io";
 const VERSION = "v1alpha1";
@@ -220,10 +220,33 @@ export function validateOpenShellModel(model: ModelFields, apiKey?: string): voi
   }
 }
 
+/** The merge patch for a model edit, and the model the agent then runs. A merge patch keeps fields
+ *  it does not name: a new model without a size must not keep the old one's, which may be more
+ *  than the new model serves. */
+export function modelChange(current: ModelFields | undefined, model: ModelFields): { patch: any; effective: ModelFields } {
+  const patch: any = modelSpecOf(model);
+  const { contextWindow, ...rest }: ModelFields = { ...(current ?? {}), ...patch };
+  if ((patch.id || patch.provider) && !patch.contextWindow && current?.contextWindow) {
+    return { patch: { ...patch, contextWindow: null }, effective: rest };
+  }
+  return { patch, effective: contextWindow ? { ...rest, contextWindow } : rest };
+}
+
+/** An openshell agent's model must be one its gateway serves now, with room for an agent. */
+export async function checkServedModel(model: ModelFields): Promise<void> {
+  const problem = gatewayModelProblem(model, await listGateways(), process.env.DEFAULT_MODEL || "");
+  if (problem) badRequest(problem);
+}
+
 export async function updateAgentModel(namespace: string, name: string, model: ModelFields, apiKey?: string, rv?: string) {
-  if ((await getAgent(namespace, name))?.spec?.runtime === "openshell") validateOpenShellModel(model, apiKey);
+  const current = await getAgent(namespace, name);
+  const { patch, effective } = modelChange(current?.spec?.model, model);
+  if (current?.spec?.runtime === "openshell") {
+    validateOpenShellModel(model, apiKey);
+    await checkServedModel(effective);
+  }
   const spec: any = {};
-  if (Object.keys(modelSpecOf(model)).length) spec.model = modelSpecOf(model);
+  if (Object.keys(patch).length) spec.model = patch;
   const backendNs = apiKey ? await backendNamespaceOf(namespace, name) : "";
   if (apiKey) spec.modelSecretRef = await writeAgentSecret(backendNs, name, `${name}-model-credentials`, { apiKey });
   if (!Object.keys(spec).length) throw Object.assign(new Error("no model fields to update"), { status: 400 });
@@ -332,6 +355,7 @@ export async function ensureOwnerNamespace(username: string): Promise<string> {
 export async function createAgent(input: CreateAgentInput): Promise<any> {
   const username = validateAgentNaming(input.name, input.ownerUsername);
   const runtime = validateRuntime(input.runtime, input.name, username, input.model);
+  if (runtime === "openshell") await checkServedModel(input.model ?? {});
   const ns = await ensureOwnerNamespace(username);
   const spec: any = {
     runtime,

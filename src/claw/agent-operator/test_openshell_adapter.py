@@ -232,11 +232,14 @@ AIGW = "http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1"
 class _LiteLLM:
     """LiteLLM's management API: records calls, answers like the real one."""
 
-    def __init__(self, user_exists=False, generate_status=200):
+    def __init__(self, user_exists=False, generate_status=200, models=None):
         self.calls, self.user_exists, self.generate_status = [], user_exists, generate_status
+        self.models = models or []
 
     def __call__(self, path, body):
         self.calls.append((path, body))
+        if path == "/model/info":
+            return 200, {"data": self.models}
         if path == "/user/new":
             return (409, "exists") if self.user_exists else (200, {"user_id": body["user_id"]})
         if path == "/key/generate":
@@ -252,7 +255,7 @@ class AgentKeyTest(unittest.TestCase):
         ll = _LiteLLM()
         a, client, *_ = _adapter(ADMIN, litellm=ll)
         a.create(_ctx())
-        paths = [p for p, _ in ll.calls]
+        paths = [p for p, _ in ll.calls if p != "/model/info"]
         self.assertEqual(paths, ["/user/new", "/key/delete", "/key/generate"])
         user, gen = ll.calls[0][1], ll.calls[2][1]
         self.assertEqual((user["user_id"], user.get("rpm_limit")), ("vkumar4@example.com", 60))
@@ -271,7 +274,7 @@ class AgentKeyTest(unittest.TestCase):
         client._stub = _Stub(provider_exists=True)
         a2, *_ = _adapter(ADMIN, client=client, litellm=ll2)
         a2.create(_ctx())
-        self.assertEqual(ll2.calls, [])  # a key is minted once, with the provider
+        self.assertEqual([p for p, _ in ll2.calls if p != "/model/info"], [])  # a key is minted once, with the provider
 
     def test_a_refused_key_stops_the_create(self):
         a, client, *_ = _adapter(ADMIN, litellm=_LiteLLM(generate_status=403))
@@ -322,6 +325,104 @@ class ModelGatewayTest(unittest.TestCase):
     def test_the_agent_s_context_size_is_used(self):
         _, _, cfg = self._config({"id": "qwen3-4b", "contextWindow": 40960})
         self.assertEqual(cfg["models"]["providers"]["genai-gateway"]["models"][0]["contextWindow"], 40960)
+
+
+def _entry(name, api_base, max_input_tokens=None):
+    return {"model_name": name, "litellm_params": {"api_base": api_base, "model": f"openai/{name}"},
+            "model_info": {"max_input_tokens": max_input_tokens}}
+
+
+class _ModelServers:
+    """The model servers' /models: {url: max_model_len}; any other URL is unreachable."""
+
+    def __init__(self, sizes):
+        self.sizes, self.calls = sizes, []
+
+    def __call__(self, url):
+        self.calls.append(url)
+        if url not in self.sizes:
+            raise OSError("unreachable")
+        return {"data": [{"id": "m", "max_model_len": self.sizes[url]}]}
+
+
+Q06 = "http://ai-gateway/llm-inference/qwen3-0-6b/v1"
+Q17 = "http://ai-gateway/llm-inference/qwen3-1-7b/v1"
+
+
+class ContextWindowTest(unittest.TestCase):
+    """OpenClaw plans for this size: more than the model serves fails long conversations."""
+
+    def _adapter(self, models, servers, env=None):
+        ll = _LiteLLM(models=models)
+        a, *_ = _adapter({**ADMIN, **(env or {})}, litellm=ll)
+        a._fetch_json = servers
+        return a, ll
+
+    def _size(self, a, model):
+        ctx = _ctx()
+        ctx.model = model
+        return a._model_vars(ctx)["context_window"], ctx.model_notes
+
+    def test_the_served_size_comes_from_the_model_server_not_litellm_s_published_figure(self):
+        # Deployed with --max-model-len=16384; LiteLLM shows the model's published 40960, or nothing.
+        a, _ = self._adapter([_entry("qwen3-0-6b", Q06, 40960)], _ModelServers({f"{Q06}/models": 16384}))
+        self.assertEqual(a.served_context("qwen3-0-6b"), 16384)
+
+    def test_litellm_s_figure_is_the_fallback_when_the_server_does_not_say(self):
+        a, _ = self._adapter([_entry("qwen3-1-7b", Q17, 40960)], _ModelServers({}))
+        self.assertEqual(a.served_context("qwen3-1-7b"), 40960)
+
+    def test_an_agent_without_a_size_gets_the_served_size(self):
+        a, _ = self._adapter([_entry("qwen3-1-7b", Q17)], _ModelServers({f"{Q17}/models": 40960}))
+        self.assertEqual(self._size(a, {"id": "qwen3-1-7b"}), (40960, []))
+        self.assertEqual(self._size(a, {"provider": "ai-gateway", "id": "qwen3-1-7b"}), (40960, []))
+
+    def test_a_size_above_the_served_one_is_capped(self):
+        a, _ = self._adapter([_entry("qwen3-1-7b", Q17)], _ModelServers({f"{Q17}/models": 40960}))
+        size, notes = self._size(a, {"id": "qwen3-1-7b", "contextWindow": 262144})
+        self.assertEqual(size, 40960)
+        self.assertIn("capped at 40960", notes[0])
+
+    def test_the_cluster_setting_is_capped_too(self):
+        # The cluster's own model (qwen) with MODEL_CONTEXT_WINDOW above what it serves.
+        a, _ = self._adapter([_entry("qwen", Q17)], _ModelServers({f"{Q17}/models": 40960}),
+                             {"MODEL_CONTEXT_WINDOW": "262144"})
+        self.assertEqual(self._size(a, {})[0], 40960)
+
+    def test_an_unknown_size_is_the_conservative_fallback_with_a_note(self):
+        a, _ = self._adapter([], _ModelServers({}))
+        size, notes = self._size(a, {"id": "unlisted"})
+        self.assertEqual(size, oa.claw_adapter.FALLBACK_CONTEXT_WINDOW)
+        self.assertIn("unknown", notes[0])
+
+    def test_a_model_under_the_minimum_is_noted(self):
+        a, _ = self._adapter([_entry("qwen3-0-6b", Q06)], _ModelServers({f"{Q06}/models": 16384}))
+        size, notes = self._size(a, {"id": "qwen3-0-6b"})
+        self.assertEqual(size, 16384)
+        self.assertIn("under the 32768", notes[0])
+
+    def test_sizes_are_cached_and_a_failing_litellm_never_breaks_the_agent(self):
+        a, ll = self._adapter([_entry("qwen3-1-7b", Q17)], _ModelServers({f"{Q17}/models": 40960}))
+        a.served_context("qwen3-1-7b")
+        a.served_context("qwen3-1-7b")
+        self.assertEqual([p for p, _ in ll.calls].count("/model/info"), 1)
+
+        def down(path, body):
+            raise OSError("connection refused")
+        a2, *_ = _adapter(ADMIN, litellm=down)
+        self.assertIsNone(a2.served_context("qwen3-1-7b"))
+
+    def test_no_key_goes_to_the_model_server(self):
+        servers = _ModelServers({f"{Q17}/models": 40960})
+        a, _ = self._adapter([_entry("qwen3-1-7b", Q17)], servers)
+        a.served_context("qwen3-1-7b")
+        self.assertEqual(servers.calls, [f"{Q17}/models"])  # a bare URL: _get_json sends no header
+
+    def test_without_an_admin_key_nothing_is_looked_up(self):
+        ll = _LiteLLM(models=[_entry("qwen3-1-7b", Q17, 40960)])
+        a, *_ = _adapter(litellm=ll)
+        self.assertIsNone(a.served_context("qwen3-1-7b"))
+        self.assertEqual(ll.calls, [])
 
 
 class LifecycleTest(unittest.TestCase):

@@ -428,6 +428,9 @@ def _reconcile(spec, patch, name, namespace, logger, resuming):
     backend_ok = _cond("BackendReady", bool(backend_ref),
                        f"{backend_ref['kind']} {backend_ref['name']}" if backend_ref
                        else f"the {_runtime(spec)} backend was not created")
+    model_context = _model_context_condition(ctx)
+    if model_context:
+        conditions.append(model_context)  # a warning: an assumed or capped size does not fail the agent
 
     # Create only: the agent edits its workspace, so a restart must not overwrite it.
     if not resuming:
@@ -486,7 +489,7 @@ def on_desired_state(new, old, status, spec, name, namespace, patch, logger, **_
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.model")
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.modelSecretRef")
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.githubTokenSecretRef")
-def on_capabilities_change(reason, old, new, spec, name, namespace, patch, logger, **_):
+def on_capabilities_change(reason, old, new, spec, status, name, namespace, patch, logger, **_):
     """Re-render and roll the backend on a live edit.
 
     Gated on `reason`, not `old is None`: a field absent at creation also reports old=None."""
@@ -498,6 +501,10 @@ def on_capabilities_change(reason, old, new, spec, name, namespace, patch, logge
         _grant_agent_ns_exec(ctx.namespace, logger)
         _get_adapter(spec).update(ctx)
         patch.status["lastActivity"] = _now()
+        model_context = _model_context_condition(ctx)
+        if model_context:
+            patch.status["conditions"] = [c for c in (status or {}).get("conditions") or []
+                                          if c.get("type") != "ModelContext"] + [model_context]
         logger.info(f"Agent '{name}': backend re-provisioned")
     except Exception as e:
         logger.warning(f"Agent '{name}': re-provision failed: {e}")
@@ -563,6 +570,17 @@ def pod_readiness(spec, status, name, namespace, patch, logger, **_):
         "type": "PodReady", "status": "True" if ready else "False", "lastTransitionTime": _now(),
         "reason": "Ready" if ready else ("Suspended" if suspended else "NotReady"),
         "message": "the agent pod is ready" if ready else "the agent pod is not ready"}]
+
+
+def _model_context_condition(ctx):
+    """ModelContext: the context size OpenClaw was given, False when it was assumed or adjusted."""
+    size = getattr(ctx, "context_window", None)
+    if not size:
+        return None
+    notes = getattr(ctx, "model_notes", None) or []
+    return {"type": "ModelContext", "status": "False" if notes else "True", "lastTransitionTime": _now(),
+            "reason": "SizeAdjusted" if notes else "Resolved",
+            "message": "; ".join(notes) if notes else f"{size} tokens"}
 
 
 def _pod_ready(agent_ns, name):

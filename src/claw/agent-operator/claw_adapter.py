@@ -21,6 +21,12 @@ GITHUB_TOKEN_CRED_FILE = "github_token"
 # Sent when no key is configured; the in-cluster inference gateway needs none.
 NO_KEY = "sk-no-key-needed"
 
+# OpenClaw's system prompt alone is about 19,500 tokens a turn, so a smaller context cannot hold
+# a conversation. With no size known, assume this rather than OpenClaw's 200000, which outgrows
+# most self-hosted models and fails once a conversation is longer than the model's limit.
+MIN_CONTEXT_WINDOW = 32768
+FALLBACK_CONTEXT_WINDOW = 32768
+
 # Workspace keys are relative paths of plain segments.
 _WORKSPACE_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 
@@ -166,11 +172,33 @@ class ClawAdapter:
             "model_id": model_id,
             "model_name": m.get("name") or m.get("id") or self.model_name,
             "model_base_url": m.get("baseUrl") or self.model_base_url,
-            # The agent's own size if given (the console sets it from the gateway's model list),
-            # else known only for the cluster's own model; OpenClaw otherwise assumes 200000.
-            "context_window": int(m.get("contextWindow") or 0) or (
-                self.cfg["model"]["contextWindow"] if model_id == self.model_id and not m.get("baseUrl") else 0),
+            "context_window": self._context_window(ctx, model_id, m),
         }
+
+    def served_context(self, model_id):
+        """The model's served context size, where this runtime can ask; None when unknown."""
+        return None
+
+    def _context_window(self, ctx, model_id, m):
+        """The size OpenClaw plans for: never more than the model serves, never left to its 200000.
+
+        The agent's own size if given (the console sets it from the gateway's list), else the
+        cluster setting for the cluster's own model, else what the model serves, else a
+        conservative fallback. Notes go to ctx.model_notes for the agent's ModelContext condition."""
+        notes = []
+        served = self.served_context(model_id)
+        default = self.cfg["model"]["contextWindow"] if model_id == self.model_id and not m.get("baseUrl") else 0
+        size = int(m.get("contextWindow") or 0) or default or served or 0
+        if not size:
+            size = FALLBACK_CONTEXT_WINDOW
+            notes.append(f"the context size of '{model_id}' is unknown; assumed {size}")
+        elif served and size > served:
+            notes.append(f"{size} is more than '{model_id}' serves; capped at {served}")
+            size = served
+        if size < MIN_CONTEXT_WINDOW:
+            notes.append(f"{size} tokens is under the {MIN_CONTEXT_WINDOW} an agent needs; long conversations will fail")
+        ctx.context_window, ctx.model_notes = size, notes
+        return size
 
     def _model_key(self, ctx):
         """The agent's own key; the cluster default only when the default endpoint is used."""

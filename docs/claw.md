@@ -115,7 +115,7 @@ automatically. The chat walkthrough is in [claw-e2e.md](claw-e2e.md#create-an-ag
 | `desiredState` | `Running` (default) or `Suspended` |
 | `skills` | OpenClaw capabilities, for example `shell`, `read_file`, `list_files`, and the [tools](#tools) to wire |
 | `workspace` | Files seeded into the agent's workspace, keyed by relative path |
-| `model` | Per-agent model override (`provider`, `id`, `name`, `baseUrl`) |
+| `model` | Per-agent model override (`provider`, `id`, `name`, `baseUrl`, `contextWindow`); see [Context size](#context-size) |
 | `modelSecretRef` | Secret in the agent namespace with key `apiKey`, for an overridden model |
 | `githubTokenSecretRef` | Secret in the agent namespace with key `token`: the agent's own GitHub PAT |
 | `webFetchAllowlist` | Domains `web_fetch` may reach, subdomains included; `*` allows any public site; empty (default) allows none |
@@ -241,6 +241,30 @@ platform gateway reaches it through an Envoy Gateway `Backend` (TLS checked agai
 CA, HTTP/1.1 only, which the dashboard's WebSocket needs), so Envoy Gateway's Backend API must
 be enabled, as the platform's `envoy_gateway` role does.
 
+
+### Context size
+
+OpenClaw plans each conversation for a context size and compacts it only near that size. Unset,
+it assumes 200000 tokens, more than most self-hosted models serve: a long conversation would
+then fail at the model instead of being compacted. The operator gives OpenClaw:
+
+1. the agent's `spec.model.contextWindow` (the console sends the size the gateway lists), else
+2. `claw_model_context_window` for the cluster's own model, else
+3. the size the model serves (`openshell` agents: the model server's `max_model_len`, found
+   through LiteLLM, which lists each model's server; LiteLLM's own figure only when the
+   server does not say), else
+4. `32768`.
+
+It never gives more than the model serves, where it can read that. The agent's `ModelContext`
+condition shows the size, and is `False` (reason `SizeAdjusted`) when the size was assumed,
+capped, or is under `32768`. That is a warning: the agent still runs.
+
+OpenClaw's own system prompt is about 19,500 tokens a turn, so an agent needs at least `32768`.
+For `openshell` agents, the API refuses a model the gateway does not serve, a model serving
+less than that, and a `contextWindow` under `32768` or over what the model serves. The console
+shows such models greyed out, and marks models whose size the gateway does not report.
+Changing an agent's model without a size drops the old model's size.
+
 ---
 
 ## Console and dashboards
@@ -329,7 +353,7 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 |---|---|---|
 | `claw_enabled` | `false` | Turns claw on |
 | `claw_model_id` | first of `llm_services_autodeploy_models` | Model every agent uses unless its `spec.model` overrides it |
-| `claw_model_context_window` | `32768` | The model's served `max_model_len`; `0` lets OpenClaw assume 200000 |
+| `claw_model_context_window` | `32768` | Tokens OpenClaw plans a conversation for with `claw_model_id`: at least `32768` and at most what the model serves, both checked by the install; `0` for the served size (see [Context size](#context-size)) |
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
 | `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
 | `openshell_enabled` | `false` | Also enables the [`openshell` runtime](#openshell-runtime), with the OpenShell component |
@@ -427,7 +451,7 @@ succeed when nothing is installed.
 | Agent `Failed`: `must be created in namespace 'user-…'` | The `Agent` is not in its owner's namespace | Create it in `user-<owner.username>` |
 | Agent `Running` with reason `degraded: IdentityReady` | The operator cannot reach Keycloak or its credentials are wrong | Check the operator log; re-run `install agent_operator` |
 | Agent pod `ImagePullBackOff` on `registry.kube-system…` | The node does not trust the cluster registry | Re-run `install agent_operator`, which configures every node |
-| Chat answers `Context overflow` | The inference gateway rejects large requests (`413`), or the context window does not match the model | `install agent_operator` raises the gateway limit; set `claw_model_context_window` |
+| Chat answers `Context overflow` | The inference gateway rejects large requests (`413`), or the context window does not match the model | `install agent_operator` raises the gateway limit; check the agent's `ModelContext` condition and set `claw_model_context_window` or `spec.model.contextWindow` |
 | Agent `Running` with reason `degraded: MemoryReady` | The operator cannot reach pgvector | Check `pgvector` is running; re-run `install agent_operator` |
 | `kubectl get tools` shows `Conflicting` | Another `Tool` already registers the skill | Delete one of them |
 | Agent answers but never calls `memory_read` / `memory_write` | Small models call tools unreliably | Name the tool in the request, or use a larger model |

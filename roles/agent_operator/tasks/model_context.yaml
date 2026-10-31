@@ -1,0 +1,73 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# OpenClaw plans each conversation for claw_model_context_window tokens and compacts only near it.
+# A size above what the default model serves makes long conversations fail at the model; under
+# 32768 its own system prompt (about 19,500 tokens) leaves no room for one.
+
+- name: "agent_operator | Check the context size is enough for an agent"
+  ansible.builtin.assert:
+    that:
+      - claw_model_context_window | int == 0 or claw_model_context_window | int >= 32768
+    fail_msg: >-
+      claw_model_context_window is {{ claw_model_context_window }}: an agent needs at least 32768
+      tokens. Use a model that serves that much, or 0 for the size the model serves.
+    quiet: true
+
+# The model server's max_model_len, at the upstream LiteLLM lists for the model, else LiteLLM's
+# own figure; 0 when the model is not registered yet. Read inside the LiteLLM pod.
+- name: "agent_operator | Read the default model's served context size"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - -n
+      - "{{ litellm_namespace | default('litellm') }}"
+      - "deploy/{{ openshell_genai_deployment | default('litellm') }}"
+      - -c
+      - litellm
+      - --
+      - python
+      - -c
+      - |
+        import json, os, urllib.request
+        def get(url, key=None):
+            req = urllib.request.Request(url, headers={"Authorization": "Bearer " + key} if key else {})
+            return json.load(urllib.request.urlopen(req, timeout=10))
+        size = 0
+        for m in get("http://127.0.0.1:4000/model/info", os.environ["PROXY_MASTER_KEY"]).get("data") or []:
+            if m.get("model_name") != {{ claw_model_id | to_json }}:
+                continue
+            try:
+                base = (m.get("litellm_params") or {}).get("api_base") or ""
+                size = max(int(x.get("max_model_len") or 0) for x in get(base.rstrip("/") + "/models").get("data") or [])
+            except Exception:
+                pass
+            size = size or int((m.get("model_info") or {}).get("max_input_tokens") or 0)
+        print(size)
+  register: _ao_served_context
+  changed_when: false
+  failed_when: false
+  when: claw_model_context_window | int > 0
+
+- name: "agent_operator | Note an unknown served context size"
+  ansible.builtin.debug:
+    msg: >-
+      Could not read the context size {{ claw_model_id }} serves (not registered in LiteLLM yet?);
+      claw_model_context_window={{ claw_model_context_window }} is not checked against it.
+  when:
+    - claw_model_context_window | int > 0
+    - (_ao_served_context.stdout | default('0') | trim | int) == 0
+
+- name: "agent_operator | Check the context size fits the default model"
+  ansible.builtin.assert:
+    that:
+      - claw_model_context_window | int <= _ao_served_context.stdout | trim | int
+    fail_msg: >-
+      claw_model_context_window is {{ claw_model_context_window }}, but {{ claw_model_id }} serves
+      {{ _ao_served_context.stdout | trim }} tokens: conversations longer than that would fail.
+      Set claw_model_context_window to at most {{ _ao_served_context.stdout | trim }}, or 0.
+    quiet: true
+  when:
+    - claw_model_context_window | int > 0
+    - (_ao_served_context.stdout | default('0') | trim | int) > 0
