@@ -60,6 +60,13 @@ class RuntimeAdmissionTest(unittest.TestCase):
         self.assertIsNone(C._runtime_error("oss", spec("vkumar4", runtime="openshell", model={"provider": "genai-gateway"}),
                                            "agent-vkumar4-oss"))
 
+    def test_without_litellm_a_genai_gateway_agent_is_told_what_to_change(self):
+        C.OPENSHELL_MODEL_PROVIDERS = ["ai-gateway"]
+        status = self._reconcile("oss", "vkumar4", runtime="openshell", model={"provider": "genai-gateway", "id": "x"})
+        self.assertEqual(status["phase"], "Failed")
+        self.assertIn("needs LiteLLM", status["suspendReason"])
+        self.assertIn("set the agent's model provider to ai-gateway", status["suspendReason"])
+
     def test_without_litellm_only_the_ai_gateway_is_offered(self):
         litellm = {"OPENSHELL_MODEL_BASE_URL": "http://litellm/v1", "OPENSHELL_AI_GATEWAY_URL": "http://aigw/v1"}
         self.assertEqual(C.openshell_model_providers(litellm), ["genai-gateway", "ai-gateway"])

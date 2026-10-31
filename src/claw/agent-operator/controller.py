@@ -224,6 +224,10 @@ def _runtime_error(name, spec, agent_ns):
             return ("openshell agents use the cluster's model gateway: spec.model.baseUrl and "
                     "spec.modelSecretRef are not supported")
         if model.get("provider") and model["provider"] not in OPENSHELL_MODEL_PROVIDERS:
+            if model["provider"] == os.environ.get("OPENSHELL_PROVIDER_NAME", "genai-gateway"):
+                # Not moved to the AI Gateway silently: it has neither LiteLLM's accounting nor its guardrail.
+                return (f"model provider '{model['provider']}' needs LiteLLM, which this cluster doesn't run; "
+                        f"set the agent's model provider to {' or '.join(OPENSHELL_MODEL_PROVIDERS)}")
             return (f"openshell agents use model provider {' or '.join(OPENSHELL_MODEL_PROVIDERS)}, "
                     f"not '{model['provider']}'")
     return None

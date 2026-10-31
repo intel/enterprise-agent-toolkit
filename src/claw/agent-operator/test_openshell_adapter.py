@@ -538,8 +538,18 @@ class WithoutLiteLLMTest(unittest.TestCase):
             self.assertEqual(cfg["agents"]["defaults"]["memorySearch"]["remote"]["baseUrl"], AIGW)
             rules = _rules(a, ctx)["network_policies"]
             self.assertNotIn("_provider_genai_gateway", rules)
-            self.assertIn("ai-gateway.envoy-gateway-system.svc.cluster.local",
-                          [e["host"] for e in rules["agent_services"]["endpoints"]])
+            hosts = [e["host"] for e in rules["agent_services"]["endpoints"]]
+            self.assertEqual(hosts, ["ai-gateway.envoy-gateway-system.svc.cluster.local"])  # once, for both
+
+    def test_embeddings_use_the_embedding_model_s_own_url_when_there_is_one(self):
+        # The AI Gateway's /v1 routes only models given an AI Gateway route; an embedding model
+        # served for LiteLLM has none, but KServe still serves it at its own URL.
+        a, _, _, ctx = self._agent(env={"OPENSHELL_MODEL_SERVER_URL": SERVER})
+        cfg = json.loads(a._config_json(ctx))
+        self.assertEqual(cfg["agents"]["defaults"]["memorySearch"]["remote"]["baseUrl"],
+                         "http://ai-gateway/llm-inference/bge-base-en/v1")
+        hosts = [e["host"] for e in _rules(a, ctx)["network_policies"]["agent_services"]["endpoints"]]
+        self.assertIn("ai-gateway", hosts)
 
     def test_the_ai_gateway_url_defaults_to_the_cluster_model_url(self):
         a, _, _, ctx = self._agent()  # OPENSHELL_AI_GATEWAY_URL unset: MODEL_BASE_URL, the AI Gateway

@@ -242,7 +242,11 @@ from `claw`:
 `auth_type: litellm_vkey` or `litellm_enabled: true`. When the install finds no LiteLLM, the AI
 Gateway is the only gateway, whatever `claw_openshell_ai_gateway_enabled` says:
 - Agents get no OpenShell provider and no key.
-- Chat and memory embeddings both go to the AI Gateway, which their policy allows.
+- Chat goes to the AI Gateway, which their policy allows. Memory embeddings go to the embedding
+  model's own URL through it (`claw_model_server_url`): the AI Gateway's shared `/v1` serves
+  only models that have an AI Gateway route, which the embedding model may not have.
+- An agent whose `spec.model.provider` is `genai-gateway` fails, with a message to switch it
+  to `ai-gateway`, rather than silently losing LiteLLM's accounting and guardrail.
 - The console offers only the AI Gateway.
 - There are no per-agent keys, no usage per agent or user, no limits, and no content-safety
   guardrail.

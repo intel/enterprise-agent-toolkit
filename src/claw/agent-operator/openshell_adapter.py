@@ -560,12 +560,22 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         config["gateway"].update(mode="local", bind="loopback", port=SERVICE_PORT)
         # Memory embeddings go through LiteLLM with the agent's own key, like its chats, so no
         # rule needs the AI Gateway, where any model answers with no key and no accounting.
-        # Without LiteLLM they keep the AI Gateway, which the policy then allows.
+        # Without LiteLLM they go to the embedding model's own URL, which the policy then allows.
         search = config["agents"]["defaults"].get("memorySearch")
         if search and self.genai:
             search["remote"] = {"baseUrl": self.os_cfg["modelBaseUrl"] or self.model_base_url,
                                 "apiKey": "${OPENAI_API_KEY}"}
+        elif search:
+            search["remote"]["baseUrl"] = self._embedding_url()
         return json.dumps(config, indent=2)
+
+    def _embedding_url(self):
+        """Without LiteLLM: the embedding model's own URL. The AI Gateway's shared /v1 routes only
+        the models given an AI Gateway route, which an embedding model served for LiteLLM lacks."""
+        model = self.cfg.get("embeddingModel") or ""
+        if self.os_cfg["modelServerUrl"] and _MODEL_ID_RE.match(model):
+            return self.os_cfg["modelServerUrl"].replace("{model}", model)
+        return self.cfg.get("embeddingBaseUrl") or ""
 
     def _policy(self, ctx, routes):
         """Default deny, plus exactly what this agent needs. The provider adds the model endpoint."""
@@ -579,13 +589,16 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
                 _endpoint(proxy, port, "rest") for port in sorted(routes)]}
         direct = [_url_endpoint(t["url"]) for t in ctx.custom_tools or [] if t.get("url")]
         if not self.genai and self.cfg.get("embeddingBaseUrl"):
-            direct.append(_url_endpoint(self.cfg["embeddingBaseUrl"]))  # with LiteLLM, embeddings go there
+            direct.append(_url_endpoint(self._embedding_url()))  # with LiteLLM, embeddings go there
         provider, base_url, _ = self.model_gateway(ctx)
         if provider == AI_GATEWAY_PROVIDER:
             direct.append(_url_endpoint(base_url))  # genai-gateway's endpoint comes with the provider
-        if any(direct):
-            rules["agent_services"] = {"name": "agent-services", "binaries": node,
-                                       "endpoints": [ep for ep in direct if ep]}
+        endpoints = []
+        for ep in direct:
+            if ep and ep not in endpoints:  # the AI Gateway can be both the chat and the embedding host
+                endpoints.append(ep)
+        if endpoints:
+            rules["agent_services"] = {"name": "agent-services", "binaries": node, "endpoints": endpoints}
         web = _web_hosts(ctx.spec.get("webFetchAllowlist"), ctx.logger)
         if web:
             rules["web_fetch"] = {"name": "web-fetch-allowlist", "binaries": node,
