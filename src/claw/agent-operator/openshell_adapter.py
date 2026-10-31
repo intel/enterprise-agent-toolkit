@@ -587,7 +587,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             template=pb.SandboxTemplate(image=self.os_cfg["image"], annotations=annotations),
             policy=self._policy(ctx, routes),
             providers=[self.os_cfg["providerName"]],
-            environment={"HOME": "/sandbox", "OC_CONFIG": CONFIG_PATH,
+            # SQLite (OpenClaw's memory index) puts temp files in /var/tmp before /tmp. /var/tmp
+            # looks writable but the policy denies it, so the index could never be built.
+            environment={"HOME": "/sandbox", "OC_CONFIG": CONFIG_PATH, "TMPDIR": "/tmp", "SQLITE_TMPDIR": "/tmp",
                          "OC_CONFIG_B64": base64.b64encode(config.encode()).decode()},
             command=["sh", "-c", START_COMMAND],
             restart_policy=pb.SANDBOX_RESTART_POLICY_ALWAYS)

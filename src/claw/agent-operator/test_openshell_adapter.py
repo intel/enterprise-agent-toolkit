@@ -515,6 +515,9 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(list(made["spec"].providers), ["genai-gateway"])
         self.assertNotIn(KEY, str(made["spec"]))  # the key never enters the sandbox spec
         self.assertEqual(made["service_exposures"][0].target_port, oa.SERVICE_PORT)
+        env = dict(made["spec"].template.environment) or dict(made["spec"].environment)
+        self.assertEqual((env["TMPDIR"], env["SQLITE_TMPDIR"]), ("/tmp", "/tmp"))  # writable by the policy
+        self.assertIn("/tmp", oa.READ_WRITE_PATHS)
 
     def test_in_the_ambient_mesh_dns_capture_is_off_and_the_tunnel_is_allowed(self):
         a, client, k8s, _ = _adapter(mesh=True)
