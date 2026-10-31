@@ -236,6 +236,7 @@ from `claw`:
 | Model | A gateway and one of its models (`spec.model.provider`, `spec.model.id`; the console lists both live): `genai-gateway` (LiteLLM: budgets and the content-safety guardrail, key injected by the supervisor) or `ai-gateway` (Envoy AI Gateway, no key; `claw_openshell_ai_gateway_enabled`, on by default). A model registered in LiteLLM appears in the list without a restart. `spec.model.baseUrl` and `spec.modelSecretRef` are not supported |
 | `spec.webFetchAllowlist` | Each domain and its subdomains, on ports 80 and 443, for OpenClaw's own requests; `*` is not granted. Edits apply to the running sandbox |
 | Suspend | Stops the sandbox (its pods go away, the workspace volume stays) and starts it again on resume |
+| A stopped sandbox | OpenShell stops a sandbox whose pods died, for example when the agent ran out of memory, and doesn't start it again. The operator starts it again, about 30 s later, then backing off up to 15 minutes between tries. The count is in `status.sandboxRestarts`, and each start is a warning event on the Agent. It can't tell that from `openshell sandbox stop`, so to keep an agent stopped, suspend it (`desiredState: Suspended`) |
 | Workspace files | Written through the OpenShell gateway, not `kubectl exec` |
 
 **Without LiteLLM.** The inference layer runs LiteLLM (the GenAI Gateway) only with

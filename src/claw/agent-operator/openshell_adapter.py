@@ -299,6 +299,18 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             except Exception as e:
                 ctx.logger.warning(f"OpenShell {what} delete for '{ctx.name}' failed: {e}")
 
+    def stopped(self, ctx):
+        """True when OpenShell has the sandbox Stopped: it stops one whose pods died (an OOM kill,
+        for one) and does not start it again, whatever its restart policy."""
+        from openshell._proto import openshell_pb2  # noqa: PLC0415
+        try:
+            return self.client.get(ctx.name, workspace=ctx.namespace).phase == openshell_pb2.SANDBOX_PHASE_STOPPED
+        except Exception:
+            return False
+
+    def start(self, ctx):
+        self.client.start(ctx.name, workspace=ctx.namespace)
+
     def ready(self, ctx):
         try:
             ref = self.client.get(ctx.name, workspace=ctx.namespace)

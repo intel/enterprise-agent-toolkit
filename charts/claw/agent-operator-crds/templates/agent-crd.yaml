@@ -173,6 +173,17 @@ spec:
                       type: string
                     name:
                       type: string
+                sandboxRestarts:
+                  type: object
+                  description: >-
+                    openshell runtime: how often the operator started a sandbox OpenShell had
+                    stopped (out of memory, for example), and when last; it backs off by this.
+                  properties:
+                    count:
+                      type: integer
+                    lastStartAt:
+                      type: string
+                      format: date-time
                 conditions:
                   type: array
                   items:

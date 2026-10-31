@@ -641,6 +641,18 @@ class LifecycleTest(unittest.TestCase):
         a.create(_ctx())
         self.assertEqual([argv for argv, _ in client.execs], [["cat", oa.CONFIG_PATH]])
 
+    def test_a_stopped_sandbox_is_seen_and_started(self):
+        client = _Client(exists=True)
+        client.unavailable = ()
+        a, client, *_ = _adapter(client=client)
+        self.assertFalse(a.stopped(_ctx()))  # the fake is Ready (phase 2)
+        client.get = lambda name, workspace: types.SimpleNamespace(phase=7, conditions=())  # SANDBOX_PHASE_STOPPED
+        self.assertTrue(a.stopped(_ctx()))
+        a.start(_ctx())
+        self.assertEqual(client.calls, ["start"])
+        client.get = lambda name, workspace: (_ for _ in ()).throw(_Status("UNAVAILABLE"))
+        self.assertFalse(a.stopped(_ctx()))  # unknown is not stopped
+
     def test_suspend_and_resume_fall_back_to_stop_and_start(self):
         client = _Client()
         client.unavailable = ("suspend", "resume")

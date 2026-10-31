@@ -572,6 +572,8 @@ def pod_readiness(spec, status, name, namespace, patch, logger, **_):
     adapter = ADAPTERS.get(_runtime(spec))
     ready = (adapter.ready(AgentContext(name, spec, logger)) if hasattr(adapter, "ready")
              else _pod_ready(_agent_ns(name, spec), name))
+    if hasattr(adapter, "stopped"):
+        _restart_stopped(adapter, ready, spec, status, name, patch, logger)
     conditions = [c for c in (status or {}).get("conditions") or [] if c.get("type") != "PodReady"]
     current = next((c for c in (status or {}).get("conditions") or [] if c.get("type") == "PodReady"), {})
     if current.get("status") == ("True" if ready else "False"):
@@ -581,6 +583,49 @@ def pod_readiness(spec, status, name, namespace, patch, logger, **_):
         "type": "PodReady", "status": "True" if ready else "False", "lastTransitionTime": _now(),
         "reason": "Ready" if ready else ("Suspended" if suspended else "NotReady"),
         "message": "the agent pod is ready" if ready else "the agent pod is not ready"}]
+
+
+# A sandbox OpenShell stopped is started again after 30s, then 60s, ... at most 15 minutes apart;
+# the count resets once the agent has been up this long since the last start.
+SANDBOX_RESTART_BASE_SECONDS = 30
+SANDBOX_RESTART_MAX_SECONDS = 900
+SANDBOX_RESTART_RESET_SECONDS = 600
+
+
+def _restart_stopped(adapter, ready, spec, status, name, patch, logger, now=None):
+    """Start a sandbox OpenShell left Stopped while the agent should run. A suspended agent
+    (desiredState Suspended, or phase IdleSuspended) is stopped on purpose and left alone."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    record = (status or {}).get("sandboxRestarts") or {}
+    last = _parse_time(record.get("lastStartAt"))
+    count = int(record.get("count") or 0)
+    if ready:
+        if count and last and (now - last).total_seconds() >= SANDBOX_RESTART_RESET_SECONDS:
+            patch.status["sandboxRestarts"] = {"count": 0, "lastStartAt": record.get("lastStartAt")}
+        return
+    if (spec or {}).get("desiredState", "Running") != "Running" or (status or {}).get("phase") != "Running":
+        return
+    wait = min(SANDBOX_RESTART_BASE_SECONDS * 2 ** count, SANDBOX_RESTART_MAX_SECONDS)
+    if last and (now - last).total_seconds() < wait:
+        return
+    ctx = AgentContext(name, spec, logger)
+    if not adapter.stopped(ctx):
+        return
+    try:
+        adapter.start(ctx)
+    except Exception as e:
+        logger.warning(f"Agent '{name}': its sandbox is stopped and could not be started: {e}")
+    else:
+        logger.warning(f"Agent '{name}': its sandbox had stopped (out of memory, for example); "
+                       f"started it again (restart {count + 1})")
+    patch.status["sandboxRestarts"] = {"count": count + 1, "lastStartAt": now.isoformat().replace("+00:00", "Z")}
+
+
+def _parse_time(value):
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _model_context_condition(ctx):

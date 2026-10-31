@@ -1,6 +1,7 @@
 # Copyright (C) 2025-2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 """The openshell runtime in the controller: admission, and the route to the sandbox."""
+import datetime
 import types
 import unittest
 
@@ -117,6 +118,79 @@ class ModelContextConditionTest(unittest.TestCase):
 
     def test_no_condition_before_the_model_is_rendered(self):
         self.assertIsNone(C._model_context_condition(types.SimpleNamespace()))
+
+
+
+class _Sandbox:
+    def __init__(self, stopped=True, start_fails=False):
+        self.is_stopped, self.start_fails, self.starts = stopped, start_fails, 0
+
+    def stopped(self, ctx):
+        return self.is_stopped
+
+    def start(self, ctx):
+        self.starts += 1
+        if self.start_fails:
+            raise RuntimeError("gateway unavailable")
+
+
+T0 = datetime.datetime(2026, 10, 31, 10, 0, tzinfo=datetime.timezone.utc)
+
+
+class StoppedSandboxTest(unittest.TestCase):
+    """OpenShell stops a sandbox whose pods died (an OOM kill) and never starts it again."""
+
+    def _run(self, sandbox, status=None, spec_extra=None, ready=False, at=T0):
+        patch, logger = Patch(), Logger()
+        status = {"phase": "Running", **(status or {})}
+        C._restart_stopped(sandbox, ready, spec("vkumar4", runtime="openshell", **(spec_extra or {})),
+                           status, "oss", patch, logger, now=at)
+        return patch.status, logger
+
+    def test_a_stopped_sandbox_of_a_running_agent_is_started_and_counted(self):
+        sb = _Sandbox()
+        status, logger = self._run(sb)
+        self.assertEqual(sb.starts, 1)
+        self.assertEqual(status["sandboxRestarts"], {"count": 1, "lastStartAt": "2026-10-31T10:00:00Z"})
+        self.assertTrue(any("started it again (restart 1)" in w for w in logger.warnings))
+
+    def test_restarts_back_off_and_are_capped(self):
+        sb = _Sandbox()
+        last = {"sandboxRestarts": {"count": 3, "lastStartAt": "2026-10-31T10:00:00Z"}}
+        self._run(sb, last, at=T0 + datetime.timedelta(seconds=239))   # 30 * 2**3 = 240s
+        self.assertEqual(sb.starts, 0)
+        self._run(sb, last, at=T0 + datetime.timedelta(seconds=240))
+        self.assertEqual(sb.starts, 1)
+        many = {"sandboxRestarts": {"count": 20, "lastStartAt": "2026-10-31T10:00:00Z"}}
+        self._run(sb, many, at=T0 + datetime.timedelta(seconds=C.SANDBOX_RESTART_MAX_SECONDS))
+        self.assertEqual(sb.starts, 2)  # never more than 15 minutes apart
+
+    def test_a_suspended_agent_is_left_stopped(self):
+        for spec_extra, status in (({"desiredState": "Suspended"}, {}), ({}, {"phase": "IdleSuspended"}),
+                                   ({}, {"phase": "Failed"})):
+            sb = _Sandbox()
+            result, _ = self._run(sb, status, spec_extra)
+            self.assertEqual((sb.starts, result), (0, {}))
+
+    def test_a_sandbox_that_is_not_stopped_is_left_alone(self):
+        sb = _Sandbox(stopped=False)
+        self.assertEqual(self._run(sb)[0], {})
+        self.assertEqual(sb.starts, 0)
+
+    def test_a_failed_start_is_logged_and_counted_for_the_back_off(self):
+        sb = _Sandbox(start_fails=True)
+        status, logger = self._run(sb)
+        self.assertEqual(status["sandboxRestarts"]["count"], 1)
+        self.assertTrue(any("could not be started" in w for w in logger.warnings))
+
+    def test_the_count_resets_once_the_agent_has_stayed_up(self):
+        sb = _Sandbox()
+        last = {"sandboxRestarts": {"count": 4, "lastStartAt": "2026-10-31T10:00:00Z"}}
+        status, _ = self._run(sb, last, ready=True, at=T0 + datetime.timedelta(seconds=599))
+        self.assertEqual(status, {})
+        status, _ = self._run(sb, last, ready=True, at=T0 + datetime.timedelta(seconds=600))
+        self.assertEqual(status["sandboxRestarts"]["count"], 0)
+        self.assertEqual(sb.starts, 0)
 
 
 if __name__ == "__main__":
