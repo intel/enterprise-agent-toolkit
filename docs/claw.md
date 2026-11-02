@@ -279,7 +279,10 @@ its spec names.
 
 Users reach an `openshell` agent at the same `/gw/<owner ns>/<name>/` path. The route goes to
 the OpenShell gateway, which relays to the agent's sandbox; OpenClaw listens on loopback only
-and trusts the user name only from that relay. The gateway's port accepts only the
+and trusts the user name only from that relay. OpenClaw's own loopback clients, such as a
+subagent handing its result back to the agent that spawned it, send no user name; they use a
+password the operator keeps in Secret `openclaw-gateway-password` in the agent namespace. It
+opens only that agent's own gateway, and only from inside its sandbox. The gateway's port accepts only the
 supervisors, the agent operator and the platform gateway (`openshell-gateway-ingress`). The
 platform gateway reaches it through an Envoy Gateway `Backend` (TLS checked against the OpenShell
 CA, HTTP/1.1 only, which the dashboard's WebSocket needs), so Envoy Gateway's Backend API must

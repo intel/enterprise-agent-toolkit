@@ -58,6 +58,7 @@ class _K8s:
 
     def __init__(self):
         self.calls = []
+        self.secrets = {}  # (namespace, name): data, for Secrets the adapter makes
         self.ApiException = _ApiException
         k8s = self
 
@@ -65,7 +66,19 @@ class _K8s:
             def __getattr__(self, name):
                 def call(*args, **kwargs):
                     k8s.calls.append((name, args))
+                    if name in ("create_namespaced_secret", "replace_namespaced_secret"):
+                        body = args[-1]
+                        key = (body["metadata"]["namespace"], body["metadata"]["name"])
+                        if name == "create_namespaced_secret" and key in k8s.secrets:
+                            raise _ApiException(409)
+                        k8s.secrets[key] = {k: base64.b64encode(v.encode()).decode()
+                                            for k, v in body["string_data"].items()}
                     if name == "read_namespaced_secret":
+                        secret, ns = args
+                        if secret == oa.GATEWAY_PASSWORD_SECRET:
+                            if (ns, secret) not in k8s.secrets:
+                                raise _ApiException(404)
+                            return types.SimpleNamespace(data=k8s.secrets[(ns, secret)])
                         return types.SimpleNamespace(data={"api_key": base64.b64encode(KEY.encode()).decode()})
                 return call
 
@@ -218,6 +231,34 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(gw["controlUi"]["basePath"], "/gw/user-vkumar4/oss")
         # OpenClaw will not start without a mode, and must serve on loopback only.
         self.assertEqual((gw["mode"], gw["bind"], gw["port"]), ("local", "loopback", oa.SERVICE_PORT))
+
+    def test_openclaw_s_own_loopback_clients_get_a_password_that_stays_the_same(self):
+        a, _, k8s, _ = _adapter()
+        ctx = _ctx()
+        first = json.loads(a._config_json(ctx))["gateway"]["auth"]
+        self.assertEqual(first["mode"], "trusted-proxy")  # users still come only through the relay
+        self.assertGreaterEqual(len(first["password"]), 32)
+        # The same file on every render, so a rewrite does not restart OpenClaw.
+        self.assertEqual(a._config_json(ctx), a._config_json(ctx))
+        self.assertEqual(json.loads(a._config_json(ctx))["gateway"]["auth"]["password"], first["password"])
+        self.assertEqual([c for c, _ in k8s.calls].count("create_namespaced_secret"), 1)
+        secret = next(args[-1] for c, args in k8s.calls if c == "create_namespaced_secret")
+        self.assertEqual(secret["metadata"]["namespace"], "agent-vkumar4-oss")
+        self.assertEqual(secret["metadata"]["labels"]["app.kubernetes.io/managed-by"], "agent-operator")
+
+    def test_each_agent_has_its_own_gateway_password(self):
+        a, *_ = _adapter()
+        one = json.loads(a._config_json(_ctx(name="one")))["gateway"]["auth"]["password"]
+        two = json.loads(a._config_json(_ctx(name="two")))["gateway"]["auth"]["password"]
+        self.assertNotEqual(one, two)
+
+    def test_a_password_secret_without_a_password_is_refilled(self):
+        a, _, k8s, _ = _adapter()
+        k8s.secrets[("agent-vkumar4-oss", oa.GATEWAY_PASSWORD_SECRET)] = {}
+        password = json.loads(a._config_json(_ctx()))["gateway"]["auth"]["password"]
+        self.assertTrue(password)
+        self.assertIn("replace_namespaced_secret", [c for c, _ in k8s.calls])
+        self.assertEqual(json.loads(a._config_json(_ctx()))["gateway"]["auth"]["password"], password)
 
     def test_model_goes_to_the_provider_endpoint_with_a_placeholder_key(self):
         provider = self.cfg["models"]["providers"]["genai-gateway"]
@@ -528,7 +569,8 @@ class WithoutLiteLLMTest(unittest.TestCase):
         a, client, k8s, ctx = self._agent()
         a.create(ctx)
         self.assertFalse([m for m, _ in client._stub.calls if m in ("GetProvider", "CreateProvider")])
-        self.assertFalse([n for n, _ in k8s.calls if n == "read_namespaced_secret"])  # no cluster key read
+        self.assertFalse([a for n, a in k8s.calls if n == "read_namespaced_secret"
+                          and a[0] != oa.GATEWAY_PASSWORD_SECRET])  # no cluster key read
         self.assertEqual(list(client.created[0]["spec"].providers), [])
 
     def test_chat_and_embeddings_use_the_ai_gateway_which_the_policy_allows(self):

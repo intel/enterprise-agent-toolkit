@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +45,10 @@ PYTHON = "/usr/bin/python3*"
 DNS_CAPTURE_ANNOTATION = "ambient.istio.io/dns-capture"
 MESH_TUNNEL_PORT = 15008
 MESH_POLICY = "openshell-sandbox-mesh"
+# OpenClaw's own loopback clients (a subagent handing its result back, for one) carry no x-gw-user,
+# so trusted-proxy auth refuses them; a password admits loopback callers that send it. Kept in a
+# Secret so every config rewrite renders the same file and does not restart OpenClaw.
+GATEWAY_PASSWORD_SECRET = "openclaw-gateway-password"
 # The two model gateways an openshell agent may use. genai-gateway (LiteLLM) holds budgets and the
 # content-safety guardrail; its key is injected by the workspace's provider. ai-gateway (Envoy AI
 # Gateway) needs no key in-cluster and is reached directly, when the cluster enables it.
@@ -408,6 +413,39 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             raise ValueError(f"Secret {ns}/{name} has no '{key}'")
         return base64.b64decode(data[key]).decode()
 
+    def _gateway_password(self, ctx):
+        """The agent's loopback gateway password, from its Secret; made once, on first use.
+
+        It opens only this agent's own gateway, and only from loopback inside its sandbox: the
+        platform's route still needs x-gw-user. The namespace, and so the Secret, go with the agent."""
+        c = self.k8s.client
+        api = c.CoreV1Api()
+        try:
+            data = api.read_namespaced_secret(GATEWAY_PASSWORD_SECRET, ctx.namespace).data or {}
+            if data.get("password"):
+                return base64.b64decode(data["password"]).decode()
+            exists = True
+        except c.ApiException as e:
+            if e.status != 404:
+                raise
+            exists = False
+        password = secrets.token_urlsafe(32)
+        body = c.V1Secret(
+            metadata=c.V1ObjectMeta(name=GATEWAY_PASSWORD_SECRET, namespace=ctx.namespace,
+                                    labels={"app.kubernetes.io/managed-by": "agent-operator",
+                                            "intel-stack.io/agent": ctx.name}),
+            string_data={"password": password})
+        if exists:
+            api.replace_namespaced_secret(GATEWAY_PASSWORD_SECRET, ctx.namespace, body)
+            return password
+        try:
+            api.create_namespaced_secret(ctx.namespace, body)
+        except c.ApiException as e:
+            if e.status != 409:
+                raise
+            return self._gateway_password(ctx)  # made by a concurrent reconcile: use that one
+        return password
+
     def _ensure_provider(self, ctx):
         """The workspace's model provider; it holds the key, the sandbox sees a placeholder."""
         if not self.genai:
@@ -587,6 +625,7 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         # What the OpenClaw operator adds on the claw runtime: without gateway.mode OpenClaw
         # refuses to start. Loopback only: the supervisor's relay is the way in.
         config["gateway"].update(mode="local", bind="loopback", port=SERVICE_PORT)
+        config["gateway"]["auth"]["password"] = self._gateway_password(ctx)
         # Memory embeddings go through LiteLLM with the agent's own key, like its chats, so no
         # rule needs the AI Gateway, where any model answers with no key and no accounting.
         # Without LiteLLM they go to the embedding URL (the embedding model's own), which the
