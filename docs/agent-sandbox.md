@@ -771,7 +771,7 @@ kata_warm_pool_size: 1
 
 ### Deployment Script
 
-- **Role**: `roles/agent_sandbox/tasks/install.yaml` (agent toolkit)
+- **Role**: `roles/agent_sandbox/tasks/install.yaml` (Intel® Agent Toolkit)
 - **Kata role**: `roles/kata_containers` (enterprise-ai-solutions, infrastructure layer)
 
 ### Templates
