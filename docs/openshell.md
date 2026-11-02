@@ -21,12 +21,21 @@ OpenShell is **optional** and **off by default** (`openshell_enabled: false`).
 
 | Component | Version |
 |---|---|
-| OpenShell Helm chart / images | `0.0.116` (`oci://ghcr.io/nvidia/openshell/helm-chart`) |
-| OpenShell CLI (used by the deployment) | `v0.0.116` GitHub release |
+| OpenShell Helm chart / images | `0.1.6` (`oci://ghcr.io/nvidia/openshell/helm-chart`) |
+| OpenShell CLI (used by the deployment) | `v0.1.6` GitHub release |
 | Agent Sandbox | `v0.5.0` (`agent_sandbox_enabled: true`) |
 | GenAI Gateway | LiteLLM as deployed by `auth_provider: "litellm"` (optional; provider is skipped if absent) |
 | User authentication | Single-admin mode (ClusterIP gateway, access gated by Kubernetes RBAC) |
 | CNI | Must enforce `NetworkPolicy` (e.g. Calico) |
+
+### Upgrading from OpenShell 0.0.x
+
+OpenShell 0.1.0 introduced breaking changes. Before running the toolkit deployment against an
+existing 0.0.x installation, follow the upstream [0.1.0 upgrade guide](https://docs.nvidia.com/openshell/v0.1.6/upgrade/0-1-0).
+Back up the gateway database and credential-encryption material, coordinate the gateway,
+drivers, supervisors, CLI and SDK versions, remove and recreate existing sandboxes, and preserve
+or re-import provider profiles and credentials. Do not treat a version-pin change alone as a
+complete migration.
 
 ---
 
@@ -85,8 +94,8 @@ GenAI Gateway (LiteLLM, :4000)                   hosts allowed by the sandbox
 
 Not used by OpenShell: the Agent Sandbox router, `SandboxTemplate`, `WarmPool` and the
 `k8s-agent-sandbox` SDK. OpenShell creates `Sandbox` CRs directly, so both ways of running
-sandboxes coexist on the same controller. Fluent Bit does not collect OpenShell policy events
-on 0.0.116 (see [Known Limitations](#known-limitations-00116)).
+sandboxes coexist on the same controller. For the Fluent Bit limitation in legacy 0.0.116
+deployments, see [Legacy 0.0.116 Limitations](#legacy-0-0-116-limitations).
 
 ### Added by OpenShell
 
@@ -155,9 +164,9 @@ completed with the current version pins and settings (see [Deployment](#deployme
 ### Version pins in `env/<name>/config.agent-toolkit.yaml`
 
 ```yaml
-openshell_chart_version: "0.0.116"
-openshell_image_tag: "0.0.116"
-openshell_release_tag: "v0.0.116"
+openshell_chart_version: "0.1.6"
+openshell_image_tag: "0.1.6"
+openshell_release_tag: "v0.1.6"
 ```
 
 ### Settings in `env/<name>/config.agent-toolkit.yaml`
@@ -245,7 +254,7 @@ kubectl get networkpolicy -n openshell-sandboxes
 
 ### Connect the CLI (admin, control plane)
 
-Install the CLI from the [v0.0.116 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.116), then:
+Install the CLI from the [v0.1.6 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.6), then:
 
 ```bash
 kubectl port-forward -n openshell-system svc/openshell 8080:8080 &
@@ -290,7 +299,7 @@ openshell sandbox delete demo
 
 Without `--from`, sandboxes use the OpenShell community base image. Pass
 `--from <image>` for your own agent image, and `--policy <file>` to allow additional
-endpoints (see the [OpenShell policy reference](https://github.com/NVIDIA/OpenShell/blob/v0.0.116/docs/reference/policy-schema.mdx)).
+endpoints (see the [OpenShell policy reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.6/docs/reference/policy-schema.mdx)).
 
 ---
 
@@ -421,8 +430,7 @@ a tool call:
 import json, os, re, subprocess, sys, urllib.request
 
 MODEL = os.environ["MODEL"]  # a model id from GET /v1/models
-# Tool output goes into the next LLM request, and OpenShell 0.0.116 rejects requests whose
-# body contains a credential placeholder, so redact it.
+# Tool output goes into the next LLM request; redact credential placeholders before sending it.
 PLACEHOLDER = re.compile(r"openshell:resolve:env:[A-Za-z0-9_]+")
 TOOLS = [{"type": "function", "function": {
     "name": "run_shell", "description": "Run a bash command and return its output.",
@@ -488,9 +496,9 @@ Output (abridged; the model chooses the exact commands):
 ```
 $ curl -s https://api.github.com/repos/NVIDIA/OpenShell/releases/latest | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4
 exit=0
-v0.0.116
+v0.1.6
 
-$ curl -s -X POST https://httpbin.org/post -H "Content-Type: application/json" -d "{\"tag_name\": \"v0.0.116\"}"
+$ curl -s -X POST https://httpbin.org/post -H "Content-Type: application/json" -d "{\"tag_name\": \"v0.1.6\"}"
 exit=56
 
 $ curl -s -o /dev/null -w "%{http_code}" -X POST https://api.github.com/gists -d "{}"
@@ -531,9 +539,9 @@ openshell sandbox delete agent-demo
 
 ## Sandbox NetworkPolicy
 
-OpenShell `0.0.116` runs each sandbox as a single pod, which the chart's own NetworkPolicy
-does not select. The toolkit applies `eat-openshell-sandbox-pods` to these pods as defense in
-depth under the OpenShell egress policy:
+The toolkit applies `eat-openshell-sandbox-pods` as defense in depth under the OpenShell
+egress policy. It selects only sandbox pods without `openshell.ai/boundary-role`, so the
+split supervisor/workload pods used by newer charts retain the chart's stricter policies:
 
 - **Ingress**: only from `openshell-system`
 - **Egress**: kube-dns, port `53` on the NodeLocal DNSCache address (auto-detected from the
@@ -542,12 +550,11 @@ depth under the OpenShell egress policy:
   `openshell_sandbox_egress_cidrs`, and public addresses (all private and link-local ranges
   excluded)
 
-Pods labelled `openshell.ai/boundary-role` (split supervisor/workload pods of newer charts) are
-not selected, so the chart's stricter policies stay in effect.
-
 ---
 
-## Known Limitations (0.0.116)
+## Legacy 0.0.116 Limitations
+
+These notes apply to deployments still running OpenShell 0.0.116; the toolkit defaults to 0.1.6.
 
 - **Credential placeholder in a request body fails the request.** If an agent copies the
   placeholder into a request body (for example by pasting `env` output into its LLM context),
@@ -595,7 +602,7 @@ print(urllib.request.urlopen(req).read().decode())'
 # 4. Admin host: `gateway remove` keeps the client certificate files, so delete them too,
 #    and the CLI the playbook downloaded
 openshell gateway remove eat
-rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/openshell/gateways/eat" ~/.cache/eat/openshell-cli-v0.0.116
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/openshell/gateways/eat" ~/.cache/eat/openshell-cli-v0.1.6
 ```
 
 ---
@@ -632,5 +639,5 @@ openshell logs <sandbox> --source sandbox
 ## References
 
 - [NVIDIA/OpenShell](https://github.com/NVIDIA/OpenShell)
-- [OpenShell v0.0.116 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.116)
+- [OpenShell v0.1.6 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.6)
 - [Agent Sandbox in this toolkit](agent-sandbox.md)
