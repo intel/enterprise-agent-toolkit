@@ -295,8 +295,26 @@ set `OPENSHELL_LOCAL_TLS_DIR` to an empty directory to prevent that.
 
 ### Run a sandbox that calls the GenAI Gateway
 
-The commands below run in the admin workspace. The community image's built-in policy is
-rejected by 0.1.6, so always pass `--policy`; this one allows nothing beyond the provider:
+The commands below run in the admin workspace. They need a sandbox image with `curl` and
+`python3`:
+
+- **With claw on**, the toolkit builds one: `openclaw-sandbox` (OpenClaw plus pip and venv), in
+  the cluster registry. Find it with:
+
+  ```bash
+  SANDBOX_IMAGE=$(kubectl -n agent-operator-system get deploy agent-operator \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OPENSHELL_SANDBOX_IMAGE")].value}')
+  ```
+
+- **Otherwise**, use an image of your own that has `curl` and `python3` in `/usr/bin` or
+  `/usr/local/bin`, which the `genai-gateway` provider profile allows.
+- OpenShell's default image, `nvcr.io/nvidia/base/ubuntu:24.04` (used without `--from`), has
+  neither.
+- The OpenShell Community image catalog (`ghcr.io/nvidia/openshell-community/sandboxes/*`) is
+  [retired](https://github.com/NVIDIA/OpenShell-Community): NVIDIA no longer maintains its
+  images. They still pull, but don't build on them.
+
+Always pass `--policy`; this one allows nothing beyond the provider:
 
 ```bash
 cat > /tmp/deny-all.yaml <<'YAML'
@@ -312,7 +330,7 @@ YAML
 
 export OPENSHELL_WORKSPACE=openshell-sandboxes     # or pass --workspace to every command
 openshell sandbox create --name demo --provider genai-gateway --policy /tmp/deny-all.yaml --detach \
-  --from ghcr.io/nvidia/openshell-community/sandboxes/base:latest \
+  --from "$SANDBOX_IMAGE" \
   --env OPENAI_BASE_URL=http://litellm.litellm.svc.cluster.local:4000/v1
 
 openshell sandbox exec -n demo --no-tty -- sh -c 'echo $OPENAI_API_KEY'
@@ -330,9 +348,8 @@ openshell logs demo --source sandbox | grep DENIED
 openshell sandbox delete demo
 ```
 
-Without `--from`, 0.1.6 uses `nvcr.io/nvidia/base/ubuntu:24.04`, which has no Python or
-OpenCode; the examples here use the community image above. Pass `--from <image>` for your own
-agent image, and `--policy <file>` to allow additional endpoints (see the
+Pass `--from <image>` for your own agent image, and `--policy <file>` to allow additional
+endpoints (see the
 [OpenShell policy reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.6/docs/how-it-works/policies/schema.mdx)).
 
 ---
@@ -340,7 +357,15 @@ agent image, and `--policy <file>` to allow additional endpoints (see the
 ## Run OpenCode (coding agent) in a sandbox
 
 [OpenCode](https://opencode.ai) is preinstalled in the community sandbox image
-(`ghcr.io/nvidia/openshell-community/sandboxes/base`). It runs entirely
+(`ghcr.io/nvidia/openshell-community/sandboxes/base`).
+
+> **That image is retired:** NVIDIA no longer maintains it (see
+> [above](#run-a-sandbox-that-calls-the-genai-gateway)). It still worked for this walkthrough on
+> 2026-11-01, but may stop being published. For lasting use, build your own image with OpenCode
+> (`npm install -g opencode-ai`) and add its binary to the provider profile (see the note at the end
+> of this section).
+
+OpenCode runs entirely
 inside the sandbox and reaches the model only through the `genai-gateway` provider — so the
 LiteLLM key never enters the sandbox, and every other outbound connection stays denied. This
 reuses the same sandbox setup as above; you only add a small OpenCode config, then start its TUI.
@@ -427,8 +452,9 @@ openshell sandbox delete --workspace openshell-sandboxes opencode
 from the GitHub API and call models through the GenAI Gateway, and nothing else: it cannot
 write to GitHub, cannot send data to other hosts, and never sees the LiteLLM key.
 
-The example uses the community image and a standard-library-only Python agent, so no
-image build is needed. Commands use the admin workspace (`export OPENSHELL_WORKSPACE=openshell-sandboxes`). Run it on the control plane after
+The example uses a standard-library-only Python agent, so any image with `curl` and `python3`
+works: `$SANDBOX_IMAGE` from
+[Run a sandbox that calls the GenAI Gateway](#run-a-sandbox-that-calls-the-genai-gateway). Commands use the admin workspace (`export OPENSHELL_WORKSPACE=openshell-sandboxes`). Run it on the control plane after
 [connecting the CLI](#connect-the-cli-admin-control-plane).
 
 ### 1. Write the sandbox policy
@@ -508,7 +534,7 @@ for _ in range(10):
 
 ```bash
 openshell sandbox create --name agent-demo --provider genai-gateway \
-  --from ghcr.io/nvidia/openshell-community/sandboxes/base:latest \
+  --from "$SANDBOX_IMAGE" \
   --policy github-readonly.yaml --upload agent.py:/sandbox/agent.py --detach \
   --env OPENAI_BASE_URL=http://litellm.litellm.svc.cluster.local:4000/v1 \
   --env MODEL=<model-id>
