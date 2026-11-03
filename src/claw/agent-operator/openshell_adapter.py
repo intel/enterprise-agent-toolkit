@@ -328,12 +328,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
 
     def delete(self, ctx):
         """Sandbox, provider and workspace record; the operator deletes the namespace."""
-        pb, _ = self._pb()
         steps = (
-            ("sandbox", lambda: self.client.delete(ctx.name, workspace=ctx.namespace, allow_missing=True)),
-            ("provider", lambda: self._rpc("DeleteProvider", pb.DeleteProviderRequest(
-                workspace_scope=self._scope(ctx), name=self.os_cfg["providerName"], allow_missing=True))),
-            ("workspace", lambda: self._workspaces().delete(ctx.namespace, allow_missing=True)),
+            ("sandbox", lambda: self._delete_sandbox(ctx)),
+            *self._workspace_cleanup(ctx),
             # The agent's LiteLLM key; its user and their usage history stay.
             *((("LiteLLM key", lambda: self._litellm_call("/key/delete", {"key_aliases": [ctx.namespace]})),)
               if self.os_cfg["litellmAdminKey"] else ()),
@@ -343,6 +340,24 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
                 step()
             except Exception as e:
                 ctx.logger.warning(f"OpenShell {what} delete for '{ctx.name}' failed: {e}")
+
+    def _delete_sandbox(self, ctx):
+        # DeleteSandbox returns while the sandbox still exists, and its provider can't be deleted
+        # while attached to it. The workspace then stayed Terminating, and an agent made again
+        # under the same name waited on it for ever.
+        result = self.client.delete(ctx.name, workspace=ctx.namespace, allow_missing=True)
+        sandbox_id = getattr(result, "sandbox_id", None)
+        if sandbox_id:
+            self.client.wait_deleted(ctx.name, workspace=ctx.namespace, timeout_seconds=180,
+                                     expected_sandbox_id=sandbox_id)
+
+    def _workspace_cleanup(self, ctx):
+        pb, _ = self._pb()
+        return (
+            ("provider", lambda: self._rpc("DeleteProvider", pb.DeleteProviderRequest(
+                workspace_scope=self._scope(ctx), name=self.os_cfg["providerName"], allow_missing=True))),
+            ("workspace", lambda: self._workspaces().delete(ctx.namespace, allow_missing=True)),
+        )
 
     def stopped(self, ctx):
         """True when OpenShell has the sandbox Stopped: it stops one whose pods died (an OOM kill,
@@ -426,8 +441,19 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             self._workspaces().create(ctx.namespace)
             ctx.logger.info(f"Registered OpenShell workspace '{ctx.namespace}'")
         except Exception as e:
-            if _status(e) != "ALREADY_EXISTS":
+            if _status(e) == "ALREADY_EXISTS":
+                return
+            if _status(e) != "FAILED_PRECONDITION" or "being deleted" not in str(e):
                 raise
+            # A deleted agent's workspace, held by what its delete left (the provider, before
+            # the delete waited for the sandbox). Finish the delete; the retry registers it anew.
+            for what, step in self._workspace_cleanup(ctx):
+                try:
+                    step()
+                except Exception as cleanup_error:
+                    ctx.logger.info(f"Leftover OpenShell {what} of '{ctx.namespace}': {cleanup_error}")
+            raise RuntimeError(f"OpenShell workspace '{ctx.namespace}' is still being deleted; "
+                               "removed what held it, retrying") from e
 
     def _cluster_key(self):
         ns, name, key = self.os_cfg["modelKeySecret"].split("/", 2)

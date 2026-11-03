@@ -146,7 +146,7 @@ class _Workspaces:
         self.created.append(name)
 
     def delete(self, name, allow_missing=False):
-        pass
+        self.deleted = True
 
 
 def _ctx(name="oss", username="vkumar4", skills=("shell", "github"), allowlist=(), files=None):
@@ -385,6 +385,31 @@ class AgentKeyTest(unittest.TestCase):
         a, *_ = _adapter(ADMIN, litellm=ll)
         a.delete(_ctx())
         self.assertIn(("/key/delete", {"key_aliases": ["agent-vkumar4-oss"]}), ll.calls)
+
+
+    def test_delete_waits_for_the_sandbox_before_its_provider_and_workspace(self):
+        client = _Client()
+        client.unavailable = ()
+        client.delete = lambda name, workspace, allow_missing=False: (
+            client.calls.append("delete"), types.SimpleNamespace(sandbox_id="sb-1"))[1]
+        a, client, *_ = _adapter(client=client)
+        a.delete(_ctx())
+        self.assertEqual(client.calls, ["delete", "wait_deleted"])
+        self.assertIn("DeleteProvider", [m for m, _ in client._stub.calls])  # after the wait
+
+    def test_a_workspace_left_terminating_is_cleaned_up_and_create_retries(self):
+        class Terminating(_Workspaces):
+            def create(self, name):
+                error = _Status("workspace 'agent-vkumar4-oss' is being deleted")
+                error._name = "FAILED_PRECONDITION"
+                raise error
+        ws = Terminating()
+        a, client, *_ = _adapter(workspaces=ws)
+        with self.assertRaisesRegex(RuntimeError, "still being deleted"):
+            a.create(_ctx())
+        self.assertIn("DeleteProvider", [m for m, _ in client._stub.calls])
+        self.assertTrue(getattr(ws, "deleted", False))
+        self.assertEqual(client.created, [])
 
 
 class ModelGatewayTest(unittest.TestCase):
