@@ -441,19 +441,21 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             self._workspaces().create(ctx.namespace)
             ctx.logger.info(f"Registered OpenShell workspace '{ctx.namespace}'")
         except Exception as e:
-            if _status(e) == "ALREADY_EXISTS":
-                return
-            if _status(e) != "FAILED_PRECONDITION" or "being deleted" not in str(e):
+            if _status(e) != "ALREADY_EXISTS":
                 raise
-            # A deleted agent's workspace, held by what its delete left (the provider, before
-            # the delete waited for the sandbox). Finish the delete; the retry registers it anew.
-            for what, step in self._workspace_cleanup(ctx):
-                try:
-                    step()
-                except Exception as cleanup_error:
-                    ctx.logger.info(f"Leftover OpenShell {what} of '{ctx.namespace}': {cleanup_error}")
-            raise RuntimeError(f"OpenShell workspace '{ctx.namespace}' is still being deleted; "
-                               "removed what held it, retrying") from e
+        pb, dm = self._pb()
+        workspace = self.client._stub.GetWorkspace(pb.GetWorkspaceRequest(name=ctx.namespace), timeout=30).workspace
+        if workspace.status.phase != dm.WORKSPACE_PHASE_TERMINATING:
+            return
+        # A deleted agent's workspace, held by what its delete left (the provider, before the
+        # delete waited for the sandbox). Finish the delete; the retry registers it anew.
+        for what, step in self._workspace_cleanup(ctx):
+            try:
+                step()
+            except Exception as cleanup_error:
+                ctx.logger.info(f"Leftover OpenShell {what} of '{ctx.namespace}': {cleanup_error}")
+        raise RuntimeError(f"OpenShell workspace '{ctx.namespace}' is still being deleted; "
+                           "removed what held it, retrying")
 
     def _cluster_key(self):
         ns, name, key = self.os_cfg["modelKeySecret"].split("/", 2)

@@ -93,15 +93,18 @@ class _K8s:
 
 class _Stub:
     def __init__(self, provider_exists=False, sandbox_providers=("genai-gateway",),
-                 image="registry/openclaw-sandbox:1"):
+                 image="registry/openclaw-sandbox:1", workspace_phase=1):
         self.calls, self.provider_exists, self.sandbox_providers = [], provider_exists, list(sandbox_providers)
-        self.image = image
+        self.image, self.workspace_phase = image, workspace_phase  # 1: WORKSPACE_PHASE_ACTIVE
 
     def __getattr__(self, method):
         def call(request, timeout=None):
             self.calls.append((method, request))
             if method == "GetProvider" and not self.provider_exists:
                 raise _Status("NOT_FOUND")
+            if method == "GetWorkspace":
+                return types.SimpleNamespace(workspace=types.SimpleNamespace(
+                    status=types.SimpleNamespace(phase=self.workspace_phase)))
             if method == "GetSandbox":
                 return types.SimpleNamespace(sandbox=types.SimpleNamespace(
                     spec=types.SimpleNamespace(providers=self.sandbox_providers,
@@ -134,6 +137,10 @@ class _Client:
             if name in getattr(self, "unavailable", ()):
                 raise _Status("UNIMPLEMENTED")
         return call
+
+
+def oa_pb():
+    return oa.OpenShellAdapter._pb()[1]
 
 
 class _Workspaces:
@@ -398,13 +405,10 @@ class AgentKeyTest(unittest.TestCase):
         self.assertIn("DeleteProvider", [m for m, _ in client._stub.calls])  # after the wait
 
     def test_a_workspace_left_terminating_is_cleaned_up_and_create_retries(self):
-        class Terminating(_Workspaces):
-            def create(self, name):
-                error = _Status("workspace 'agent-vkumar4-oss' is being deleted")
-                error._name = "FAILED_PRECONDITION"
-                raise error
-        ws = Terminating()
-        a, client, *_ = _adapter(workspaces=ws)
+        ws = _Workspaces(exists=True)  # registering a Terminating workspace says it exists
+        client = _Client()
+        client._stub = _Stub(workspace_phase=oa_pb().WORKSPACE_PHASE_TERMINATING)
+        a, client, *_ = _adapter(client=client, workspaces=ws)
         with self.assertRaisesRegex(RuntimeError, "still being deleted"):
             a.create(_ctx())
         self.assertIn("DeleteProvider", [m for m, _ in client._stub.calls])
