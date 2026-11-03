@@ -31,7 +31,7 @@ FALLBACK_CONTEXT_WINDOW = 32768
 _WORKSPACE_PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$")
 
 SKILL_MAP = {
-    "shell": {"tools": {"exec": {"security": "full", "ask": "off"}}},
+    "shell": {"tools": {"exec": {"mode": "full"}}},
     "browser-automation": {"plugins": ["browser-automation"]},
     "diagram-maker": {"plugins": ["diagram-maker"]},
     "canvas": {"plugins": ["canvas"]},
@@ -69,7 +69,6 @@ def config_from_env(env=None):
             "allowPrivateNetwork": _bool(env.get("MODEL_ALLOW_PRIVATE_NETWORK"), True),
             "contextWindow": _int(env.get("MODEL_CONTEXT_WINDOW"), 0),
         },
-        "compactionReserveTokens": _int(env.get("COMPACTION_RESERVE_TOKENS"), 6144),
         # OpenClaw's built-in memory search; empty leaves it off.
         "embeddingBaseUrl": env.get("EMBEDDING_BASE_URL", ""),
         "embeddingModel": env.get("EMBEDDING_MODEL", "BAAI/bge-base-en-v1.5"),
@@ -285,7 +284,10 @@ class ClawAdapter:
             **self._model_vars(ctx))
 
     def _patch_instance(self, ctx, rendered=None):
-        """JSON-patch spec.config and spec.env; returns True if the pod was rolled."""
+        """JSON-patch spec.image, spec.config and spec.env; returns True if the pod was rolled.
+
+        The image goes with the config: a new OpenClaw release can reject the old config format
+        and the old release the new one, so a pin change moves existing agents in one roll."""
         api = self.k8s.client.CustomObjectsApi()
         body = (rendered or self._render_instance(ctx))["spec"]
         try:
@@ -297,11 +299,12 @@ class ClawAdapter:
                 ctx.logger.info(f"OpenClawInstance '{ctx.name}' absent — nothing to update")
                 return False
             raise
-        if live.get("config") == body["config"] and live.get("env") == body["env"]:
+        if all(live.get(k) == body[k] for k in ("image", "config", "env")):
             return False
         # JSON patch, not merge patch: a merge patch never removes keys, so a dropped
         # skill would stay wired forever. "add" also creates spec.env when absent.
-        ops = [{"op": "replace", "path": "/spec/config", "value": body["config"]},
+        ops = [{"op": "add", "path": "/spec/image", "value": body["image"]},
+               {"op": "replace", "path": "/spec/config", "value": body["config"]},
                {"op": "add", "path": "/spec/env", "value": body["env"]}]
         api.api_client.call_api(
             f"/apis/openclaw.rocks/v1alpha1/namespaces/{ctx.namespace}/openclawinstances/{ctx.name}",
@@ -309,7 +312,8 @@ class ClawAdapter:
                                     "Accept": "application/json"},
             body=ops, response_type="object", auth_settings=["BearerToken"],
             _return_http_data_only=True)
-        ctx.logger.info(f"Patched OpenClawInstance '{ctx.name}' config")
+        moved = "" if live.get("image") == body["image"] else f", image {body['image'].get('tag')}"
+        ctx.logger.info(f"Patched OpenClawInstance '{ctx.name}' config{moved}")
         self._roll_pod(ctx)
         return True
 

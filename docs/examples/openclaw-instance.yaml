@@ -38,11 +38,6 @@ spec:
         defaults:
           model:
             primary: "ai-gateway/qwen2-5-coder-14b"
-          # Compact only when context > contextWindow - reserveTokens; the default 20000 floor
-          # would compact after every turn, as the agent prompt alone is ~19500 tokens.
-          compaction:
-            reserveTokensFloor: 0
-            reserveTokens: 6144
       models:
         providers:
           ai-gateway:
