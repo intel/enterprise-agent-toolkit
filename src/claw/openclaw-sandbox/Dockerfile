@@ -6,10 +6,13 @@
 # the image's. The OpenShell runtime and supervisor are side-loaded by OpenShell, so nothing
 # of theirs is needed here. Bump the digest together with agents.openclaw.digest
 # (charts/claw/agent-operator/values.yaml).
-FROM ghcr.io/openclaw/openclaw@sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf
+# OpenClaw 2026.10.9
+FROM ghcr.io/openclaw/openclaw@sha256:1a2a3ce113e435039dbeac5ae261759bb4759908563d91c81059e896b38c5d98
 
 USER root
+# upgrade: Debian security fixes released after the OpenClaw image was built.
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
