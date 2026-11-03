@@ -56,9 +56,9 @@ def config_from_env(env=None):
     env = os.environ if env is None else env
     return {
         "openclawImage": env.get("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw"),
-        "openclawTag": env.get("OPENCLAW_TAG", "2026.7.1-1"),
+        "openclawTag": env.get("OPENCLAW_TAG", "2026.10.9"),
         "openclawDigest": env.get(
-            "OPENCLAW_DIGEST", "sha256:2f5ce8848a1a69b3c460622e566cb9395da9fd18d7ef7b038cd8e2c4f195decf"),
+            "OPENCLAW_DIGEST", "sha256:1a2a3ce113e435039dbeac5ae261759bb4759908563d91c81059e896b38c5d98"),
         "agentTimeoutSeconds": _int(env.get("AGENT_TIMEOUT_SECONDS"), 900),
         "model": {
             "provider": env.get("MODEL_PROVIDER", "ai-gateway"),
