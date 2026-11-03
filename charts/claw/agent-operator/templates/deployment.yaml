@@ -82,7 +82,6 @@ spec:
             - {name: MODEL_BASE_URL, value: {{ $a.model.baseUrl | quote }}}
             - {name: MODEL_CONTEXT_WINDOW, value: {{ $a.model.contextWindow | quote }}}
             - {name: MODEL_ALLOW_PRIVATE_NETWORK, value: {{ $a.model.allowPrivateNetwork | quote }}}
-            - {name: COMPACTION_RESERVE_TOKENS, value: {{ $a.compactionReserveTokens | quote }}}
             - {name: EMBEDDING_BASE_URL, value: {{ $a.embedding.baseUrl | quote }}}
             - {name: EMBEDDING_MODEL, value: {{ $a.embedding.model | quote }}}
             - {name: CONTROL_UI_ALLOWED_ORIGINS, value: {{ $a.controlUiAllowedOrigins | quote }}}

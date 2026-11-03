@@ -265,6 +265,16 @@ class ReconcileTest(unittest.TestCase):
         self.assertFalse(adapter._patch_instance(_Ctx(["shell"])))
         self.assertEqual((len(fake.patches), fake.deleted), (1, ["lab-0"]))
 
+    def test_a_new_pin_moves_the_image_with_the_config_in_one_roll(self):
+        # An agent made on the old release: its image and config both change, in one patch.
+        old = {"repository": "ghcr.io/openclaw/openclaw", "tag": "2026.7.1-1", "digest": "sha256:old"}
+        adapter, fake = self._adapter({"image": old, "config": {"raw": {"stale": True}}})
+        self.assertTrue(adapter._patch_instance(_Ctx(["shell"])))
+        self.assertEqual(fake.live["spec"]["image"]["tag"], claw_adapter.config_from_env({})["openclawTag"])
+        self.assertEqual({op["path"] for op in fake.patches[0]}, {"/spec/image", "/spec/config", "/spec/env"})
+        self.assertEqual(fake.deleted, ["lab-0"])
+        self.assertFalse(adapter._patch_instance(_Ctx(["shell"])))  # then nothing to do
+
     def test_a_removed_skill_is_removed_from_the_config(self):
         adapter, fake = self._adapter({})
         adapter._patch_instance(_Ctx(["github"]))
@@ -293,13 +303,24 @@ class RenderTest(unittest.TestCase):
         key_ref = next(e for e in spec["env"] if e["name"] == "OPENAI_API_KEY")["valueFrom"]
         self.assertEqual(key_ref["secretKeyRef"], {"name": "lab-model-api-key", "key": "apiKey"})
 
-    def test_the_context_window_and_compaction_follow_the_model(self):
-        raw = self._spec(_Ctx([]))["config"]["raw"]
+    def test_the_context_window_follows_the_model_and_no_retired_keys_are_written(self):
+        raw = self._spec(_Ctx(["shell"]), EMBEDDING_BASE_URL="http://emb/v1")["config"]["raw"]
         model = raw["models"]["providers"]["ai-gateway"]["models"][0]
-        self.assertEqual(model["contextWindow"], 32768)
-        self.assertEqual(raw["agents"]["defaults"]["compaction"]["reserveTokensFloor"], 0)
-        raw = self._spec(_Ctx([], model={"id": "other"}))["config"]["raw"]
-        self.assertNotIn("compaction", raw["agents"]["defaults"])
+        self.assertEqual(model["contextWindow"], 32768)  # compaction sizes itself from this
+        defaults = raw["agents"]["defaults"]
+        # OpenClaw 2026.10 refuses to start on these.
+        for retired in ("compaction", "memorySearch", "models"):
+            self.assertNotIn(retired, defaults)
+        self.assertNotIn("dangerouslyDisableDeviceAuth", raw["gateway"]["controlUi"])
+        self.assertEqual(defaults["modelPolicy"]["allow"], ["ai-gateway/qwen"])
+        self.assertEqual(raw["memory"]["search"]["remote"]["baseUrl"], "http://emb/v1")
+        self.assertEqual(raw["tools"]["exec"], {"mode": "full"})
+
+    def test_behind_the_platform_gateway_the_dashboard_device_is_approved_without_admin(self):
+        raw = self._spec(_Ctx([]), GATEWAY_TRUSTED_PROXIES="10.233.64.0/18")["config"]["raw"]
+        proxy = raw["gateway"]["auth"]["trustedProxy"]
+        self.assertEqual((raw["gateway"]["auth"]["mode"], proxy["userHeader"]), ("trusted-proxy", "x-gw-user"))
+        self.assertEqual(proxy["deviceAutoApprove"], {"enabled": True})  # default scopes: no operator.admin
 
     def test_agent_supplied_model_fields_cannot_inject_yaml(self):
         evil = 'x"\n  sidecars: [{name: pwn, image: evil}]\n#'
@@ -314,7 +335,7 @@ class RenderTest(unittest.TestCase):
 
     def test_optional_blocks_are_omitted_when_unset(self):
         spec = self._spec(_Ctx([]))
-        self.assertNotIn("memorySearch", spec["config"]["raw"]["agents"]["defaults"])
+        self.assertNotIn("memory", spec["config"]["raw"])
         self.assertNotIn("allowedOrigins", spec["config"]["raw"]["gateway"]["controlUi"])
         self.assertNotIn("HTTP_PROXY", [e["name"] for e in spec["env"]])
 

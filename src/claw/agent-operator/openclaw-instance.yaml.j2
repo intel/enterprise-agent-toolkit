@@ -40,22 +40,20 @@ spec:
           timeoutSeconds: [[ cfg.agentTimeoutSeconds | int ]]
           model:
             primary: [[ model_ref | tojson ]]
-          models:
-            [[ model_ref | tojson ]]: {}
-          [% if context_window %]
-          # Compact only when context > contextWindow - reserveTokens (default floor 20000).
-          compaction:
-            reserveTokensFloor: 0
-            reserveTokens: [[ cfg.compactionReserveTokens | int ]]
-          [% endif %]
-          [% if cfg.embeddingBaseUrl %]
-          memorySearch:
-            provider: "openai-compatible"
-            model: [[ cfg.embeddingModel | tojson ]]
-            remote:
-              baseUrl: [[ cfg.embeddingBaseUrl | tojson ]]
-              apiKey: "sk-no-key-needed"
-          [% endif %]
+          # The models this agent may switch to (2026.10: modelPolicy replaces agents.defaults.models).
+          modelPolicy:
+            allow: [[ [model_ref] | tojson ]]
+      # Compaction sizes itself from the model's contextWindow and the prompt (2026.10 retired
+      # the reserveTokens knobs), so the served size on the model below is what matters.
+      [% if cfg.embeddingBaseUrl %]
+      memory:
+        search:
+          provider: "openai-compatible"
+          model: [[ cfg.embeddingModel | tojson ]]
+          remote:
+            baseUrl: [[ cfg.embeddingBaseUrl | tojson ]]
+            apiKey: "sk-no-key-needed"
+      [% endif %]
       models:
         providers:
           [[ model_provider | tojson ]]:
@@ -99,12 +97,14 @@ spec:
           trustedProxy:
             userHeader: x-gw-user
             allowLoopback: true
+            # The platform gateway has already signed the user in and checked they may use this
+            # agent, so the dashboard's browser device is approved as that user, without admin.
+            deviceAutoApprove:
+              enabled: true
         [% endif %]
         controlUi:
           basePath: [[ ("/gw/" ~ cr_namespace ~ "/" ~ name) | tojson ]]
           dangerouslyAllowHostHeaderOriginFallback: false
-          # Device pairing has no approval surface here; the caller is already authorized per request.
-          dangerouslyDisableDeviceAuth: true
           [% if cfg.controlUiAllowedOrigins %]
           allowedOrigins: [[ cfg.controlUiAllowedOrigins | tojson ]]
           [% endif %]

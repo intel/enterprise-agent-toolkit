@@ -62,7 +62,6 @@ agents:
     # The model's served max_model_len; 0 lets OpenClaw assume 200000.
     contextWindow: 0
     allowPrivateNetwork: true
-  compactionReserveTokens: 6144
   # OpenClaw's built-in memory search; an empty baseUrl leaves it off.
   embedding:
     baseUrl: http://ai-gateway.envoy-gateway-system.svc.cluster.local/v1
