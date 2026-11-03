@@ -651,6 +651,7 @@ class LifecycleTest(unittest.TestCase):
         a, client, k8s, _ = _adapter(mesh=True)
         a.create(_ctx())
         tmpl = client.created[0]["spec"].template
+        self.assertEqual(json_format.MessageToDict(tmpl.resources)["limits"]["memory"], "4Gi")  # not the 1Gi default
         self.assertEqual(dict(tmpl.annotations), {oa.DNS_CAPTURE_ANNOTATION: "false"})
         policy = next(args[1] for name, args in k8s.calls
                       if name == "create_namespaced_network_policy" and args[1]["metadata"]["name"] == oa.MESH_POLICY)

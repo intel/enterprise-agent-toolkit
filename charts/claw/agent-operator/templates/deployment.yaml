@@ -129,6 +129,7 @@ spec:
             - {name: OPENSHELL_MODEL_KEY_SECRET, value: {{ .modelKeySecret | quote }}}
             - {name: OPENSHELL_MODEL_BASE_URL, value: {{ .modelBaseUrl | quote }}}
             - {name: OPENSHELL_PYPI_ENABLED, value: {{ .pypi | quote }}}
+            - {name: OPENSHELL_SANDBOX_RESOURCES, value: {{ .sandboxResources | toJson | quote }}}
             - {name: OPENSHELL_AI_GATEWAY_URL, value: {{ .aiGatewayUrl | quote }}}
             - {name: OPENSHELL_MODEL_SERVER_URL, value: {{ .modelServerUrl | quote }}}
             {{- if .litellmAdminSecret }}

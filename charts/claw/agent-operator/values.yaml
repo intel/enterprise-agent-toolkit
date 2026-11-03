@@ -159,3 +159,9 @@ openshell:
   userTpmLimit: 0
   userRpmLimit: 0
   pypi: true
+  # The OpenClaw container in each sandbox; the same as the claw runtime's. Without it the
+  # namespace default (limitRange, 1Gi) applies, and OpenClaw 2026.10 is OOM-killed at start.
+  # Set when the sandbox is created: existing agents keep theirs until recreated.
+  sandboxResources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {cpu: "2", memory: 4Gi}

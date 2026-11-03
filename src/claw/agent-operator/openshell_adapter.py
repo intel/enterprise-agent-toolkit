@@ -23,6 +23,8 @@ import claw_adapter
 
 WORKSPACE = "/sandbox/.openclaw/workspace"
 CONFIG_PATH = "/sandbox/.openclaw/openclaw.json"
+# What the claw runtime gives OpenClaw (the OpenClaw operator's defaults).
+DEFAULT_RESOURCES = {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"cpu": "2", "memory": "4Gi"}}
 SERVICE_NAME = "openclaw"
 SERVICE_PORT = 18789
 # Workspace names become part of service hostnames; OpenShell rejects longer ones.
@@ -110,8 +112,18 @@ def config_from_env(env=None):
         "modelServerUrl": env.get("OPENSHELL_MODEL_SERVER_URL", ""),
         "serviceDomain": env.get("OPENSHELL_SERVICE_DOMAIN", "openshell.localhost"),
         "pypi": claw_adapter._bool(env.get("OPENSHELL_PYPI_ENABLED"), True),
+        # The OpenClaw container's requests and limits. Unset, it gets the namespace default
+        # (1Gi), which OpenClaw 2026.10 goes past right after it starts.
+        "resources": _json(env.get("OPENSHELL_SANDBOX_RESOURCES"), DEFAULT_RESOURCES),
     }
     return cfg
+
+
+def _json(value, default):
+    try:
+        return json.loads(value or "null") or default
+    except ValueError:
+        return default
 
 
 def service_host(workspace, sandbox, domain="openshell.localhost"):
@@ -683,13 +695,17 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
     def _create_sandbox(self, ctx):
         if not self.os_cfg["image"]:
             raise ValueError("OPENSHELL_SANDBOX_IMAGE is not set")
+        from google.protobuf import struct_pb2  # noqa: PLC0415
         from openshell.sandbox import ServiceExposure  # noqa: PLC0415
         pb, _ = self._pb()
         _, routes = self._mcp_wiring(ctx)
         config = self._config_json(ctx)
         annotations = {DNS_CAPTURE_ANNOTATION: "false"} if self.mesh_ambient else {}
+        resources = struct_pb2.Struct()
+        resources.update(self.os_cfg["resources"])  # fixed at creation, like the image
         spec = pb.SandboxSpec(
-            template=pb.SandboxTemplate(image=self.os_cfg["image"], annotations=annotations),
+            template=pb.SandboxTemplate(image=self.os_cfg["image"], annotations=annotations,
+                                        resources=resources),
             policy=self._policy(ctx, routes),
             providers=[self.os_cfg["providerName"]] if self.genai else [],
             # SQLite (OpenClaw's memory index) puts temp files in /var/tmp before /tmp. /var/tmp
