@@ -246,10 +246,20 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         policy applies live; the config is rewritten, and OpenClaw restarted, only if it changed.
         Never raises: the agent keeps running on what it has."""
         try:
-            self._attach_provider(ctx)
+            pb, _ = self._pb()
+            sandbox = self.client._stub.GetSandbox(pb.GetSandboxRequest(
+                workspace_scope=self._scope(ctx), name=ctx.name), timeout=30).sandbox
+            self._attach_provider(ctx, sandbox)
             self.update_policy(ctx)
             if not self.ready(ctx):
                 return  # stopped or starting: an update or the next restart catches up
+            image = sandbox.spec.template.image
+            if image and image != self.os_cfg["image"]:
+                # A sandbox keeps the image it was made with, and an older OpenClaw may refuse
+                # this operator's config, so it keeps its own. Recreating the agent upgrades it.
+                ctx.logger.info(f"'{ctx.name}' runs {image}, not {self.os_cfg['image']}: "
+                                "its config is left as is; recreate the agent to upgrade it")
+                return
             config = self._config_json(ctx)
             if self._exec(ctx, ["cat", CONFIG_PATH]).stdout.strip() == config.strip():
                 return
@@ -259,15 +269,13 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         except Exception as e:
             ctx.logger.warning(f"Could not bring '{ctx.name}' up to date (continuing): {e}")
 
-    def _attach_provider(self, ctx):
+    def _attach_provider(self, ctx, sandbox):
         """Attach the GenAI Gateway provider to a sandbox created before LiteLLM was there. The
         config this operator writes then embeds through LiteLLM, which the sandbox reaches only
         with the provider. Attaching restarts the sandbox's pods once; its workspace stays."""
         if not self.genai:
             return
         pb, _ = self._pb()
-        sandbox = self.client._stub.GetSandbox(pb.GetSandboxRequest(
-            workspace_scope=self._scope(ctx), name=ctx.name), timeout=30).sandbox
         if self.os_cfg["providerName"] in sandbox.spec.providers:
             return
         self._rpc("AttachSandboxProvider", pb.AttachSandboxProviderRequest(
@@ -630,7 +638,7 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         # rule needs the AI Gateway, where any model answers with no key and no accounting.
         # Without LiteLLM they go to the embedding URL (the embedding model's own), which the
         # policy then allows.
-        search = config["agents"]["defaults"].get("memorySearch")
+        search = config.get("memory", {}).get("search")
         if search and self.genai:
             search["remote"] = {"baseUrl": self.os_cfg["modelBaseUrl"] or self.model_base_url,
                                 "apiKey": "${OPENAI_API_KEY}"}

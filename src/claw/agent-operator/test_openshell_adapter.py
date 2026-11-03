@@ -92,8 +92,10 @@ class _K8s:
 
 
 class _Stub:
-    def __init__(self, provider_exists=False, sandbox_providers=("genai-gateway",)):
+    def __init__(self, provider_exists=False, sandbox_providers=("genai-gateway",),
+                 image="registry/openclaw-sandbox:1"):
         self.calls, self.provider_exists, self.sandbox_providers = [], provider_exists, list(sandbox_providers)
+        self.image = image
 
     def __getattr__(self, method):
         def call(request, timeout=None):
@@ -102,7 +104,8 @@ class _Stub:
                 raise _Status("NOT_FOUND")
             if method == "GetSandbox":
                 return types.SimpleNamespace(sandbox=types.SimpleNamespace(
-                    spec=types.SimpleNamespace(providers=self.sandbox_providers)))
+                    spec=types.SimpleNamespace(providers=self.sandbox_providers,
+                                               template=types.SimpleNamespace(image=self.image))))
             return types.SimpleNamespace()
         return call
 
@@ -266,7 +269,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(provider["apiKey"], "${OPENAI_API_KEY}")
 
     def test_exec_is_on_even_without_the_shell_skill_and_no_fetch_proxy(self):
-        self.assertEqual(self.cfg["tools"]["exec"], {"security": "full", "ask": "off"})
+        self.assertEqual(self.cfg["tools"]["exec"], {"mode": "full"})
         self.assertNotIn("web", self.cfg["tools"])
 
 
@@ -412,7 +415,7 @@ class ModelGatewayTest(unittest.TestCase):
     def test_embeddings_go_through_litellm_with_the_agent_s_key_and_no_ai_gateway_rule(self):
         env = {"EMBEDDING_BASE_URL": AIGW, "EMBEDDING_MODEL": "bge-base-en", "OPENSHELL_AI_GATEWAY_URL": AIGW}
         a, ctx, cfg = self._config({"provider": "genai-gateway", "id": "qwen3-coder-30b"}, env)
-        search = cfg["agents"]["defaults"]["memorySearch"]
+        search = cfg["memory"]["search"]
         self.assertEqual((search["model"], search["remote"]), ("bge-base-en", {"baseUrl": LITELLM, "apiKey": "${OPENAI_API_KEY}"}))
         rules = _rules(a, ctx)["network_policies"]
         hosts = [e["host"] for r in rules.values() for e in r["endpoints"]]
@@ -424,7 +427,7 @@ class ModelGatewayTest(unittest.TestCase):
         a, ctx, cfg = self._config({"provider": "ai-gateway", "id": "qwen3-coder-30b"}, env)
         hosts = [e["host"] for e in _rules(a, ctx)["network_policies"]["agent_services"]["endpoints"]]
         self.assertEqual(hosts, ["ai-gateway.envoy-gateway-system.svc.cluster.local"])
-        self.assertEqual(cfg["agents"]["defaults"]["memorySearch"]["remote"]["baseUrl"], LITELLM)
+        self.assertEqual(cfg["memory"]["search"]["remote"]["baseUrl"], LITELLM)
 
     def test_the_agent_s_context_size_is_used(self):
         _, _, cfg = self._config({"id": "qwen3-4b", "contextWindow": 40960})
@@ -580,7 +583,7 @@ class WithoutLiteLLMTest(unittest.TestCase):
             self.assertEqual(list(cfg["models"]["providers"]), ["ai-gateway"])
             provider = cfg["models"]["providers"]["ai-gateway"]
             self.assertEqual((provider["baseUrl"], provider["apiKey"]), (AIGW, oa.NO_KEY))
-            self.assertEqual(cfg["agents"]["defaults"]["memorySearch"]["remote"]["baseUrl"], AIGW)
+            self.assertEqual(cfg["memory"]["search"]["remote"]["baseUrl"], AIGW)
             rules = _rules(a, ctx)["network_policies"]
             self.assertNotIn("_provider_genai_gateway", rules)
             hosts = [e["host"] for e in rules["agent_services"]["endpoints"]]
@@ -591,7 +594,7 @@ class WithoutLiteLLMTest(unittest.TestCase):
         # models given an AI Gateway route, and an embedding model served for LiteLLM has none.
         a, _, _, ctx = self._agent(env={"EMBEDDING_BASE_URL": "http://models.example/llm-inference/bge-base-en/v1"})
         cfg = json.loads(a._config_json(ctx))
-        self.assertEqual(cfg["agents"]["defaults"]["memorySearch"]["remote"]["baseUrl"],
+        self.assertEqual(cfg["memory"]["search"]["remote"]["baseUrl"],
                          "http://models.example/llm-inference/bge-base-en/v1")
         hosts = [e["host"] for e in _rules(a, ctx)["network_policies"]["agent_services"]["endpoints"]]
         self.assertIn("models.example", hosts)
@@ -708,6 +711,16 @@ class LifecycleTest(unittest.TestCase):
                                                types.SimpleNamespace(exit_code=0, stdout=current, stderr=""))[1]
         a.create(_ctx())
         self.assertEqual([argv for argv, _ in client.execs], [["cat", oa.CONFIG_PATH]])
+
+    def test_a_sandbox_on_an_older_image_keeps_its_config(self):
+        client = _Client(exists=True)
+        client._stub = _Stub(image="registry/openclaw-sandbox:0")
+        a, client, *_ = _adapter(client=client)
+        ctx = _ctx()
+        a.create(ctx)
+        self.assertIn("UpdateConfig", [m for m, _ in client._stub.calls])  # the policy still applies
+        self.assertEqual(client.execs, [])  # an older OpenClaw may refuse the new config
+        self.assertTrue(any("recreate the agent" in m for m in ctx.logger.infos))
 
     def test_a_stopped_sandbox_is_seen_and_started(self):
         client = _Client(exists=True)
