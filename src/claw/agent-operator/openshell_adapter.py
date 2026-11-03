@@ -23,6 +23,7 @@ import claw_adapter
 
 WORKSPACE = "/sandbox/.openclaw/workspace"
 CONFIG_PATH = "/sandbox/.openclaw/openclaw.json"
+LOG_PATH = "/sandbox/.openclaw/logs/openclaw.log"
 # What the claw runtime gives OpenClaw (the OpenClaw operator's defaults).
 DEFAULT_RESOURCES = {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"cpu": "2", "memory": "4Gi"}}
 SERVICE_NAME = "openclaw"
@@ -239,7 +240,7 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         # Only the fields status.backendRef has; the workspace is the agent namespace.
         return {"apiVersion": "openshell.ai/v1", "kind": "Sandbox", "name": ctx.name}
 
-    def update(self, ctx, reseed=True):
+    def update(self, ctx):
         """Network policy and config follow the spec; the filesystem policy is fixed at create."""
         _, routes = self._mcp_wiring(ctx)
         self.core.apply_identity_proxy(ctx.name, ctx.namespace, routes, ctx.logger,
@@ -249,9 +250,11 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         # The supervisor restarts the main process (restart policy always) with the new file. The
         # bracket keeps pkill -f from matching this shell's own command line, which would kill it.
         self._exec(ctx, ["sh", "-c", "pkill -f '[o]penclaw-gateway' || true"])
-        if reseed and ctx.workspace_files:
-            self.client.wait_ready(ctx.name, workspace=ctx.namespace)
-            self._seed_files(ctx, ctx.workspace_files)
+
+    def seed(self, ctx, files):
+        """Write the spec.workspace files whose content changed; the workspace survives restarts."""
+        self.client.wait_ready(ctx.name, workspace=ctx.namespace)
+        self._seed_files(ctx, files)
 
     def _refresh(self, ctx):
         """An existing sandbox follows this operator's policy and config, as after an upgrade. The
@@ -646,6 +649,9 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
         # refuses to start. Loopback only: the supervisor's relay is the way in.
         config["gateway"].update(mode="local", bind="loopback", port=SERVICE_PORT)
         config["gateway"]["auth"]["password"] = self._gateway_password(ctx)
+        # /tmp, OpenClaw's default log dir, is wiped on every restart, so the log of a failure was
+        # gone after the next update. A fixed name is not pruned daily: cap it (5 archives kept).
+        config["logging"] = {"file": LOG_PATH, "maxFileBytes": 10 * 1024 * 1024}
         # Memory embeddings go through LiteLLM with the agent's own key, like its chats, so no
         # rule needs the AI Gateway, where any model answers with no key and no accounting.
         # Without LiteLLM they go to the embedding URL (the embedding model's own), which the
@@ -710,7 +716,10 @@ class OpenShellAdapter(claw_adapter.ClawAdapter):
             providers=[self.os_cfg["providerName"]] if self.genai else [],
             # SQLite (OpenClaw's memory index) puts temp files in /var/tmp before /tmp. /var/tmp
             # looks writable but the policy denies it, so the index could never be built.
+            # OpenClaw's exec wrapper writes /proc/self/oom_score_adj, which the sandbox refuses;
+            # the shell's error starts every exec result, and the model takes it for a failure.
             environment={"HOME": "/sandbox", "OC_CONFIG": CONFIG_PATH, "TMPDIR": "/tmp", "SQLITE_TMPDIR": "/tmp",
+                         "OPENCLAW_CHILD_OOM_SCORE_ADJ": "0",
                          "OC_CONFIG_B64": base64.b64encode(config.encode()).decode()},
             command=["sh", "-c", START_COMMAND],
             restart_policy=pb.SANDBOX_RESTART_POLICY_ALWAYS)

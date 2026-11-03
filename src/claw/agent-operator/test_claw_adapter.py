@@ -330,6 +330,7 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(defaults["modelPolicy"]["allow"], ["ai-gateway/qwen"])
         self.assertEqual(raw["memory"]["search"]["remote"]["baseUrl"], "http://emb/v1")
         self.assertEqual(raw["tools"]["exec"], {"mode": "full"})
+        self.assertIs(raw["tools"]["toolSearch"], False)  # local models call tool_search wrongly
         # An unknown size is never left to OpenClaw's 200000.
         other = self._spec(_Ctx([], model={"id": "other"}))["config"]["raw"]
         model = other["models"]["providers"]["ai-gateway"]["models"][0]

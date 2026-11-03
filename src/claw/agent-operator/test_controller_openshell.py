@@ -195,3 +195,47 @@ class StoppedSandboxTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _Seeder:
+    def __init__(self):
+        self.seeded, self.updates = [], 0
+
+    def seed(self, ctx, files):
+        self.seeded.append(files)
+
+    def update(self, ctx):
+        self.updates += 1
+
+
+class WorkspaceChangeTest(unittest.TestCase):
+    """The agents keep editing the team files; a spec edit must not put the seed back."""
+
+    def setUp(self):
+        saved = dict(C.ADAPTERS)
+        self.addCleanup(lambda: (C.ADAPTERS.clear(), C.ADAPTERS.update(saved)))
+        self.adapter = _Seeder()
+        C.ADAPTERS.update(claw=self.adapter, openshell=self.adapter)
+        grant = C._grant_agent_ns_exec
+        self.addCleanup(lambda: setattr(C, "_grant_agent_ns_exec", grant))
+        C._grant_agent_ns_exec = lambda ns, logger: None
+
+    def _change(self, old, new, **extra):
+        C.on_workspace_change(reason="update", old=old, new=new, spec=spec("vkumar4", workspace=new, **extra),
+                              name="nova", namespace="user-vkumar4", patch=Patch(), logger=Logger())
+
+    def test_only_the_files_whose_spec_content_changed_are_written(self):
+        old = {"GOALS.md": "(none yet)", "SOUL.md": "You are Nova."}
+        self._change(old, {**old, "SOUL.md": "You are Nova, brief.", "team/dev/SOUL.md": "You are Kai."})
+        self.assertEqual(self.adapter.seeded, [{"SOUL.md": "You are Nova, brief.", "team/dev/SOUL.md": "You are Kai."}])
+        self.assertEqual(self.adapter.updates, 0)  # no config rewrite, so no restart
+
+    def test_a_removed_file_or_a_suspended_agent_writes_nothing(self):
+        self._change({"GOALS.md": "x", "SOUL.md": "y"}, {"SOUL.md": "y"})
+        self._change({"SOUL.md": "y"}, {"SOUL.md": "z"}, desiredState="Suspended")
+        self.assertEqual(self.adapter.seeded, [])
+
+    def test_other_spec_edits_do_not_touch_the_workspace(self):
+        C.on_capabilities_change(reason="update", old=["exec"], new=[], spec=spec("vkumar4", workspace={"GOALS.md": "x"}),
+                                 status={}, name="nova", namespace="user-vkumar4", patch=Patch(), logger=Logger())
+        self.assertEqual((self.adapter.updates, self.adapter.seeded), (1, []))

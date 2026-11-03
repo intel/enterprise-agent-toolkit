@@ -652,6 +652,8 @@ class LifecycleTest(unittest.TestCase):
         a.create(_ctx())
         tmpl = client.created[0]["spec"].template
         self.assertEqual(json_format.MessageToDict(tmpl.resources)["limits"]["memory"], "4Gi")  # not the 1Gi default
+        env = dict(client.created[0]["spec"].environment)
+        self.assertEqual(env["OPENCLAW_CHILD_OOM_SCORE_ADJ"], "0")  # no oom_score_adj error in exec output
         self.assertEqual(dict(tmpl.annotations), {oa.DNS_CAPTURE_ANNOTATION: "false"})
         policy = next(args[1] for name, args in k8s.calls
                       if name == "create_namespaced_network_policy" and args[1]["metadata"]["name"] == oa.MESH_POLICY)
@@ -745,11 +747,29 @@ class LifecycleTest(unittest.TestCase):
 
     def test_an_update_restarts_openclaw_without_matching_its_own_shell(self):
         a, client, *_ = _adapter()
-        a.update(_ctx(), reseed=False)
+        a.update(_ctx())
         restart = [argv for argv, _ in client.execs if "pkill" in " ".join(argv)]
         self.assertEqual(len(restart), 1)
         self.assertIn("'[o]penclaw-gateway'", restart[0][-1])  # 'openclaw-gateway' would match sh -c itself
         self.assertNotIn(" openclaw-gateway", restart[0][-1])
+
+    def test_every_tool_is_in_the_prompt_and_the_log_outlives_a_restart(self):
+        a, *_ = _adapter()
+        cfg = json.loads(a._config_json(_ctx()))
+        self.assertIs(cfg["tools"]["toolSearch"], False)
+        self.assertEqual(cfg["logging"]["file"], oa.LOG_PATH)
+        self.assertTrue(oa.LOG_PATH.startswith("/sandbox/"))  # /tmp is wiped on every restart
+
+    def test_an_update_writes_no_workspace_file_and_seed_writes_only_what_it_is_given(self):
+        client = _Client()
+        client.unavailable = ()
+        a, client, *_ = _adapter(client=client)
+        ctx = _ctx(files={"GOALS.md": "seed", "SOUL.md": "you are Nova"})
+        a.update(ctx)
+        self.assertFalse([argv for argv, _ in client.execs if argv[-1].startswith(oa.WORKSPACE)])
+        a.seed(ctx, {"SOUL.md": "you are Nova, brief"})
+        written = [argv[-1] for argv, _ in client.execs if argv[-1].startswith(oa.WORKSPACE)]
+        self.assertEqual(written, [f"{oa.WORKSPACE}/SOUL.md"])
 
     def test_seeding_writes_safe_paths_only_and_decodes_base64(self):
         a, client, *_ = _adapter()

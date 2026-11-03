@@ -129,13 +129,14 @@ class ClawAdapter:
             self._patch_instance(ctx, body)
         return {"apiVersion": "openclaw.rocks/v1alpha1", "kind": "OpenClawInstance", "name": ctx.name}
 
-    def update(self, ctx, reseed=True):
-        """Patch the authored config, roll the pod if it changed, then re-seed the workspace."""
-        changed = self._patch_instance(ctx)
-        if reseed and ctx.workspace_files:
-            if changed:
-                self._wait_pod_ready(ctx)
-            self._seed_files(ctx, ctx.workspace_files)
+    def update(self, ctx):
+        """Patch the authored config; the pod rolls if it changed. The workspace is on a volume."""
+        self._patch_instance(ctx)
+
+    def seed(self, ctx, files):
+        """Write the spec.workspace files whose content changed."""
+        self._wait_pod_ready(ctx)
+        self._seed_files(ctx, files)
 
     def post_create(self, ctx):
         if ctx.workspace_files:

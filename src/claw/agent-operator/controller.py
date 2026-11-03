@@ -496,7 +496,6 @@ def on_desired_state(new, old, status, spec, name, namespace, patch, logger, **_
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.skills")
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.tools")
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.toolsDeny")
-@kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.workspace")
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.model")
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.modelSecretRef")
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.githubTokenSecretRef")
@@ -519,6 +518,28 @@ def on_capabilities_change(reason, old, new, spec, status, name, namespace, patc
         logger.info(f"Agent '{name}': backend re-provisioned")
     except Exception as e:
         logger.warning(f"Agent '{name}': re-provision failed: {e}")
+
+
+@kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.workspace")
+def on_workspace_change(reason, old, new, spec, name, namespace, patch, logger, **_):
+    """Write only the files whose spec content changed. The agents keep editing the others
+    (a team's GOALS.md, DECISIONS.md), and other spec edits leave the workspace alone."""
+    if reason == kopf.Reason.CREATE or old == new or not _owner_ns_matches(spec, namespace):
+        return
+    old = old or {}
+    changed = {path: content for path, content in (new or {}).items() if old.get(path) != content}
+    if not changed:
+        return  # only removals: the files stay, as the agent may still use them
+    if spec.get("desiredState") == "Suspended":
+        logger.warning(f"Agent '{name}' is suspended: workspace changes to {sorted(changed)} are not written")
+        return
+    ctx = AgentContext(name, spec, logger)
+    try:
+        _grant_agent_ns_exec(ctx.namespace, logger)
+        _get_adapter(spec).seed(ctx, changed)
+        patch.status["lastActivity"] = _now()
+    except Exception as e:
+        logger.warning(f"Agent '{name}': workspace update failed: {e}")
 
 
 @kopf.on.field(API_GROUP, API_VERSION, AGENT_PLURAL, field="spec.webFetchAllowlist")
@@ -745,7 +766,7 @@ def on_tool_event(logger, **_):
                 or not _owner_ns_matches(spec, agent["metadata"]["namespace"])):
             continue
         try:
-            _get_adapter(spec).update(AgentContext(name, spec, logger), reseed=False)
+            _get_adapter(spec).update(AgentContext(name, spec, logger))
         except Exception as e:
             logger.warning(f"Agent '{name}': tool re-wiring failed: {e}")
 
