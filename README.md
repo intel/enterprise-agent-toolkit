@@ -89,7 +89,7 @@ Most organizations waste months stitching together LiteLLM, Redis, pgvector, Kub
 
 ## Architecture
 
-![Intel® Agent Toolkit Architecture](docs/pictures/Enterprise-Agent-Toolkit-Arch-Diagram.png)
+![Intel® Agent Toolkit architecture: your agent (LangGraph, CrewAI, OpenClaw, Microsoft Agent Framework) sits on top; below are seven blocks — API gateway and policy (LiteLLM, auth, rate limits), memory and state (Redis, PostgreSQL, pgvector), inference and routing (vLLM, SGLang, cloud LLMs), actions and tools (MCP servers), sandbox (Agent Sandbox, OpenShell), observability (Langfuse, Prometheus, Grafana), and deployment and scaling (Ansible, Helm, autoscaling) — then the platform (Kubernetes, Docker Compose) and compute (Intel® Xeon® for orchestration and execution, GPUs and cloud LLMs for inference)](docs/pictures/intel-agent-toolkit-architecture.png)
 
 The toolkit is organized into **seven pluggable provider blocks**, each with a default implementation and a defined interface. Customers can use the defaults on day one and swap or extend individual providers as their needs evolve — without touching any other layer.
 
