@@ -5,6 +5,7 @@
 import * as k8s from "@kubernetes/client-node";
 import { ownerNamespace } from "./identity.js";
 import { expandCaps } from "./capabilities.js";
+import { gatewayConfig, gatewayModelProblem, listGateways } from "./models.js";
 
 const GROUP = "intel-stack.io";
 const VERSION = "v1alpha1";
@@ -84,6 +85,10 @@ export async function listRegisteredTools(): Promise<ToolEntry[]> {
       description: typeof t.spec.description === "string" ? t.spec.description : "",
     }));
 }
+
+const badRequest = (message: string): never => {
+  throw Object.assign(new Error(message), { status: 400 });
+};
 
 // ── Agents ───────────────────────────────────────────────────────────────────
 // agent-<username>-<name>: the agent's own namespace (its Agent lives in user-<username>).
@@ -196,14 +201,52 @@ async function pruneAgentSecrets(ns: string, agent: string, prefix: string, keep
   }
 }
 
-export interface ModelFields { provider?: string; id?: string; name?: string; baseUrl?: string }
+export interface ModelFields { provider?: string; id?: string; name?: string; baseUrl?: string; contextWindow?: number }
 
 const modelSpecOf = (m: ModelFields) =>
-  Object.fromEntries(Object.entries({ provider: m.provider, id: m.id, name: m.name, baseUrl: m.baseUrl }).filter(([, v]) => v));
+  Object.fromEntries(Object.entries({
+    provider: m.provider, id: m.id, name: m.name, baseUrl: m.baseUrl,
+    contextWindow: Number.isInteger(m.contextWindow) && m.contextWindow! > 0 ? m.contextWindow : undefined,
+  }).filter(([, v]) => v));
+
+/** A model change on an openshell agent: one of the cluster's gateways, no base URL or key. */
+export function validateOpenShellModel(model: ModelFields, apiKey?: string): void {
+  if (model.baseUrl || apiKey) {
+    badRequest("openshell agents use the cluster's model gateway: a model base URL or API key is not supported");
+  }
+  const gateways = gatewayConfig().map((g) => g.name);
+  if (model.provider && gateways.length && !gateways.includes(model.provider)) {
+    badRequest(`openshell agents use model provider ${gateways.join(" or ")}, not '${model.provider}'`);
+  }
+}
+
+/** The merge patch for a model edit, and the model the agent then runs. A merge patch keeps fields
+ *  it does not name: a new model without a size must not keep the old one's, which may be more
+ *  than the new model serves. */
+export function modelChange(current: ModelFields | undefined, model: ModelFields): { patch: any; effective: ModelFields } {
+  const patch: any = modelSpecOf(model);
+  const { contextWindow, ...rest }: ModelFields = { ...(current ?? {}), ...patch };
+  if ((patch.id || patch.provider) && !patch.contextWindow && current?.contextWindow) {
+    return { patch: { ...patch, contextWindow: null }, effective: rest };
+  }
+  return { patch, effective: contextWindow ? { ...rest, contextWindow } : rest };
+}
+
+/** An openshell agent's model must be one its gateway serves now, with room for an agent. */
+export async function checkServedModel(model: ModelFields): Promise<void> {
+  const problem = gatewayModelProblem(model, await listGateways(), process.env.DEFAULT_MODEL || "");
+  if (problem) badRequest(problem);
+}
 
 export async function updateAgentModel(namespace: string, name: string, model: ModelFields, apiKey?: string, rv?: string) {
+  const current = await getAgent(namespace, name);
+  const { patch, effective } = modelChange(current?.spec?.model, model);
+  if (current?.spec?.runtime === "openshell") {
+    validateOpenShellModel(model, apiKey);
+    await checkServedModel(effective);
+  }
   const spec: any = {};
-  if (Object.keys(modelSpecOf(model)).length) spec.model = modelSpecOf(model);
+  if (Object.keys(patch).length) spec.model = patch;
   const backendNs = apiKey ? await backendNamespaceOf(namespace, name) : "";
   if (apiKey) spec.modelSecretRef = await writeAgentSecret(backendNs, name, `${name}-model-credentials`, { apiKey });
   if (!Object.keys(spec).length) throw Object.assign(new Error("no model fields to update"), { status: 400 });
@@ -233,6 +276,7 @@ export interface CreateAgentInput {
   webFetchAllowlist?: string[];
   githubToken?: string;
   model?: ModelFields & { apiKey?: string };
+  runtime?: string;       // "claw" (default) or "openshell", when the cluster enables it
   requestId?: string;     // joins operator logs to this request and its audit row
 }
 
@@ -242,9 +286,38 @@ const NAME_RE = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
 const USERNAME_RE = /^[a-z0-9]{1,39}$/;
 const MAX_DERIVED_NAME = 63;
 
-const badRequest = (message: string): never => {
-  throw Object.assign(new Error(message), { status: 400 });
-};
+
+// OpenShell workspace names (the agent namespace) are at most 19 characters.
+export const OPENSHELL_MAX_NAMESPACE = 19;
+
+/** The runtimes this cluster runs agents on; openshell only with the OpenShell component. */
+export function enabledRuntimes(): string[] {
+  return ["claw", ...((process.env.OPENSHELL_ENABLED || "").trim().toLowerCase() === "true" ? ["openshell"] : [])];
+}
+
+/** The Agent's runtime, refused here with the operator's reasons so the caller sees them at once. */
+export function validateRuntime(runtime: string | undefined, name: string, ownerUsername: string,
+                                model?: ModelFields & { apiKey?: string }): string {
+  const rt = (runtime || "claw").trim();
+  if (!enabledRuntimes().includes(rt)) badRequest(`runtime '${rt}' is not available on this cluster`);
+  if (rt === "openshell") {
+    const ns = agentNamespace(ownerUsername, name);
+    if (ns.length > OPENSHELL_MAX_NAMESPACE) {
+      const room = OPENSHELL_MAX_NAMESPACE - agentNamespace(ownerUsername, "").length;
+      badRequest(`openshell agents need a namespace of at most ${OPENSHELL_MAX_NAMESPACE} characters: '${ns}' is ` +
+        `${ns.length}; ${room > 0 ? `use an agent name of at most ${room} characters` : "this username leaves no room for an agent name"}`);
+    }
+    // The sandbox reaches models only through the cluster's gateways, which hold any key.
+    if (model?.baseUrl || model?.apiKey) {
+      badRequest("openshell agents use the cluster's model gateway: a model base URL or API key is not supported");
+    }
+    const gateways = gatewayConfig().map((g) => g.name);
+    if (model?.provider && gateways.length && !gateways.includes(model.provider)) {
+      badRequest(`openshell agents use model provider ${gateways.join(" or ")}, not '${model.provider}'`);
+    }
+  }
+  return rt;
+}
 
 export function validateAgentNaming(name: string, ownerUsername?: string): string {
   if (!NAME_RE.test(name)) {
@@ -281,9 +354,11 @@ export async function ensureOwnerNamespace(username: string): Promise<string> {
 
 export async function createAgent(input: CreateAgentInput): Promise<any> {
   const username = validateAgentNaming(input.name, input.ownerUsername);
+  const runtime = validateRuntime(input.runtime, input.name, username, input.model);
+  if (runtime === "openshell") await checkServedModel(input.model ?? {});
   const ns = await ensureOwnerNamespace(username);
   const spec: any = {
-    runtime: "claw",
+    runtime,
     owner: { principal: input.owner, username },
     desiredState: "Running",
     skills: input.skills?.length ? input.skills : ["shell", "read_file", "list_files"],

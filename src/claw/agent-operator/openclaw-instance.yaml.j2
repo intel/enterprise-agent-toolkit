@@ -76,6 +76,9 @@ spec:
         [[ key | tojson ]]: [[ value | tojson ]]
         [% endfor %]
         deny: [[ (["create_goal", "update_goal", "get_goal"] + (tools_deny or [])) | tojson ]]
+        # Every tool in the prompt: 2026.10 hides most behind tool_search/tool_call for local
+        # models, which they call wrongly ("Tool sessions_spawn not found").
+        toolSearch: false
         [% if web_fetch_proxy %]
         # The proxy env below is operator-set, so web_fetch may trust it.
         web:

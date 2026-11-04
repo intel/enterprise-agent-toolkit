@@ -56,9 +56,10 @@ class ReconcileGuardTest(unittest.TestCase):
     """Guards run before anything touches the cluster, so these run offline."""
 
     def setUp(self):
-        self.saved = C.ADAPTER
-        C.ADAPTER = _Adapter()
-        self.addCleanup(setattr, C, "ADAPTER", self.saved)
+        self.saved = dict(C.ADAPTERS)
+        C.ADAPTERS.clear()
+        C.ADAPTERS["claw"] = _Adapter()
+        self.addCleanup(lambda: (C.ADAPTERS.clear(), C.ADAPTERS.update(self.saved)))
 
     def _reconcile(self, name, username, namespace=None):
         patch, logger = Patch(), Logger()

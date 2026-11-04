@@ -39,9 +39,15 @@ spec:
               properties:
                 runtime:
                   type: string
-                  description: Agent runtime.
-                  enum: [claw]
+                  description: >-
+                    Agent runtime: claw (an OpenClawInstance) or openshell (OpenClaw in an
+                    OpenShell sandbox in the agent namespace, which may then be at most 19
+                    characters). Fixed once the Agent exists.
+                  enum: [claw, openshell]
                   default: claw
+                  x-kubernetes-validations:
+                    - rule: self == oldSelf
+                      message: runtime cannot be changed; delete and recreate the Agent
                 owner:
                   type: object
                   required: [principal, username]
@@ -78,6 +84,12 @@ spec:
                     baseUrl:
                       type: string
                       description: OpenAI-compatible base URL.
+                    contextWindow:
+                      type: integer
+                      minimum: 0
+                      description: >-
+                        The model's context size in tokens, as its gateway reports it; 0 or unset
+                        uses the cluster model's size for that model and OpenClaw's default otherwise.
                 modelSecretRef:
                   type: string
                   description: Secret in the agent namespace holding key `apiKey`.
@@ -161,6 +173,17 @@ spec:
                       type: string
                     name:
                       type: string
+                sandboxRestarts:
+                  type: object
+                  description: >-
+                    openshell runtime: how often the operator started a sandbox OpenShell had
+                    stopped (out of memory, for example), and when last; it backs off by this.
+                  properties:
+                    count:
+                      type: integer
+                    lastStartAt:
+                      type: string
+                      format: date-time
                 conditions:
                   type: array
                   items:

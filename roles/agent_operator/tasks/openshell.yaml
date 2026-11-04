@@ -1,0 +1,167 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# The openshell agent runtime: what the operator needs from the openshell component.
+
+- name: "agent_operator | openshell | Check the OpenShell gateway is installed"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ claw_openshell_client_tls_secret }}"
+    namespace: "{{ claw_openshell_namespace }}"
+  register: _ao_os_tls
+  no_log: true
+  failed_when: _ao_os_tls.resources | default([]) | length == 0
+
+# Before the operator image: claw_image publishes the reference of the image it built last.
+- name: "agent_operator | openshell | Build the OpenClaw sandbox image"
+  ansible.builtin.include_role:
+    name: claw_image
+  vars:
+    claw_image_name: openclaw-sandbox
+    claw_image_context: "{{ role_path }}/../../src/claw/openclaw-sandbox"
+
+- name: "agent_operator | openshell | Record the sandbox image"
+  ansible.builtin.set_fact:
+    _ao_openshell_sandbox_image: "{{ claw_image_repository }}:{{ claw_image_tag }}"
+
+# The gateway's client certificate is the operator's credential; a Secret can only be mounted
+# from its own namespace.
+- name: "agent_operator | openshell | Copy the gateway client certificate"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: "{{ _ao_os_tls.resources[0].type }}"
+      metadata:
+        name: "{{ claw_openshell_client_tls_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+        labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+      data:
+        ca.crt: "{{ _ao_os_tls.resources[0].data['ca.crt'] }}"
+        tls.crt: "{{ _ao_os_tls.resources[0].data['tls.crt'] }}"
+        tls.key: "{{ _ao_os_tls.resources[0].data['tls.key'] }}"
+  no_log: true
+
+# The platform gateway verifies the OpenShell gateway against this CA (the chart's Backend).
+- name: "agent_operator | openshell | Publish the gateway CA"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ claw_openshell_ca_configmap }}"
+        namespace: "{{ claw_openshell_namespace }}"
+        labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+      data:
+        ca.crt: "{{ _ao_os_tls.resources[0].data['ca.crt'] | b64decode }}"
+
+# A key per agent, owned by its user, needs a key that may create users and keys: owned by a
+# proxy_admin LiteLLM user (LiteLLM lets other keys create keys only for themselves), and limited to
+# the management routes so it cannot call models (/model/info gives the models' context sizes;
+# /key/list and /key/update limit agent keys minted before their routes were).
+# Minted once, inside the LiteLLM pod, so the master key never leaves it.
+- name: "agent_operator | openshell | LiteLLM key for per-agent keys"
+  when: claw_openshell_agent_keys | bool and claw_litellm_present | bool
+  vars:
+    _ao_ll_admin_routes: ["/key/generate", "/key/delete", "/key/info", "/key/list", "/key/update",
+                          "/user/new", "/user/info", "/user/update", "/model/info"]
+  block:
+    - name: "agent_operator | openshell | Check for the LiteLLM admin key"
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ claw_litellm_admin_secret }}"
+        namespace: "{{ agent_operator_namespace }}"
+      register: _ao_ll_admin
+      no_log: true
+
+    - name: "agent_operator | openshell | Mint the LiteLLM admin key"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ litellm_namespace | default('litellm') }}"
+          - "deploy/{{ openshell_genai_deployment | default('litellm') }}"
+          - -c
+          - litellm
+          - --
+          - python
+          - -c
+          - |
+            import json, os, urllib.error, urllib.request
+            def post(path, body, ok=(200,)):
+                req = urllib.request.Request("http://127.0.0.1:4000" + path, json.dumps(body).encode(),
+                    {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"})
+                try:
+                    return json.load(urllib.request.urlopen(req))
+                except urllib.error.HTTPError as e:
+                    if e.code not in ok:
+                        raise
+                    return {}
+            # auto_create_key: LiteLLM otherwise mints this admin user a full key nobody holds.
+            post("/user/new", {"user_id": "{{ claw_litellm_admin_user }}", "user_role": "proxy_admin",
+                               "auto_create_key": False}, ok=(200, 409))
+            post("/key/delete", {"key_aliases": ["{{ claw_litellm_admin_user }}-keys"]}, ok=(200, 400, 404))
+            print(post("/key/generate", {"key_alias": "{{ claw_litellm_admin_user }}-keys",
+                "user_id": "{{ claw_litellm_admin_user }}", "max_budget": 0.01,
+                "allowed_routes": {{ _ao_ll_admin_routes | to_json }}})["key"])
+      register: _ao_ll_mint
+      changed_when: true
+      no_log: true
+      when: _ao_ll_admin.resources | default([]) | length == 0
+
+    # An upgrade keeps the key the operator holds and brings its routes up to date, by alias, and
+    # removes keys of the admin user that nobody holds.
+    - name: "agent_operator | openshell | Keep the LiteLLM admin key's routes"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - exec
+          - -n
+          - "{{ litellm_namespace | default('litellm') }}"
+          - "deploy/{{ openshell_genai_deployment | default('litellm') }}"
+          - -c
+          - litellm
+          - --
+          - python
+          - -c
+          - |
+            import json, os, urllib.request
+            H = {"Authorization": "Bearer " + os.environ["PROXY_MASTER_KEY"], "Content-Type": "application/json"}
+            def call(path, body=None):
+                req = urllib.request.Request("http://127.0.0.1:4000" + path, json.dumps(body).encode() if body else None, H)
+                return json.load(urllib.request.urlopen(req))
+            routes = {{ _ao_ll_admin_routes | to_json }}
+            keys = call("/key/list?key_alias={{ claw_litellm_admin_user }}-keys&return_full_object=true").get("keys") or []
+            stale = [k["token"] for k in keys if isinstance(k, dict) and sorted(k.get("allowed_routes") or []) != sorted(routes)]
+            for token in stale:
+                call("/key/update", {"key": token, "allowed_routes": routes})
+            # Before auto_create_key was off, creating the admin user also minted it a full key
+            # without an alias, which nobody holds; only the aliased key above is the operator's.
+            owned = call("/key/list?user_id={{ claw_litellm_admin_user }}&return_full_object=true").get("keys") or []
+            unheld = [k["token"] for k in owned if isinstance(k, dict) and not k.get("key_alias")]
+            if unheld:
+                call("/key/delete", {"keys": unheld})
+            print("updated" if stale or unheld else "current")
+      register: _ao_ll_routes
+      changed_when: _ao_ll_routes.stdout | trim == 'updated'
+
+    - name: "agent_operator | openshell | Store the LiteLLM admin key"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ claw_litellm_admin_secret }}"
+            namespace: "{{ agent_operator_namespace }}"
+            labels: {app.kubernetes.io/managed-by: agentic-ai-stack}
+          stringData:
+            api_key: "{{ _ao_ll_mint.stdout | trim }}"
+      no_log: true
+      when: _ao_ll_mint is changed

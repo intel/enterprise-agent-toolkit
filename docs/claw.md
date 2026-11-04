@@ -12,6 +12,7 @@ output, follow [claw-e2e.md](claw-e2e.md).
 
 **Contents:** [Components](#components) · [Enable](#enable) · [Create an agent](#create-an-agent) ·
 [Memory](#memory) · [Tools](#tools) · [Sandbox, GitHub and web access](#sandbox-github-and-web-access) ·
+[OpenShell runtime](#openshell-runtime) ·
 [Console and dashboards](#console-and-dashboards) · [REST API](#rest-api) ·
 [Run an OpenClaw instance directly](#run-an-openclaw-instance-directly) ·
 [Configuration](#configuration) · [Security](#security) · [Validate and remove](#validate-and-remove) ·
@@ -110,10 +111,11 @@ automatically. The chat walkthrough is in [claw-e2e.md](claw-e2e.md#create-an-ag
 | Field | Meaning |
 |---|---|
 | `owner.principal`, `owner.username` | Required. The username (`[a-z0-9]{1,39}`) keys every derived name |
+| `runtime` | `claw` (default) or `openshell` ([OpenShell runtime](#openshell-runtime)); cannot be changed later |
 | `desiredState` | `Running` (default) or `Suspended` |
 | `skills` | OpenClaw capabilities, for example `shell`, `read_file`, `list_files`, and the [tools](#tools) to wire |
 | `workspace` | Files seeded into the agent's workspace, keyed by relative path |
-| `model` | Per-agent model override (`provider`, `id`, `name`, `baseUrl`) |
+| `model` | Per-agent model override (`provider`, `id`, `name`, `baseUrl`, `contextWindow`); see [Context size](#context-size) |
 | `modelSecretRef` | Secret in the agent namespace with key `apiKey`, for an overridden model |
 | `githubTokenSecretRef` | Secret in the agent namespace with key `token`: the agent's own GitHub PAT |
 | `webFetchAllowlist` | Domains `web_fetch` may reach, subdomains included; `*` allows any public site; empty (default) allows none |
@@ -134,7 +136,12 @@ reach only its own memory. Calls without a valid token are refused, and agent po
 the server except through their proxy. Each call is logged with the caller, for example
 `AUDIT memory_read azp=agent-alice-demo schema=agent_alice_demo tier=auto hits=1`.
 
-OpenClaw's built-in memory search uses the same embedding model through the inference gateway.
+OpenClaw's built-in memory search uses the same embedding model. Both reach it at
+`claw_embedding_base_url`: by default, the embedding model's own KServe URL through the AI
+Gateway (`…/llm-inference/bge-base-en/v1`). The AI Gateway's shared `/v1` serves only models
+that have an AI Gateway route, and an embedding model deployed for LiteLLM has none, so there
+`memory_write` would fail with `404`. `openshell` agents with LiteLLM embed through LiteLLM
+instead, with their own key.
 
 ---
 
@@ -182,6 +189,135 @@ is set. An allowlist edit takes effect within a minute, without a restart.
 
 ---
 
+## OpenShell runtime
+
+An `Agent` with `runtime: openshell` runs the same OpenClaw agent inside an
+[NVIDIA OpenShell](openshell.md) sandbox instead of an `OpenClawInstance`. Its memory,
+tools, identity proxy, Keycloak client, console and `/gw/` route are the same; what changes
+is how the agent process is confined:
+
+- **Every connection is checked.** The agent runs in a workload pod that can reach only its
+  supervisor pod, and the supervisor allows only the agent's identity-proxy ports, the
+  `spec.webFetchAllowlist` domains (for OpenClaw itself) and PyPI (`pypi.org`, `files.pythonhosted.org`,
+  for Python).
+  Everything else, including other cluster services, is refused.
+- **The model key never enters the pod.** Each agent namespace gets an OpenShell provider
+  that holds the key; the agent sees a placeholder, and the supervisor adds the key only to
+  requests to the GenAI Gateway. With `claw_openshell_agent_keys` (on), that key is the
+  agent's own LiteLLM key (alias `agent-<username>-<name>`), owned by its user in LiteLLM, so
+  LiteLLM records tokens per agent and per user; deleting the agent deletes its key.
+  - The supervisor adds the key to any request from the sandbox to LiteLLM, so the key may call
+    only model routes (chat, completions, responses, embeddings, model list). Code in the sandbox
+    can't use it to mint or list keys.
+  - Memory embeddings go through LiteLLM with the same key.
+  - Only agents whose provider is `ai-gateway` may reach the AI Gateway. Their chats bypass
+    LiteLLM and are not counted there.
+- **Code runs in the agent's own pod.** OpenClaw's `exec` is always on and runs inside the
+  sandbox, so the `sandbox` MCP is not used; the agent installs packages into a venv under
+  `/sandbox`.
+- **The agent namespace is the sandbox's namespace** (an OpenShell workspace). Its quota,
+  LimitRange and Pod Security level apply to the sandbox pods too. In the ambient mesh, the
+  sandbox stays meshed but opts out of DNS capture, and may use the mesh tunnel between its
+  two pods (see [Network isolation](openshell.md#network-isolation)).
+
+Enable it with OpenShell (which needs Agent Sandbox) and claw:
+
+```yaml
+# env/<env>/config.agent-toolkit.yaml
+claw_enabled: true
+agent_sandbox_enabled: true
+openshell_enabled: true
+```
+
+Then pick **openshell** as the runtime when creating an agent in the console (shown only when
+the cluster offers it, with the longest name your username allows), send `"runtime": "openshell"`
+to `POST /api/agents`, or create an `Agent` with `runtime: openshell`. The API refuses a
+name that is too long, or a model base URL or key, before the agent is created. Differences
+from `claw`:
+
+| | `openshell` |
+|---|---|
+| Agent namespace | At most 19 characters (`agent-<username>-<name>`), an OpenShell limit; a longer one makes the agent `Failed` with the longest name allowed |
+| Model | A gateway and one of its models (`spec.model.provider`, `spec.model.id`; the console lists both live): `genai-gateway` (LiteLLM: budgets and the content-safety guardrail, key injected by the supervisor) or `ai-gateway` (Envoy AI Gateway, no key; `claw_openshell_ai_gateway_enabled`, on by default). A model registered in LiteLLM appears in the list without a restart. `spec.model.baseUrl` and `spec.modelSecretRef` are not supported |
+| `spec.webFetchAllowlist` | Each domain and its subdomains, on ports 80 and 443, for OpenClaw's own requests; `*` is not granted. Edits apply to the running sandbox |
+| Suspend | Stops the sandbox (its pods go away, the workspace volume stays) and starts it again on resume |
+| A stopped sandbox | OpenShell stops a sandbox whose pods died, for example when the agent ran out of memory, and doesn't start it again. The operator starts it again, about 30 s later, then backing off up to 15 minutes between tries. The count and time are in `status.sandboxRestarts`, and each start is a warning in the operator's log. It can't tell that from `openshell sandbox stop`, so to keep an agent stopped, suspend it (`desiredState: Suspended`) |
+| Workspace files | Written through the OpenShell gateway, not `kubectl exec` |
+
+**Without LiteLLM.** The inference layer runs LiteLLM (the GenAI Gateway) only with
+`auth_type: litellm_vkey` or `litellm_enabled: true`. When the install finds no LiteLLM, the AI
+Gateway is the only gateway, whatever `claw_openshell_ai_gateway_enabled` says:
+- Agents get no OpenShell provider and no key.
+- Chat goes to the AI Gateway, which their policy allows. Memory embeddings go to the embedding
+  model's own URL through it (`claw_embedding_base_url`): the AI Gateway's shared `/v1` serves
+  only models that have an AI Gateway route, which the embedding model may not have.
+- An agent whose `spec.model.provider` is `genai-gateway` fails, with a message to switch it
+  to `ai-gateway`, rather than silently losing LiteLLM's accounting and guardrail.
+- The console offers only the AI Gateway.
+- There are no per-agent keys, no usage per agent or user, no limits, and no content-safety
+  guardrail.
+- Context sizes are still read, from each model's own URL (`claw_model_server_url`), and
+  checked as with LiteLLM. Only a model KServe doesn't serve has an unknown size, and agents on
+  it assume `32768`.
+
+The fence is the same: the agent reaches only the AI Gateway, its identity proxy, its allowlist
+and PyPI.
+
+**Adding LiteLLM later.** Each component reads whether LiteLLM is there when it is installed, so
+after deploying LiteLLM (`litellm_enabled: true`, then `install postgresql` and `install litellm`):
+
+1. Register the models already running: model-manager registers a model only when it deploys
+   it, and reads `auth_type` from the inference config, so
+   `MM_LITELLM_ENABLED=true ./model-manager deploy <model> --wait` for each. With an unchanged
+   spec this only registers it.
+2. Re-install `openshell`, `agent_operator` and `agent_backend` (`--only`).
+
+The console then offers the GenAI Gateway. Each existing agent gets its own LiteLLM key, and the
+GenAI Gateway provider is attached to its sandbox. That restarts the sandbox once, and its
+workspace stays. Its memory embeddings then go through LiteLLM, and its chat stays on the gateway
+its spec names.
+
+Users reach an `openshell` agent at the same `/gw/<owner ns>/<name>/` path. The route goes to
+the OpenShell gateway, which relays to the agent's sandbox; OpenClaw listens on loopback only
+and trusts the user name only from that relay. OpenClaw's own loopback clients, such as a
+subagent handing its result back to the agent that spawned it, send no user name; they use a
+password the operator keeps in Secret `openclaw-gateway-password` in the agent namespace. It
+opens only that agent's own gateway, and only from inside its sandbox. The gateway's port accepts only the
+supervisors, the agent operator and the platform gateway (`openshell-gateway-ingress`). The
+platform gateway reaches it through an Envoy Gateway `Backend` (TLS checked against the OpenShell
+CA, HTTP/1.1 only, which the dashboard's WebSocket needs), so Envoy Gateway's Backend API must
+be enabled, as the platform's `envoy_gateway` role does.
+
+
+### Context size
+
+OpenClaw plans each conversation for a context size and compacts it only near that size. Unset,
+it assumes 200000 tokens, more than most self-hosted models serve: a long conversation would
+then fail at the model instead of being compacted. The operator gives OpenClaw:
+
+1. the agent's `spec.model.contextWindow` (the console sends the size the gateway lists), else
+2. `claw_model_context_window` for the cluster's own model, else
+3. for `openshell` agents, the size the model serves, else
+4. `32768`.
+
+The served size is the model server's own `max_model_len`:
+- It's read at the server LiteLLM lists for the model, else at the model's own URL,
+  `claw_model_server_url`. KServe serves each model at `/<namespace>/<name>`, also through the
+  AI Gateway, so this works without LiteLLM.
+- LiteLLM's own figure is used only when neither server says.
+
+It never gives more than the model serves, where it can read that. The agent's `ModelContext`
+condition shows the size, and is `False` (reason `SizeAdjusted`) when the size was assumed,
+capped, or is under `32768`. That is a warning: the agent still runs.
+
+OpenClaw's own system prompt is about 19,500 tokens a turn, so an agent needs at least `32768`.
+For `openshell` agents, the API refuses a model the gateway does not serve, a model serving
+less than that, and a `contextWindow` under `32768` or over what the model serves. The console
+shows such models greyed out, and marks models whose size the gateway does not report.
+Changing an agent's model without a size drops the old model's size.
+
+---
+
 ## Console and dashboards
 
 Open `https://agents.<base_domain_name>/` and sign in with Keycloak. The console lists your
@@ -219,7 +355,7 @@ curl -s https://agents.<base_domain_name>/api/agents -H "Authorization: Bearer $
 | Method and path | Needs | Does |
 |---|---|---|
 | `GET /api/agents` | viewer, `agent:read` | Agents you own and agents shared with you |
-| `POST /api/agents` | editor, `agent:write` | Create an agent owned by you; `202` with the `href` to poll |
+| `POST /api/agents` | editor, `agent:write` | Create an agent owned by you; `202` with the `href` to poll. `"runtime": "openshell"` picks the [OpenShell runtime](#openshell-runtime) where the cluster offers it (`GET /api/me` lists `runtimes`) |
 | `GET` / `PATCH` / `DELETE /api/agents/<ns>/<name>` | `view` / owner / `delete` | Read, edit (skills, tools, workspace, model, keys, allowlist) or delete |
 | `POST /api/agents/<ns>/<name>/suspend`, `/resume` | `suspend-resume` | Change the desired state |
 | `GET /api/agents/<ns>/<name>/provisioning` | `view` | The operator's provisioning steps |
@@ -268,9 +404,14 @@ in the role defaults ([`openclaw_operator`](../roles/openclaw_operator/defaults/
 |---|---|---|
 | `claw_enabled` | `false` | Turns claw on |
 | `claw_model_id` | first of `llm_services_autodeploy_models` | Model every agent uses unless its `spec.model` overrides it |
-| `claw_model_context_window` | `32768` | The model's served `max_model_len`; `0` lets OpenClaw assume 200000 |
+| `claw_model_context_window` | `32768` | Tokens OpenClaw plans a conversation for with `claw_model_id`: at least `32768` and at most what the model serves, both checked by the install; `0` for the served size (see [Context size](#context-size)) |
 | `claw_embedding_model`, `claw_embedding_dim` | `bge-base-en`, `768` | Embedding model for memory and its vector size |
+| `claw_embedding_base_url` | The embedding model's own URL (`claw_model_server_url`) | Where memory embeddings are made, by OpenClaw and the memory server |
 | `claw_web_fetch_proxy_enabled` | `true` | Per-agent web-fetch proxy; `false` leaves `web_fetch` without internet access |
+| `openshell_enabled` | `false` | Also enables the [`openshell` runtime](#openshell-runtime), with the OpenShell component |
+| `claw_openshell_agent_keys` | `true` | A LiteLLM key per `openshell` agent, owned by its user (usage per agent and user); `false` shares one key |
+| `claw_openshell_agent_tpm_limit`, `claw_openshell_agent_rpm_limit`, `claw_openshell_user_tpm_limit`, `claw_openshell_user_rpm_limit` | `0` | LiteLLM tokens and requests per minute, per agent key and per user; `0` = no limit. Dollar budgets need model prices set in LiteLLM |
+| `claw_openshell_ai_gateway_enabled` | `true` | Offer `openshell` agents the Envoy AI Gateway as well as the GenAI Gateway (LiteLLM). The AI Gateway skips LiteLLM's budgets and guardrail |
 | `mcp_servers_github_token_secret` | `mcp-github-token` | Secret (key `token`) with the shared GitHub token |
 | `claw_console_hostname` | `agents.<base_domain_name>` | Host of the console, the REST API and the agent dashboards |
 | `claw_console_enabled` | `true` | Browser sign-in and per-agent dashboard routes; `false` leaves only the API |
@@ -362,7 +503,7 @@ succeed when nothing is installed.
 | Agent `Failed`: `must be created in namespace 'user-…'` | The `Agent` is not in its owner's namespace | Create it in `user-<owner.username>` |
 | Agent `Running` with reason `degraded: IdentityReady` | The operator cannot reach Keycloak or its credentials are wrong | Check the operator log; re-run `install agent_operator` |
 | Agent pod `ImagePullBackOff` on `registry.kube-system…` | The node does not trust the cluster registry | Re-run `install agent_operator`, which configures every node |
-| Chat answers `Context overflow` | The inference gateway rejects large requests (`413`), or the context window does not match the model | `install agent_operator` raises the gateway limit; set `claw_model_context_window` |
+| Chat answers `Context overflow` | The inference gateway rejects large requests (`413`), or the context window does not match the model | `install agent_operator` raises the gateway limit; check the agent's `ModelContext` condition and set `claw_model_context_window` or `spec.model.contextWindow` |
 | Agent `Running` with reason `degraded: MemoryReady` | The operator cannot reach pgvector | Check `pgvector` is running; re-run `install agent_operator` |
 | `kubectl get tools` shows `Conflicting` | Another `Tool` already registers the skill | Delete one of them |
 | Agent answers but never calls `memory_read` / `memory_write` | Small models call tools unreliably | Name the tool in the request, or use a larger model |
@@ -387,3 +528,7 @@ More symptoms are listed in [claw-e2e.md](claw-e2e.md#if-it-does-not-work).
 - Break-glass covers the API only; an admin cannot open another user's dashboard.
 - Every turn sends the agent's ~19,500-token system prompt, so the first token of each turn is
   slow on a model that reads long prompts slowly.
+- `openshell` agents: the agent namespace is limited to 19 characters; all of them share the
+  cluster's model key and its budget; `PodReady` turns true a few seconds before OpenClaw
+  answers; and the agent can edit its own `openclaw.json` (as with `claw`), which changes its
+  behaviour but not what its sandbox policy allows.

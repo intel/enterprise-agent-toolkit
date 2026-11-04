@@ -119,3 +119,49 @@ webFetchProxy:
 identityProxy:
   portBase: 8901
   portSpan: 16
+
+# The openshell agent runtime (spec.runtime: openshell): OpenClaw in an OpenShell sandbox in the
+# agent namespace. Needs the openshell component (operator workspace mode).
+openshell:
+  enabled: false
+  namespace: openshell-system
+  # The gateway's Service, Helm release and ServiceAccount.
+  service: openshell
+  releaseName: openshell
+  serviceAccount: openshell
+  # The gateway's client certificate (copied into this namespace): the operator's credential.
+  clientTlsSecret: openshell-client-tls
+  # ConfigMap in `namespace` with the gateway CA (ca.crt), which the platform gateway trusts.
+  caConfigMap: openshell-gateway-ca
+  workspaceLabel: openshell.ai/workspace=eat
+  serviceDomain: openshell.localhost
+  sandboxImage: ""
+  providerName: genai-gateway
+  providerType: eat-genai-gateway
+  # Secret <namespace>/<name>/<key> with the cluster's model key, held by each workspace's provider.
+  modelKeySecret: openshell-system/openshell-genai-key/api_key
+  # The GenAI Gateway (LiteLLM): the provider profile's endpoint, the only model host the
+  # supervisor injects the key for. Empty when there is no LiteLLM: agents then use the AI
+  # Gateway (aiGatewayUrl, else agents.model.baseUrl) for chat and embeddings, with no key.
+  modelBaseUrl: ""
+  # The Envoy AI Gateway, which openshell agents may also use (spec.model.provider ai-gateway,
+  # no key); empty offers only the GenAI Gateway.
+  aiGatewayUrl: ""
+  # Each model's own OpenAI-compatible URL, "{model}" for its name (KServe's /<namespace>/<name>
+  # through the AI Gateway): where the operator reads a model's served size when LiteLLM can't.
+  modelServerUrl: ""
+  # Secret (key api_key) with a LiteLLM key that may manage users and keys: set, each agent gets
+  # its own key owned by its user; empty uses the shared key in modelKeySecret.
+  litellmAdminSecret: ""
+  # LiteLLM limits per agent key and per user, tokens and requests per minute (0 = none).
+  agentTpmLimit: 0
+  agentRpmLimit: 0
+  userTpmLimit: 0
+  userRpmLimit: 0
+  pypi: true
+  # The OpenClaw container in each sandbox; the same as the claw runtime's. Without it the
+  # namespace default (limitRange, 1Gi) applies, and OpenClaw 2026.10 is OOM-killed at start.
+  # Set when the sandbox is created: existing agents keep theirs until recreated.
+  sandboxResources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {cpu: "2", memory: 4Gi}

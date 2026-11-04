@@ -1,0 +1,62 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+{{- with .Values.openshell }}
+{{- if .enabled }}
+# The OpenShell gateway's access in each openshell agent namespace (its workspace): the rules
+# of the openshell-workspace chart's Role. The operator binds it per namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-operator-openshell-workspace
+  labels:
+    app.kubernetes.io/name: agent-operator
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes", "sandboxes/status"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+---
+# The agents' /gw/ routes, in the operator namespace, target this Backend.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: agent-operator-routes
+  namespace: {{ .namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+spec:
+  from:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: {{ $.Release.Namespace }}}
+  to:
+    - {group: gateway.envoyproxy.io, kind: Backend, name: agent-operator-openshell}
+---
+# The platform gateway's connection to the OpenShell gateway: TLS checked against the OpenShell
+# CA, and HTTP/1.1 only. Over TLS Envoy picks the HTTP version by ALPN, the OpenShell gateway
+# offers h2, and the dashboard's WebSocket fails over HTTP/2 (502), so ALPN offers http/1.1 alone.
+# The sandbox is chosen by Host, so one server name serves every agent.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: agent-operator-openshell
+  namespace: {{ .namespace }}
+  labels:
+    app.kubernetes.io/name: agent-operator
+spec:
+  appProtocols: [gateway.envoyproxy.io/wss]
+  endpoints:
+    - fqdn: {hostname: {{ printf "%s.%s.svc.cluster.local" .service .namespace }}, port: 8080}
+  tls:
+    sni: {{ .serviceDomain }}
+    alpnProtocols: ["http/1.1"]
+    caCertificateRefs:
+      - {group: "", kind: ConfigMap, name: {{ .caConfigMap }}}
+{{- end }}
+{{- end }}

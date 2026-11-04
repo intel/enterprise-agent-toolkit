@@ -6,6 +6,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { dirToWorkspace } from "@/lib/workspace";
 import { useRegisteredTools } from "@/lib/useRegisteredTools";
+import { useMe } from "@/lib/useMe";
+import GatewayModelPicker, { type ModelChoice } from "@/components/GatewayModelPicker";
 import { cn } from "@/lib/utils";
 import Field from "@/components/Field";
 import FileDrop from "@/components/FileDrop";
@@ -27,6 +29,9 @@ const ALL_SKILLS = [
 
 // The one tool with a per-agent credential (spec.githubTokenSecretRef).
 const GITHUB_SKILL = "github";
+
+// OpenShell workspace names (the agent namespace, agent-<username>-<name>) are at most 19 characters.
+const OPENSHELL_MAX_NAMESPACE = 19;
 
 function CheckboxRow({ checked, onChange, disabled, title, children }: { checked: boolean; onChange: () => void; disabled?: boolean; title?: string; children: React.ReactNode }) {
   return (
@@ -70,6 +75,13 @@ export default function NewAgentPage() {
   const [ghToken, setGhToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const me = useMe();
+  const [runtime, setRuntime] = useState("claw");
+  const openshell = runtime === "openshell";
+  // The gateway and model an openshell agent uses, from the picker.
+  const [osModel, setOsModel] = useState<ModelChoice | undefined>(undefined);
+  // The longest agent name an openshell namespace leaves room for; the API still decides.
+  const maxOpenshellName = me ? OPENSHELL_MAX_NAMESPACE - `agent-${me.username}-`.length : 0;
   // Registered Tools the caller may use, selectable as skills.
   const { tools: mcpTools, loading: mcpLoading, error: mcpError } = useRegisteredTools();
 
@@ -100,8 +112,11 @@ export default function NewAgentPage() {
     setBusy(true);
     setError("");
     try {
-      const model =
-        mProvider || mId || mName || mBaseUrl || mApiKey
+      // An openshell agent reaches models only through the cluster's gateways: a gateway and a model it
+      // serves, with the size the gateway reports; no URL or key.
+      const model = openshell
+        ? osModel
+        : mProvider || mId || mName || mBaseUrl || mApiKey
           ? { provider: mProvider, id: mId, name: mName, baseUrl: mBaseUrl, apiKey: mApiKey }
           : undefined;
       const res = await fetch("/api/agents", {
@@ -110,6 +125,7 @@ export default function NewAgentPage() {
         // The API makes the signed-in user the owner.
         body: JSON.stringify({
           name, skills,
+          ...(openshell ? { runtime } : {}),
           ...(skills.includes(GITHUB_SKILL) && ghToken.trim() ? { githubToken: ghToken.trim() } : {}),
           ...(toolsDeny.length ? { toolsDeny } : {}),
           ...(webFetchAllowlist.length ? { webFetchAllowlist } : {}),
@@ -138,13 +154,39 @@ export default function NewAgentPage() {
       <form onSubmit={submit} className="space-y-4">
         <Card>
           <CardContent className="space-y-4 pt-4">
+            {me?.runtimes.includes("openshell") && (
+              <Field
+                label="Runtime"
+                hint={
+                  openshell
+                    ? "OpenClaw in an OpenShell sandbox: every connection the agent opens is checked against its " +
+                      "policy, the model key never enters its pod, and code runs in the sandbox itself. " +
+                      "Uses the cluster's model. Cannot be changed later."
+                    : "OpenClaw as a pod of its own (the default). Cannot be changed later."
+                }
+              >
+                <div className="flex flex-wrap gap-2">
+                  {["claw", "openshell"].map((r) => (
+                    <CheckboxRow key={r} checked={runtime === r} onChange={() => setRuntime(r)}>
+                      {r === "openshell" ? "openshell (sandboxed)" : "claw"}
+                    </CheckboxRow>
+                  ))}
+                </div>
+              </Field>
+            )}
+
             <Field
               label="Name"
               htmlFor="name"
               hint={
                 "Must start with a lowercase letter, then lowercase letters, digits or '-'. " +
                 "A leading digit is rejected because the name becomes the agent's Kubernetes " +
-                "Service name, which may not start with one."
+                "Service name, which may not start with one." +
+                (openshell
+                  ? maxOpenshellName > 0
+                    ? ` For openshell, at most ${maxOpenshellName} characters (its namespace agent-${me?.username}-<name> may have 19).`
+                    : " Your username leaves no room for an openshell agent name."
+                  : "")
               }
             >
               <Input
@@ -155,6 +197,7 @@ export default function NewAgentPage() {
                 onChange={(e) => setName(e.target.value)}
                 // The API's naming rule, checked here first; the API still decides.
                 pattern="[a-z]([-a-z0-9]*[a-z0-9])?"
+                maxLength={openshell && maxOpenshellName > 0 ? maxOpenshellName : undefined}
                 title="Start with a lowercase letter, then lowercase letters, digits or '-' (e.g. my-agent)"
                 required
               />
@@ -253,6 +296,23 @@ export default function NewAgentPage() {
           </CardContent>
         </Card>
 
+        {openshell && (
+          <Card>
+            <CardHeader>
+              <CardTitle>LLM model</CardTitle>
+              <CardDescription>
+                The sandbox reaches models only through the cluster&apos;s gateways, which hold any key.
+                GenAI Gateway (LiteLLM) applies budgets and the content-safety guardrail; AI Gateway
+                (Envoy) goes to the model directly. The lists show what each gateway serves now.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <GatewayModelPicker onChange={setOsModel} />
+            </CardContent>
+          </Card>
+        )}
+
+        {!openshell && (
         <Card>
           <CardHeader>
             <CardTitle>LLM model (optional)</CardTitle>
@@ -284,6 +344,7 @@ export default function NewAgentPage() {
             />
           </CardContent>
         </Card>
+        )}
 
         <p className="text-xs text-muted-foreground">
           Owner is set to your signed-in identity automatically. The agent is created in your{" "}

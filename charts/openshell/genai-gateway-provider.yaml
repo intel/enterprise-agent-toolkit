@@ -21,15 +21,18 @@ endpoints:
     protocol: rest
     access: read-write
     enforcement: enforce
-# Binary identity matches the resolved executable path: a venv python resolves to its base
-# interpreter. Listed symlinks are resolved when the policy loads; globs are not, so the
-# uv-managed interpreter of the default community image is matched by its real path.
+# Binary identity matches the executable's real path: `python3` is a link to a versioned
+# interpreter, and a venv python resolves to its base one. On 0.1.x the supervisor runs in its own
+# pod and cannot resolve a link inside the workload, so list real paths or globs: `python3*`
+# matches whichever Python the image ships (Debian's 3.11 in openclaw-sandbox, 3.12 on Ubuntu
+# 24.04). 0.1.x accepts `*` within a path segment but not `**`: a profile with `**` leaves every
+# sandbox that attaches it in ConfigurationInvalid.
 binaries:
   - /usr/bin/curl
-  - /usr/bin/python3
-  - /usr/bin/python3.12
-  - /usr/local/bin/python3
-  - /usr/local/bin/python3.12
-  - /sandbox/.uv/python/**
+  - /usr/bin/python3*
+  - /usr/local/bin/python3*
+  - /sandbox/.uv/python/*/bin/python3*
   # OpenCode (community image): its Node launcher execs this binary.
   - /usr/lib/node_modules/opencode-ai/bin/.opencode
+  # OpenClaw (openshell agent runtime, the openclaw-sandbox image).
+  - /usr/local/bin/node
