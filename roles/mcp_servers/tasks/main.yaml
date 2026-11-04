@@ -1,0 +1,9 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+- name: "mcp_servers | Load the agent operator settings"
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../agent_operator/defaults/main.yaml"
+
+- name: "mcp_servers | Dispatch action: {{ component_action | default('install') }}"
+  ansible.builtin.include_tasks: "{{ component_action | default('install') }}.yaml"

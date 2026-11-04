@@ -1,0 +1,58 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agent operator (claw): Agent CRD and controller. Enabled by claw_enabled.
+
+agent_operator_namespace: "agent-operator-system"
+agent_operator_release_name: "agent-operator"
+agent_operator_crds_release_name: "agent-operator-crds"
+agent_operator_wait_timeout: "5m0s"
+
+# Model every agent uses unless its spec.model overrides it.
+claw_model_id: "{{ (llm_services_autodeploy_models | default([]) | first) | default('', true) }}"
+# The model's served max_model_len (qwen2-5-coder-14b serves 32768); 0 = OpenClaw's default.
+claw_model_context_window: 32768
+claw_model_base_url: "http://{{ ai_gateway_service_name | default('ai-gateway') }}.envoy-gateway-system.svc.cluster.local/v1"
+
+# Agent requests exceed Envoy's 32 KiB default; applied only if no policy targets the gateway.
+claw_ai_gateway_name: "{{ ai_gateway_name | default('ai-gateway') }}"
+claw_ai_gateway_namespace: "{{ ai_gateway_namespace | default(kserve_llmisvc_namespace | default('llm-inference')) }}"
+claw_ai_gateway_buffer_limit: "50Mi"
+
+# Operator service account in the agent realm (realm-management/manage-clients).
+claw_keycloak_namespace: "{{ keycloak_namespace | default('keycloak') }}"
+claw_keycloak_admin_secret: "{{ keycloak_admin_secret | default('keycloak-admin-secret') }}"
+claw_keycloak_realm: "{{ keycloak_agent_realm | default('agent-toolkit') }}"
+claw_keycloak_url: "http://keycloak-service.{{ claw_keycloak_namespace }}.svc.cluster.local:8080"
+# The realm's public issuer: what its tokens carry and where browsers sign in.
+claw_keycloak_issuer: >-
+  https://{{ keycloak_hostname | default('keycloak.' ~ (base_domain_name | default('example.com'))) }}/realms/{{ claw_keycloak_realm }}
+claw_keycloak_operator_client: "agent-operator"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret name, not a secret value
+claw_keycloak_credentials_secret: "agent-operator-keycloak"
+
+# Agent memory: pgvector, embedded with claw_embedding_model through the inference gateway.
+claw_pgvector_namespace: "{{ pgvector_namespace | default('pgvector') }}"
+# checkov:skip=CKV_SECRET_6: Kubernetes Secret names, not secret values
+claw_pgvector_secret: "pgvector-credentials"
+claw_runtime_secret: "agent-operator-runtime"
+claw_embedding_model: "bge-base-en"
+claw_embedding_dim: 768
+
+# Per-agent web_fetch proxy enforcing spec.webFetchAllowlist; egress uses the platform proxy.
+claw_web_fetch_proxy_enabled: true
+
+# The console and each agent's dashboard: https://<claw_console_hostname>[/gw/<owner ns>/<agent>/].
+claw_console_hostname: "agents.{{ base_domain_name | default('example.com') }}"
+claw_console_enabled: true
+claw_console_oidc_client: "agent-console"
+# checkov:skip=CKV_SECRET_6: a Secret name, not a value
+claw_console_oidc_secret: "agent-console-oidc"
+# An open dashboard is closed after this long and reconnects through the access check,
+# so a revoked or expired user loses it within this time.
+claw_dashboard_session: "5m"
+# Addresses the agent gateway trusts to name the user: the platform gateway's pods.
+claw_gateway_trusted_proxies: "{{ kubernetes_cluster_cidr | default('10.233.64.0/18') }}"
+
+claw_auto_suspend_idle_minutes: 240
+claw_max_agents_per_owner: 0

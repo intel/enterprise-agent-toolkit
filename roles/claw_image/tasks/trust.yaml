@@ -1,0 +1,25 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# containerd reads certs.d live: map the registry name to its ClusterIP over HTTP.
+- name: "claw_image | Create the containerd registry directory"
+  ansible.builtin.file:
+    path: "/etc/containerd/certs.d/{{ claw_image_registry_host }}"
+    state: directory
+    mode: "0755"
+  become: true
+  delegate_to: "{{ item }}"
+  loop: "{{ claw_image_nodes }}"
+
+- name: "claw_image | Configure containerd to pull from the in-cluster registry"
+  ansible.builtin.copy:
+    dest: "/etc/containerd/certs.d/{{ claw_image_registry_host }}/hosts.toml"
+    content: |
+      server = "http://{{ claw_image_registry_host }}"
+
+      [host."http://{{ _ci_endpoint }}"]
+        capabilities = ["pull", "resolve"]
+    mode: "0644"
+  become: true
+  delegate_to: "{{ item }}"
+  loop: "{{ claw_image_nodes }}"

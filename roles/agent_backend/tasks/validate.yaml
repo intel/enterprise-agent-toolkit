@@ -1,0 +1,34 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Read-only.
+
+- name: "agent_backend | validate | Check the API is available"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: agent-backend
+    namespace: "{{ agent_operator_namespace }}"
+  register: _val_ab
+  failed_when: >-
+    _val_ab.resources | default([]) | length == 0 or
+    _val_ab.resources[0].status.conditions | default([]) |
+    selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length == 0
+
+- name: "agent_backend | validate | Check the route and its token policy are accepted"
+  kubernetes.core.k8s_info:
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+    name: agent-backend-api
+    namespace: "{{ agent_operator_namespace }}"
+  register: _val_ab_route
+  vars:
+    _status: "{{ (_val_ab_route.resources | default([{}]) | first).status | default({}) }}"
+  failed_when: >-
+    ((_status.parents | default([])) + (_status.ancestors | default([]))) | map(attribute='conditions')
+    | flatten | selectattr('type', 'eq', 'Accepted') | selectattr('status', 'eq', 'True') | list | length == 0
+  loop:
+    - {api: gateway.networking.k8s.io/v1, kind: HTTPRoute}
+    - {api: gateway.envoyproxy.io/v1alpha1, kind: SecurityPolicy}
+  loop_control:
+    label: "{{ item.kind }}"

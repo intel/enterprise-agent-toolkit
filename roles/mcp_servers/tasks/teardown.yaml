@@ -1,0 +1,32 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Removing a release removes its Tool, and the operator unwires it from every agent.
+# Succeeds when nothing is installed.
+
+- name: "mcp_servers | teardown | Uninstall the servers"
+  kubernetes.core.helm:
+    name: "mcp-{{ item.name }}-server"
+    release_namespace: "{{ agent_operator_namespace }}"
+    state: absent
+    wait: true
+  loop: "{{ mcp_servers }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "mcp_servers | teardown | Remove the sandbox pool, token copy and claim grant"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.api }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ item.ns }}"
+  loop:
+    - {api: extensions.agents.x-k8s.io/v1beta1, kind: SandboxWarmPool, name: "{{ mcp_servers_sandbox_pool }}", ns: "{{ mcp_servers_sandbox_namespace }}"}
+    - {api: extensions.agents.x-k8s.io/v1beta1, kind: SandboxTemplate, name: "{{ mcp_servers_sandbox_template }}", ns: "{{ mcp_servers_sandbox_namespace }}"}
+    - {api: v1, kind: Secret, name: mcp-sandbox-router, ns: "{{ agent_operator_namespace }}"}
+    - {api: rbac.authorization.k8s.io/v1, kind: RoleBinding, name: agent-operator-sandbox-reaper, ns: "{{ mcp_servers_sandbox_namespace }}"}
+    - {api: rbac.authorization.k8s.io/v1, kind: Role, name: agent-operator-sandbox-reaper, ns: "{{ mcp_servers_sandbox_namespace }}"}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+  failed_when: false

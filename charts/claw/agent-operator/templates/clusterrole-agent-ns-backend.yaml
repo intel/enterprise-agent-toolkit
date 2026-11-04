@@ -1,0 +1,15 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# The API backend's access to an agent's credential Secrets. No ClusterRoleBinding: the operator
+# binds it per agent namespace, so the backend reads no Secret outside them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-operator-agent-ns-backend
+  labels:
+    app.kubernetes.io/name: agent-operator
+rules:
+  # Prunes the credential Secrets it replaced.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list", "delete"]

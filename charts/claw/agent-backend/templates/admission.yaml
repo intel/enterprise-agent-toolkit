@@ -1,0 +1,38 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Narrows the backend's cluster-wide Secret create: only its own Opaque Secrets, only in agent
+# namespaces (never a service-account token, never elsewhere). An agent namespace is one the
+# operator created and labelled; the name prefix alone also matches the platform's own
+# agent-operator-system and agent-sandbox-system.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: agent-backend-secrets
+  labels: {app.kubernetes.io/name: agent-backend}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: ["v1"], operations: ["CREATE"], resources: ["secrets"]}
+  matchConditions:
+    - name: agent-backend
+      expression: request.userInfo.username == "system:serviceaccount:{{ .Release.Namespace }}:agent-backend"
+  validations:
+    - expression: >-
+        request.namespace.startsWith("agent-") &&
+        has(namespaceObject.metadata.labels) &&
+        namespaceObject.metadata.labels.exists(k, k == "app.kubernetes.io/managed-by") &&
+        namespaceObject.metadata.labels["app.kubernetes.io/managed-by"] == "agent-operator" &&
+        object.type == "Opaque" &&
+        has(object.metadata.labels) && object.metadata.labels.exists(k, k == "app.kubernetes.io/managed-by") &&
+        object.metadata.labels["app.kubernetes.io/managed-by"] == "agent-backend"
+      message: agent-backend may create only its own Opaque Secrets in agent namespaces
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: agent-backend-secrets
+  labels: {app.kubernetes.io/name: agent-backend}
+spec:
+  policyName: agent-backend-secrets
+  validationActions: [Deny]

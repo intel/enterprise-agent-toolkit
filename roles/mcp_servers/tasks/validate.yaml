@@ -1,0 +1,33 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Read-only.
+
+- name: "mcp_servers | validate | Select servers"
+  ansible.builtin.include_tasks: select.yaml
+
+- name: "mcp_servers | validate | Check each server is available"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "mcp-{{ item.name }}-server"
+    namespace: "{{ agent_operator_namespace }}"
+  register: _val_mcp
+  failed_when: >-
+    _val_mcp.resources | default([]) | length == 0 or
+    _val_mcp.resources[0].status.conditions | default([]) |
+    selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length == 0
+  loop: "{{ _mcp_selected }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "mcp_servers | validate | Check each Tool is registered"
+  kubernetes.core.k8s_info:
+    api_version: intel-stack.io/v1alpha1
+    kind: Tool
+    name: "{{ item.name }}"
+  register: _val_mcp_tool
+  failed_when: (_val_mcp_tool.resources[0].status.phase | default('')) != 'Registered'
+  loop: "{{ _mcp_selected }}"
+  loop_control:
+    label: "{{ item.name }}"

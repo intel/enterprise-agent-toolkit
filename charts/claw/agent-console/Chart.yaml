@@ -1,0 +1,8 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: agent-console
+description: Browser console for claw agents, served by the platform gateway at / on the agents host
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

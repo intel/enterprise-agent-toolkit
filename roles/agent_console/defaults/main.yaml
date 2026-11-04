@@ -1,0 +1,10 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Agent console (claw_enabled): https://<claw_console_hostname>/. Its route and sign-in belong to
+# agent_backend; shared settings come from the agent_operator role defaults.
+
+agent_console_release_name: "agent-console"
+agent_console_wait_timeout: "5m0s"
+# Shown to admins in the console when set, e.g. https://grafana.<base_domain_name>.
+agent_console_grafana_url: ""

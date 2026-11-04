@@ -1,0 +1,37 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+- name: "agent_console | Check the API is installed"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: agent-backend
+    namespace: "{{ agent_operator_namespace }}"
+  register: _ac_backend
+  failed_when: _ac_backend.resources | default([]) | length == 0
+
+- name: "agent_console | Build the image"
+  ansible.builtin.include_role:
+    name: claw_image
+  vars:
+    claw_image_name: agent-console
+    claw_image_context: "{{ role_path }}/../../src/claw/agent-console"
+
+- name: "agent_console | Install or upgrade the console"
+  kubernetes.core.helm:
+    name: "{{ agent_console_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/claw/agent-console"
+    release_namespace: "{{ agent_operator_namespace }}"
+    wait: true
+    timeout: "{{ agent_console_wait_timeout }}"
+    values:
+      image:
+        repository: "{{ claw_image_repository }}"
+        tag: "{{ claw_image_tag }}"
+      affinity: "{{ _platform_affinity | default({}) }}"
+      grafanaUrl: "{{ agent_console_grafana_url }}"
+
+- name: "agent_console | Install complete"
+  ansible.builtin.debug:
+    msg: "Console: https://{{ claw_console_hostname }}/ (sign in with an agent-toolkit realm user)"

@@ -1,0 +1,8 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+galaxy_info:
+  role_name: openclaw_operator
+  description: OpenClaw operator — CRDs and controller for OpenClawInstance agents (claw)
+  min_ansible_version: "2.15"
+dependencies: []

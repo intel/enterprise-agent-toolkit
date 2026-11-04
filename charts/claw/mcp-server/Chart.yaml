@@ -1,0 +1,8 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: mcp-server
+description: An MCP server from the agent operator image, registered as a Tool
+type: application
+version: 0.2.0
+appVersion: "0.2.0"

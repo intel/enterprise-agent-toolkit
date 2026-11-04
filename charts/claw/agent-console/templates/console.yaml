@@ -1,0 +1,85 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-console
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-console}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: agent-console}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: agent-console}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: console
+          image: "{{ required "image.tag is required" .Values.image.tag | printf "%s:%s" .Values.image.repository }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          env:
+            - {name: GRAFANA_URL, value: {{ .Values.grafanaUrl | quote }}}
+          ports:
+            - {name: http, containerPort: 3000}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - {name: cache, mountPath: /app/.next/cache}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: cache, emptyDir: {sizeLimit: 256Mi}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-console
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-console}
+spec:
+  selector: {app.kubernetes.io/name: agent-console}
+  ports:
+    - {name: http, port: 3000, targetPort: http}
+---
+# Only the platform gateway reaches the console; 15008 is the ambient mesh's HBONE port.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-console
+  namespace: {{ .Release.Namespace }}
+  labels: {app.kubernetes.io/name: agent-console}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: agent-console}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Values.gateway.namespace }}}
+          podSelector:
+            matchLabels: {gateway.envoyproxy.io/owning-gateway-name: {{ .Values.gateway.name }}}
+      ports:
+        - {protocol: TCP, port: 3000}
+        - {protocol: TCP, port: 15008}

@@ -1,0 +1,18 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# The route and sign-in are the agent-backend chart's (one policy covers / and /api).
+
+image:
+  repository: registry.kube-system.svc.cluster.local:5000/agent-console
+  # "<tag>@sha256:<digest>"; set by the installer.
+  tag: ""
+  pullPolicy: IfNotPresent
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits: {cpu: "1", memory: 512Mi}
+affinity: {}
+# Shown to admins in the top bar when set.
+grafanaUrl: ""
+gateway:
+  name: eg-gateway
+  namespace: envoy-gateway-system

@@ -1,0 +1,28 @@
+{
+  "name": "agent-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "REST API for claw agents: Agent and AgentGrant resources with owner, grant and role authorization.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.test.json && node --test \"dist-test/test/*.test.js\"",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "2.0.0",
+    "express": "5.3.0",
+    "jose": "6.2.12",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "typescript": "5.9.3"
+  }
+}

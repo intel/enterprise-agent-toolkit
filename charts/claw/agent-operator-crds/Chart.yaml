@@ -1,0 +1,8 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: agent-operator-crds
+description: Custom resource definitions for the claw agent operator (intel-stack.io).
+type: application
+version: 0.6.0
+appVersion: "0.6.0"

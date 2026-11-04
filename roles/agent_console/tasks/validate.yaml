@@ -1,0 +1,16 @@
+---
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+# Read-only.
+
+- name: "agent_console | validate | Check the console is available"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: agent-console
+    namespace: "{{ agent_operator_namespace }}"
+  register: _val_ac
+  failed_when: >-
+    _val_ac.resources | default([]) | length == 0 or
+    _val_ac.resources[0].status.conditions | default([]) |
+    selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length == 0
