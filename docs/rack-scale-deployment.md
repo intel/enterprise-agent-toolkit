@@ -1,6 +1,6 @@
 # Rack-Scale Deployment — AI Fabric Mode
 
-This guide covers deploying the Intel® AI for Enterprise Agent Toolkit on a
+This guide covers deploying the Intel® Agent Toolkit on a
 high-performance rack with a **high-speed Ethernet AI fabric** (100G, 200G, 400G, or 800G),
 Intel® E810-C or compatible NICs, and NVMe Ceph storage — using the `rack_scale_mode` deployment path.
 

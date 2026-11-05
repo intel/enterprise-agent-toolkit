@@ -1,4 +1,4 @@
-# Prerequisites — Intel® AI for Enterprise Agent Toolkit
+# Prerequisites — Intel® Agent Toolkit
 
 ## Hardware
 

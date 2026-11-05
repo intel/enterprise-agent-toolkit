@@ -1,4 +1,4 @@
-# Decommission and Redeploy — Intel® AI for Enterprise Agent Toolkit
+# Decommission and Redeploy — Intel® Agent Toolkit
 
 > **Warning:** Decommissioning destroys the entire Kubernetes cluster and all workloads, data, and secrets. It cannot be undone.
 

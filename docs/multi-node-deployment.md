@@ -2,7 +2,7 @@
 
 > **100G Arista fabric deployment?** If your rack has a 100G Clos fabric, Intel® E810-C NICs, and NVMe storage nodes, use the **[Rack-Scale Deployment Guide](rack-scale-deployment.md)** instead — it covers BGP, dual-homed nodes, and Ceph-on-fabric with a single `rack-profile.yaml` config.
 
-This guide describes how to deploy the Intel® AI for Enterprise Agent Toolkit across multiple nodes — a control-plane node running all stack services plus one or more worker nodes that host additional LLM inference workloads.
+This guide describes how to deploy the Intel® Agent Toolkit across multiple nodes — a control-plane node running all stack services plus one or more worker nodes that host additional LLM inference workloads.
 
 The Kubernetes layer is provisioned by **Kubespray**, which natively supports multi-node clusters. Everything above Kubernetes (LiteLLM, Langfuse, Redis, Prometheus/Grafana) runs on the cluster and is automatically distributed by Kubernetes scheduling.
 

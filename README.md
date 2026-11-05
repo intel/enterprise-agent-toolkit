@@ -1,7 +1,7 @@
-# Intel® AI for Enterprise Agent Toolkit
+# Intel® Agent Toolkit
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/intel/enterprise-agent-toolkit/blob/main/LICENSE)
-[![Platform: Intel Xeon](https://img.shields.io/badge/Platform-Intel%C2%AE%20Xeon%C2%AE-0068B5)](https://www.intel.com/xeon)
+[![Platform: Intel® Xeon®](https://img.shields.io/badge/Platform-Intel%C2%AE%20Xeon%C2%AE-0068B5)](https://www.intel.com/xeon)
 [![Deployment: Kubernetes](https://img.shields.io/badge/Deployment-Kubernetes-326CE5)](https://kubernetes.io)
 [![Gateway: LiteLLM](https://img.shields.io/badge/Gateway-LiteLLM-green)](https://litellm.ai)
 [![Frameworks: LangGraph · CrewAI · Flowise](https://img.shields.io/badge/Frameworks-LangGraph%20%C2%B7%20CrewAI%20%C2%B7%20Flowwise-orange)](https://github.com/intel/enterprise-agent-toolkit)
@@ -9,7 +9,7 @@
 > **Deploy a production-grade, open source agentic AI stack on Intel® Xeon® in hours — not months.**
 > A batteries-included Kubernetes platform with API gateway, intelligent inference routing, agent memory, sandboxed code execution, MCP tool integration, and full agent and system observability — all pre-integrated and ready to run.
 
-**Keywords:** agentic AI platform · enterprise AI agents · open source AI agent stack · Kubernetes AI deployment · LLM inference on CPU · Intel Xeon AI · LiteLLM gateway · AI agent memory RAG · on-premise LLM deployment · private AI infrastructure · AI agent observability · MCP server Kubernetes · vLLM sglang Intel · Enterprise Agnet Toolkit 
+**Keywords:** agentic AI platform · enterprise AI agents · open source AI agent stack · Kubernetes AI deployment · LLM inference on CPU · Intel® Xeon® AI · LiteLLM gateway · AI agent memory RAG · on-premise LLM deployment · private AI infrastructure · AI agent observability · MCP server Kubernetes · vLLM sglang Intel® · Intel® Agent Toolkit 
 
 ---
 
@@ -65,7 +65,7 @@ Most organizations waste months stitching together LiteLLM, Redis, pgvector, Kub
 
 ## Architecture
 
-![Intel® AI for Enterprise Agent Toolkit Architecture](docs/pictures/Enterprise-Agent-Toolkit-Arch-Diagram.png)
+![Intel® Agent Toolkit architecture: your agent (LangGraph, CrewAI, OpenClaw, Microsoft Agent Framework) sits on top; below are seven blocks — API gateway and policy (LiteLLM, auth, rate limits), memory and state (Redis, PostgreSQL, pgvector), inference and routing (vLLM, SGLang, cloud LLMs), actions and tools (MCP servers), sandbox (Agent Sandbox, OpenShell), observability (Langfuse, Prometheus, Grafana), and deployment and scaling (Ansible, Helm, autoscaling) — then the platform (Kubernetes, Docker Compose) and compute (Intel® Xeon® for orchestration and execution, GPUs and cloud LLMs for inference)](docs/pictures/intel-agent-toolkit-architecture.png)
 
 The toolkit is organized into **seven pluggable provider blocks**, each with a default implementation and a defined interface. Customers can use the defaults on day one and swap or extend individual providers as their needs evolve — without touching any other layer.
 
@@ -190,7 +190,7 @@ All provider blocks run on a common infrastructure foundation:
 
 ## Deployment Platform
 
-The Agentic AI Stack supports two deployment platforms:
+The Intel® Agent Toolkit supports two deployment platforms:
 
 ### Kubernetes (Default)
 
@@ -285,7 +285,7 @@ See **[Rack-Scale Deployment Guide](docs/rack-scale-deployment.md)** for the ful
 
 ## Build vs. Build-from-Scratch
 
-| Dimension | Build from Scratch | Intel® Toolkit |
+| Dimension | Build from Scratch | Intel® Agent Toolkit |
 |---|---|---|
 | Time to production | 3–6 months | Hours to days |
 | Vendor lock-in | None | None (Apache 2.0) |
@@ -300,7 +300,7 @@ See **[Rack-Scale Deployment Guide](docs/rack-scale-deployment.md)** for the ful
 
 ## Frequently Asked Questions
 
-**What is the Intel® AI for Enterprise Agent Toolkit?**
+**What is the Intel® Agent Toolkit?**
 An open source, Kubernetes-based platform that gives enterprises everything they need to deploy, run, and govern production AI agents on Intel® Xeon® — including LLM gateway, inference routing, agent memory, sandboxed execution, MCP tool integration, and full observability.
 
 **How is this different from LangChain, LangGraph, or CrewAI?**

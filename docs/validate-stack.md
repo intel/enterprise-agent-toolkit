@@ -1,7 +1,7 @@
 # Stack Validation & Preflight Checks
 
 Post-deploy health check and pre-install node readiness validation for the
-Intel® AI for Enterprise Agent Toolkit. Produces a consolidated traffic-light
+Intel® Agent Toolkit. Produces a consolidated traffic-light
 report (GREEN / AMBER / RED) covering every deployed layer — from kernel
 settings to end-to-end inference.
 

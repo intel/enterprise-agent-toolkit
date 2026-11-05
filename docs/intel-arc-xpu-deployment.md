@@ -5,7 +5,7 @@
 
 ## Overview
 
-This guide describes how to deploy the Intel® AI for Enterprise Agent Toolkit on nodes
+This guide describes how to deploy the Intel® Agent Toolkit on nodes
 with Intel® discrete GPUs (Arc Battlemage B-series cards such as B60/B70) using the vLLM XPU backend. This is a third compute platform alongside the
 existing CPU (Xeon) and GPU (NVIDIA) paths, selected via `compute_platform=xpu`.
 
