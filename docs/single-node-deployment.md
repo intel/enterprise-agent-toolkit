@@ -1,5 +1,5 @@
-# Quick Start — Intel® AI for Enterprise Agent Toolkit
-This guide provides step-by-step instructions on how to deploy the Intel® AI for Enterprise Agent Toolkit on a single node.
+# Quick Start — Intel® Agent Toolkit
+This guide provides step-by-step instructions on how to deploy the Intel® Agent Toolkit on a single node.
 
 ## Table of Contents
 

@@ -1,6 +1,6 @@
 # Guardrails — Safety Content Moderation
 
-**Guardrails** provides safety content moderation for LLM requests in the Agentic AI Stack. It screens chat requests through a dedicated guard model before they reach the main LLM, blocking unsafe or policy-violating content.
+**Guardrails** provides safety content moderation for LLM requests in the Intel® Agent Toolkit. It screens chat requests through a dedicated guard model before they reach the main LLM, blocking unsafe or policy-violating content.
 
 Two components:
 

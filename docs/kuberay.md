@@ -1,6 +1,6 @@
 # KubeRay — Distributed Computing for Agentic Workloads
 
-**KubeRay** brings [Ray](https://www.ray.io/) — the Python-native distributed computing framework — into the Agentic AI Stack as a first-class component. It enables agent workloads to fan out tasks across multiple CPU cores in parallel, run stateful actors, and use Ray's built-in autoscaler to match resource consumption to demand.
+**KubeRay** brings [Ray](https://www.ray.io/) — the Python-native distributed computing framework — into the Intel® Agent Toolkit as a first-class component. It enables agent workloads to fan out tasks across multiple CPU cores in parallel, run stateful actors, and use Ray's built-in autoscaler to match resource consumption to demand.
 
 The implementation deploys two components into the cluster:
 

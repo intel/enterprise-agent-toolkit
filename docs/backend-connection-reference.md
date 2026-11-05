@@ -1,4 +1,4 @@
-# Backend Connection Reference — Intel® AI for Enterprise Agent Toolkit
+# Backend Connection Reference — Intel® Agent Toolkit
 
 All shared backends are deployed into their own namespaces and are reachable from any workload namespace in the cluster.
 

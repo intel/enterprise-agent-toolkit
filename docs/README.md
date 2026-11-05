@@ -1,4 +1,4 @@
-# Quick Start — Intel® AI for Enterprise Agent Toolkit
+# Quick Start — Intel® Agent Toolkit
 
 
 ## Prerequisites

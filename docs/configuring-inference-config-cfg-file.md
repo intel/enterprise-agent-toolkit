@@ -35,7 +35,7 @@ https_proxy=
 no_proxy=
 
 `````
-Make sure to update the values in the agentic-config.cfg file according to your requirements before running the Intel® AI for Enterprise Agent Toolkit.
+Make sure to update the values in the agentic-config.cfg file according to your requirements before running the Intel® Agent Toolkit.
 
 
 >
