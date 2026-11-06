@@ -35,7 +35,7 @@ The implementation deploys two components into the cluster:
 
 - The head pod runs with `num-cpus=0` so no user tasks are scheduled on it — all workloads run on workers.
 - The Ray autoscaler reads `minReplicas` / `maxReplicas` from the cluster spec and adds or removes worker pods automatically based on pending task load.
-- Worker count and resource limits are controlled entirely via **`core/inventory/kuberay-config.yaml`**. The operator version is pinned in `core/inventory/metadata/agentic-metadata.cfg`.
+- Worker count and resource limits are controlled entirely via **`env/<name>/config.agent-toolkit.yaml`**. The operator version is pinned in `env/<name>/config.agent-toolkit.yaml`.
 
 ---
 
@@ -54,83 +54,81 @@ The implementation deploys two components into the cluster:
 
 ## Configuration
 
-KubeRay uses **two separate config files** to keep concerns clearly separated:
+KubeRay uses **two separate groups of settings** to keep concerns clearly separated:
 
 | File | What to set |
 |---|---|
-| `core/inventory/agentic-config.cfg` | `deploy_kuberay=on` / `deploy_kuberay=off` — the deployment toggle |
-| `core/inventory/kuberay-config.yaml` | All tuning: namespace, Ray image, worker replicas, CPU/memory limits |
+| `env/<name>/config.agent-toolkit.yaml` | `kuberay_enabled: true` / `kuberay_enabled: false` — the deployment toggle |
+| `env/<name>/config.agent-toolkit.yaml` | All tuning: namespace, Ray image, worker replicas, CPU/memory limits |
 
-### Enable deployment — `agentic-config.cfg`
+### Enable deployment — `config.agent-toolkit.yaml`
 
-```ini
-deploy_kuberay=on
+```yaml
+kuberay_enabled: true
 ```
 
-Set to `off` to skip KubeRay during the next run. If the `ray-system` namespace
+Set to `false` to skip KubeRay during the next run. If the `ray-system` namespace
 already exists from a previous run, deployment is automatically skipped (resume mode).
 
-### Tune the cluster — `kuberay-config.yaml`
+> **Note:** resume mode is not available in this release.
+
+### Tune the cluster — `config.agent-toolkit.yaml`
 
 ```yaml
 # Kubernetes namespace for all Ray resources
-namespace: ray-system
+kuberay_namespace: "ray-system"
 
-cluster:
-  name: ray-cluster
+kuberay_release_name: "ray-cluster"
 
-  # Ray image — must match the ray[default] version used by connecting clients
-  rayImage: rayproject/ray:2.40.0-py312
+# Ray image — must match the ray[default] version used by connecting clients
+kuberay_ray_image: "rayproject/ray:2.40.0-py312"
 
-  head:
-    cpuRequest: "500m"
-    cpuLimit: "1"
-    memoryRequest: "2Gi"
-    memoryLimit: "4Gi"
+kuberay_head_cpu_request: "500m"
+kuberay_head_cpu_limit: "2"
+kuberay_head_memory_request: "2Gi"
+kuberay_head_memory_limit: "4Gi"
 
-  worker:
-    groupName: default-worker
-    replicas: 2        # initial worker count
-    minReplicas: 1     # autoscaler floor
-    maxReplicas: 4     # autoscaler ceiling
-    cpuRequest: "500m"
-    cpuLimit: "2"
-    memoryRequest: "2Gi"
-    memoryLimit: "4Gi"
+kuberay_worker_replicas: 2        # initial worker count
+kuberay_worker_min_replicas: 1    # autoscaler floor
+kuberay_worker_max_replicas: 4    # autoscaler ceiling
+kuberay_worker_cpu_request: "500m"
+kuberay_worker_cpu_limit: "2"
+kuberay_worker_memory_request: "2Gi"
+kuberay_worker_memory_limit: "4Gi"
 ```
 
 This file is created automatically with safe defaults on the first run of
-`./deploy-agentic-stack.sh`. Edit it before re-running to apply custom values.
+`./es_auto_installer.sh init agent-toolkit`. Edit it before re-running to apply custom values.
 
 #### Worker resource sizing guide
 
-| Profile | `cpuRequest` | `cpuLimit` | `memoryRequest` | `memoryLimit` |
+| Profile | `kuberay_worker_cpu_request` | `kuberay_worker_cpu_limit` | `kuberay_worker_memory_request` | `kuberay_worker_memory_limit` |
 |---|---|---|---|---|
 | Light (dev / single node) | `500m` | `2` | `1Gi` | `2Gi` |
 | Medium *(default)* | `500m` | `2` | `2Gi` | `4Gi` |
 | Heavy (multi-node / batch) | `2` | `8` | `8Gi` | `16Gi` |
 
-### Operator version pin — `agentic-metadata.cfg`
+### Operator version pin — `config.agent-toolkit.yaml`
 
-```ini
-kuberay_operator_version="1.3.0"
+```yaml
+kuberay_operator_version: "1.3.0"
 ```
 
 Update this value to upgrade the KubeRay operator. The Ray image in
-`kuberay-config.yaml` should be updated to match the corresponding Ray version.
+`config.agent-toolkit.yaml` should be updated to match the corresponding Ray version.
 
 ---
 
 ## Deployment
 
 ```bash
-# 1. Set the toggle in agentic-config.cfg
-#    deploy_kuberay=on
+# 1. Set the toggle in env/<name>/config.agent-toolkit.yaml
+#    kuberay_enabled: true
 
-# 2. (Optional) edit core/inventory/kuberay-config.yaml to tune resources
+# 2. (Optional) edit env/<name>/config.agent-toolkit.yaml to tune resources
 
 # 3. Run the deploy script
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 ```
 
 The deploy script runs 4 steps for KubeRay:
@@ -160,7 +158,10 @@ kubectl get pods -n ray-system
 # Check the RayCluster CR status
 kubectl get raycluster -n ray-system
 
-# View the Ray Dashboard (port-forward from your local machine)
+# View the Ray Dashboard: https://ray.<base_domain_name>/ (basic auth user ray, password below)
+kubectl get secret ray-dashboard-auth -n ray-system -o jsonpath='{.data.password}' | base64 -d
+
+# Or port-forward from your local machine
 kubectl port-forward svc/ray-cluster-head-svc 8265:8265 -n ray-system
 # Then open: http://localhost:8265
 ```
@@ -175,8 +176,10 @@ kubectl port-forward svc/ray-cluster-head-svc 8265:8265 -n ray-system
 | **Ray Dashboard** | `http://ray-cluster-head-svc.ray-system.svc.cluster.local:8265` |
 | **GCS (internal)** | `ray-cluster-head-svc.ray-system.svc.cluster.local:6379` |
 
-These addresses are valid from any pod running in the cluster. From outside the
-cluster, use `kubectl port-forward` to reach the Dashboard or Client API.
+These addresses are valid from any pod running in the cluster whose namespace is labelled
+`istio.io/dataplane-mode=ambient`. From outside the cluster, open the Dashboard at
+`https://ray.<base_domain_name>/` (user `ray`, password in Secret `ray-dashboard-auth`), or use
+`kubectl port-forward` to reach the Dashboard or Client API.
 
 ---
 
@@ -227,19 +230,17 @@ kubectl scale raycluster ray-cluster -n ray-system --replicas=5
 
 ### Via config (persistent)
 
-Edit `core/inventory/kuberay-config.yaml`:
+Edit `env/<name>/config.agent-toolkit.yaml`:
 
 ```yaml
-cluster:
-  worker:
-    replicas: 5
-    maxReplicas: 8
+kuberay_worker_replicas: 5
+kuberay_worker_max_replicas: 8
 ```
 
 Then re-run:
 
 ```bash
-./deploy-agentic-stack.sh
+./es_auto_installer.sh install agent-toolkit
 ```
 
 ---
@@ -247,13 +248,12 @@ Then re-run:
 ## Upgrading Ray
 
 1. Choose a target version from the [Ray Docker Hub tags](https://hub.docker.com/r/rayproject/ray/tags).
-2. Update `kuberay-config.yaml`:
+2. Update `config.agent-toolkit.yaml`:
    ```yaml
-   cluster:
-     rayImage: rayproject/ray:2.41.0-py312
+   kuberay_ray_image: "rayproject/ray:2.41.0-py312"
    ```
-3. Update the operator version in `agentic-metadata.cfg` if required.
-4. Re-run `./deploy-agentic-stack.sh` — the script upgrades the Helm releases in place.
+3. Update the operator version (`kuberay_operator_version`) in `config.agent-toolkit.yaml` if required.
+4. Re-run `./es_auto_installer.sh install agent-toolkit` — the script upgrades the Helm releases in place.
 5. Update `pip install "ray[default]==2.41.0"` in any client code.
 
 > **Note:** The Ray client version must match the cluster image version exactly.
@@ -274,4 +274,4 @@ helm uninstall kuberay-operator -n ray-system
 kubectl delete namespace ray-system
 ```
 
-Set `deploy_kuberay=off` in `agentic-config.cfg` so subsequent deploy runs skip it.
+Set `kuberay_enabled: false` in `config.agent-toolkit.yaml` so subsequent deploy runs skip it.

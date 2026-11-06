@@ -1,0 +1,142 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# pgvector — Install via Helm
+# =============================================================================
+
+- name: "pgvector | Create namespace"
+  kubernetes.core.k8s:
+    kind: Namespace
+    name: "{{ pgvector_namespace }}"
+    state: present
+
+- name: "pgvector | Enrol namespace in the ambient mesh"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ pgvector_namespace }}"
+        labels:
+          istio.io/dataplane-mode: "ambient"
+  when: istio_enabled | default(false) | bool
+
+# Reuse the stored password
+- name: "pgvector | Read existing credentials"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: pgvector-credentials
+    namespace: "{{ pgvector_namespace }}"
+  register: _pgvector_secret
+  no_log: true
+
+# A failed first install leaves only the chart's Secret (POSTGRES_PASSWORD); its data already uses that password
+- name: "pgvector | Resolve database password"
+  ansible.builtin.set_fact:
+    _pgvector_pw: >-
+      {%- set d = (_pgvector_secret.resources | default([]) | first | default({})).data | default({}) -%}
+      {{ (d.password | default(d.POSTGRES_PASSWORD) | b64decode)
+         if (d.password is defined or d.POSTGRES_PASSWORD is defined)
+         else pgvector_password }}
+  no_log: true
+
+# helm upgrade --install cannot recover a failed first release
+- name: "pgvector | Check for an existing release"
+  kubernetes.core.helm_info:
+    name: "{{ pgvector_release_name }}"
+    release_namespace: "{{ pgvector_namespace }}"
+  register: _pgvector_release
+  failed_when: false
+  no_log: true
+
+- name: "pgvector | Remove a failed release"
+  kubernetes.core.helm:
+    name: "{{ pgvector_release_name }}"
+    release_namespace: "{{ pgvector_namespace }}"
+    state: absent
+    wait: true
+  when: ((_pgvector_release.status | default({}, true)).status | default('') | lower) == 'failed'
+
+- name: "pgvector | Install via Helm"
+  kubernetes.core.helm:
+    name: "{{ pgvector_release_name }}"
+    chart_ref: "{{ role_path }}/../../charts/pgvector"
+    release_namespace: "{{ pgvector_namespace }}"
+    create_namespace: true
+    wait: true
+    # Covers the chart's startupProbe: first-start initdb on NFS takes about 5 min
+    timeout: "15m0s"
+    values:
+      auth:
+        username: "{{ pgvector_username }}"
+        password: "{{ _pgvector_pw }}"
+        postgresPassword: "{{ _pgvector_pw }}"
+        database: "{{ pgvector_database }}"
+      persistence:
+        size: "{{ pgvector_storage_size }}"
+        storageClassName: "{{ pgvector_storage_class }}"
+      resources: "{{ pgvector_resources }}"
+      postgresql:
+        parameters: "{{ pgvector_parameters }}"
+  register: _pgvector_helm
+  no_log: true
+  ignore_errors: true
+
+- name: "pgvector | Check Helm install result"
+  ansible.builtin.assert:
+    that: _pgvector_helm is succeeded
+    fail_msg: "pgvector Helm install failed: {{ _pgvector_helm.msg | default('no error message returned') }}"
+    quiet: true
+
+- name: "pgvector | Wait for pod to be ready"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ pgvector_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=pgvector
+  register: _pgvector_pods
+  until:
+    - _pgvector_pods.resources | default([]) | length > 0
+    - _pgvector_pods.resources | selectattr('status.phase', 'eq', 'Running') | list | length > 0
+  retries: 60
+  delay: 5
+
+- name: "pgvector | Verify pgvector extension is loaded"
+  kubernetes.core.k8s_exec:
+    namespace: "{{ pgvector_namespace }}"
+    pod: "{{ _pgvector_pods.resources[0].metadata.name }}"
+    command: >
+      psql -U {{ pgvector_username }} -d {{ pgvector_database }}
+      -c "SELECT extname, extversion FROM pg_extension WHERE extname='vector';"
+  register: _pgvector_ext
+  failed_when: false
+
+- name: "pgvector | Create credentials secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: pgvector-credentials
+        namespace: "{{ pgvector_namespace }}"
+      stringData:
+        DATABASE_URL: "postgresql://{{ pgvector_username }}:{{ _pgvector_pw }}@pgvector.{{ pgvector_namespace }}.svc.cluster.local:5432/{{ pgvector_database }}"
+        host: "pgvector.{{ pgvector_namespace }}.svc.cluster.local"
+        port: "5432"
+        database: "{{ pgvector_database }}"
+        username: "{{ pgvector_username }}"
+        password: "{{ _pgvector_pw }}"
+  no_log: true
+
+- name: "pgvector | Install complete"
+  ansible.builtin.debug:
+    msg:
+      - "pgvector deployed in namespace '{{ pgvector_namespace }}'"
+      - "In-cluster: pgvector.{{ pgvector_namespace }}.svc.cluster.local:5432"
+      - "Database: {{ pgvector_database }}"
+      - "User: {{ pgvector_username }}"
+      - "DSN secret: pgvector-credentials (key: DATABASE_URL)"

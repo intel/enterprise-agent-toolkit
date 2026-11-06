@@ -1,3 +1,0 @@
----
-- name: "nri_cpu_balloons | Dispatch action: {{ component_action }}"
-  ansible.builtin.include_tasks: "{{ component_action }}.yaml"

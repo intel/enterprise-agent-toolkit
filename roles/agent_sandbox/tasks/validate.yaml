@@ -1,0 +1,97 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Agent Sandbox — Validate
+# =============================================================================
+
+- name: "agent_sandbox | validate | Check controller deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: agent-sandbox-controller
+    namespace: "{{ agent_sandbox_namespace }}"
+  register: _val_controller
+  failed_when: >-
+    _val_controller.resources | default([]) | length == 0 or
+    _val_controller.resources[0].status.conditions | default([]) |
+    selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length == 0
+
+- name: "agent_sandbox | validate | Check sandbox-router deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: sandbox-router-deployment
+    namespace: "{{ agent_sandbox_namespace }}"
+  register: _val_router
+  failed_when: >-
+    _val_router.resources | default([]) | length == 0 or
+    _val_router.resources[0].status.conditions | default([]) |
+    selectattr('type','eq','Available') | selectattr('status','eq','True') | list | length == 0
+
+- name: "agent_sandbox | validate | Check CRDs exist"
+  ansible.builtin.command:
+    cmd: kubectl get crd sandboxes.agents.x-k8s.io
+  register: _val_crd
+  failed_when: _val_crd.rc != 0
+  changed_when: false
+
+- name: "agent_sandbox | validate | Check SandboxTemplate exists"
+  kubernetes.core.k8s_info:
+    api_version: extensions.agents.x-k8s.io/v1beta1
+    kind: SandboxTemplate
+    namespace: "{{ agent_sandbox_namespace }}"
+    name: python-sandbox-template
+  register: _val_template
+  failed_when: _val_template.resources | default([]) | length == 0
+
+# Ready sandboxes prove the full lifecycle works; zero ready is reported as
+# PENDING (not a failure).
+- name: "agent_sandbox | validate | Check SandboxWarmPool readiness"
+  kubernetes.core.k8s_info:
+    api_version: extensions.agents.x-k8s.io/v1beta1
+    kind: SandboxWarmPool
+    namespace: "{{ agent_sandbox_namespace }}"
+  register: _val_warmpools
+
+- name: "agent_sandbox | validate | Warn on WarmPool with no ready sandboxes"
+  ansible.builtin.debug:
+    msg: >-
+      PENDING: SandboxWarmPool '{{ item.metadata.name }}' has
+      {{ item.status.readyReplicas | default(0) }}/{{ item.spec.replicas | default(0) }} ready sandboxes —
+      check pod status: kubectl get pods -n {{ agent_sandbox_namespace }} and controller logs
+  loop: "{{ _val_warmpools.resources | default([]) }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when: (item.spec.replicas | default(0) | int) > 0 and (item.status.readyReplicas | default(0) | int) == 0
+
+# The kata template is only applied when kata-deploy created a Kata RuntimeClass
+# (install skips it otherwise), so only expect it then.
+- name: "agent_sandbox | validate | Get Kata RuntimeClasses"
+  kubernetes.core.k8s_info:
+    api_version: node.k8s.io/v1
+    kind: RuntimeClass
+  register: _val_kata_rc
+  when: kata_containers_enabled | default(false) | bool
+
+- name: "agent_sandbox | validate | Check kata SandboxTemplate exists"
+  kubernetes.core.k8s_info:
+    api_version: extensions.agents.x-k8s.io/v1beta1
+    kind: SandboxTemplate
+    namespace: "{{ agent_sandbox_namespace }}"
+    name: "{{ kata_sandbox_template_name }}"
+  register: _val_kata_template
+  failed_when: _val_kata_template.resources | default([]) | length == 0
+  when:
+    - kata_containers_enabled | default(false) | bool
+    - (_val_kata_rc.resources | default([]) | map(attribute='metadata.name')
+       | select('in', [kata_fc_runtime_class, kata_qemu_runtime_class]) | list | length) > 0
+
+- name: "agent_sandbox | validate | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "Controller: {{ 'OK' if _val_controller.resources | length > 0 else 'FAIL' }}"
+      - "Router: {{ 'OK' if _val_router.resources | length > 0 else 'FAIL' }}"
+      - "CRDs: {{ 'OK' if _val_crd.rc == 0 else 'FAIL' }}"
+      - "SandboxTemplate python-sandbox-template: {{ 'OK' if _val_template.resources | default([]) | length > 0 else 'FAIL' }}"
+      - "WarmPools: {{ (_val_warmpools.resources | default([]) | map(attribute='metadata.name') | join(', ')) or 'none' }}"

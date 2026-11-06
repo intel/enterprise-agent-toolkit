@@ -1,0 +1,81 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+---
+# =============================================================================
+# Agent Toolkit Configuration — enterprise.agent-toolkit
+# =============================================================================
+# Role defaults live in roles/<name>/defaults/main.yaml.
+# Override any of them here.  `es_auto_installer.sh init agent-toolkit` seeds
+# this file into env/<env>/config.agent-toolkit.yaml and the installer loads
+# that seeded copy: edit the copy to change an existing environment.
+# It loads after config.inference.yaml, so guardrails_enabled, hybrid_router_enabled and
+# litellm_* set here override the inference layer's values.
+# =============================================================================
+
+# --- Node preflight ---
+# Node readiness checks (playbooks/preflight-check.yml) at the start of install; report only
+node_preflight_enabled: true
+
+# --- API access (inference layer) ---
+# The toolkit serves agents through the LiteLLM gateway: virtual keys per agent or
+# sandbox, the content-safety guardrail, Langfuse tracing and the OpenShell provider.
+# Set "jwt" for Keycloak JWT access to the AI gateway instead (no LiteLLM).
+# This release reads auth_provider in global_config.yaml instead ("keycloak" for JWT).
+auth_type: "litellm_vkey"
+# Content-safety guardrail: on with LiteLLM; set false here to turn it off.
+guardrails_enabled: "{{ (auth_provider == 'litellm') if auth_provider is defined else ((auth_type | default('jwt')) == 'litellm_vkey') }}"
+# LiteLLM model "hybrid-router"
+hybrid_router_enabled: true
+# Paths published on LiteLLM's route; empty = all, so the admin UI and key API are reachable (LiteLLM keeps its auth)
+litellm_public_paths: []
+
+# --- Default model (inference layer, applied only where this layer is provisioned) ---
+# Deployed on install.
+# Set [] to install without a chat model; deploy others with ./model-manager deploy <name>.
+llm_services_autodeploy_models: ["qwen2-5-coder-14b"]
+
+# --- vLLM Semantic Router dashboard (inference layer; applies only with vllm_sr_enabled) ---
+# Served at https://vllm-sr.<base_domain_name>/
+vllm_sr_dashboard_enabled: true
+# Client-facing name of the vLLM Semantic Router model in LiteLLM (litellm mode).
+vllm_sr_litellm_model_name: "vllm-sr/auto"
+
+# --- Redis Stack ---
+redis_stack_namespace: "redis"
+redis_stack_storage_class: ""          # empty = cluster default StorageClass
+redis_stack_persistence_size: "10Gi"
+
+# --- pgvector ---
+pgvector_namespace: "pgvector"
+pgvector_database: "agentdb"
+pgvector_username: "agentuser"
+pgvector_storage_size: "20Gi"
+
+# --- Agent Sandbox ---
+agent_sandbox_namespace: "agent-sandbox-system"   # fixed: the upstream manifests and sandbox templates use this namespace
+agent_sandbox_version: "v0.5.0"
+
+# --- OpenShell  ---
+openshell_enabled: false
+openshell_oidc_issuer: ""   # OIDC login (e.g. a Keycloak realm URL); empty = single-admin via kubectl port-forward
+# Sandboxes run outside the Istio mesh, so with OpenShell on the inference layer's
+# LiteLLM admits them from the pod network on its API port; they still use the minted
+# virtual key. On a bring-your-own cluster, also set kubernetes_cluster_cidr to its pod CIDR.
+litellm_allow_pod_network: "{{ openshell_enabled | bool }}"
+
+# --- KubeRay (optional — disabled by default) ---
+kuberay_enabled: false
+kuberay_namespace: "ray-system"
+kuberay_operator_version: "1.3.0"
+
+# --- Istio mesh ---
+# Namespaces LiteLLM admits; add your own ambient-labelled agent namespace here.
+litellm_allowed_namespaces:
+  - "{{ gateway_namespace | default('envoy-gateway-system') }}"
+  - "{{ litellm_namespace | default('litellm') }}"
+  - "{{ agent_sandbox_namespace }}"
+  - "{{ kuberay_namespace }}"
+
+# --- Keycloak ---
+# Optional in LiteLLM mode: set keycloak_enabled: true for the realm.
+keycloak_agent_realm: "agent-toolkit"
