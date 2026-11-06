@@ -1,7 +1,7 @@
 # Stack Validation & Preflight Checks
 
 Pre-install node readiness and post-deploy health checks for the
-Intel® AI for Enterprise Agent Toolkit.
+Intel® Agent Toolkit.
 
 ---
 

@@ -1,7 +1,7 @@
-# Quick Start — Intel® AI for Enterprise Agent Toolkit
+# Quick Start — Intel® Agent Toolkit
 
 
-> **Installing this release.** The Agent Toolkit installs through the [Intel® AI for Enterprise Solutions](https://github.com/intel/enterprise-ai-solutions) installer. Run the commands in these docs from an `enterprise-ai-solutions` checkout:
+> **Installing this release.** [Toolkit Manager](https://github.com/intel/enterprise-ai-solutions) installs and operates Intel® Agent Toolkit. Run the commands in these docs from an `enterprise-ai-solutions` checkout:
 >
 > ```bash
 > git clone -b release-1.2 https://github.com/intel/enterprise-ai-solutions.git && cd enterprise-ai-solutions

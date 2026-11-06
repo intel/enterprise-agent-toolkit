@@ -34,7 +34,7 @@ vllm_sr_enabled: false                     # deploy_vllm_sr
 # deploy_ingress_controller: none (the platform gateway is always installed)
 
 `````
-Make sure to update the values in `env/<name>/global_config.yaml`, `config.agent-toolkit.yaml` and `config.inference.yaml` according to your requirements before running the Intel® AI for Enterprise Agent Toolkit.
+Make sure to update the values in `env/<name>/global_config.yaml`, `config.agent-toolkit.yaml` and `config.inference.yaml` according to your requirements before Toolkit Manager installs Intel® Agent Toolkit.
 
 
 >

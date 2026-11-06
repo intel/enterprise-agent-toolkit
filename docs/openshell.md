@@ -368,7 +368,7 @@ openshell sandbox delete opencode
 > In the community image, `opencode` is a Node launcher that starts the bundled executable
 > `/usr/lib/node_modules/opencode-ai/bin/.opencode`, which makes the model calls. That path is
 > allowlisted in the `genai-gateway` provider profile
-> (`charts/openshell/genai-gateway-provider.yaml` in the agent toolkit, `ext/enterprise.agent-toolkit/` in the
+> (`charts/openshell/genai-gateway-provider.yaml` in Intel® Agent Toolkit, `ext/enterprise.agent-toolkit/` in the
 > enterprise-ai-solutions checkout). If a
 > model call returns `binary ... not allowed in policy '_provider_genai_gateway'`, add OpenCode's
 > resolved binary path there and re-run the deployment (or `openshell provider profile update`).
@@ -613,7 +613,7 @@ openshell logs <sandbox> --source sandbox
 |---|---|
 | `openshell \| Check Agent Sandbox API is served (agent_sandbox)` fails | Enable Agent Sandbox in the same run |
 | `OpenShell on Kubernetes authenticates users via OIDC only` | Choose an auth mode in `config.agent-toolkit.yaml` |
-| LLM call returns `policy_denied` | The calling binary is not in the provider profile `binaries` list (`charts/openshell/genai-gateway-provider.yaml` in the agent toolkit); edit it and re-run `./es_auto_installer.sh install agent-toolkit` with `openshell_enabled: true` |
+| LLM call returns `policy_denied` | The calling binary is not in the provider profile `binaries` list (`charts/openshell/genai-gateway-provider.yaml` in Intel® Agent Toolkit); edit it and re-run `./es_auto_installer.sh install agent-toolkit` with `openshell_enabled: true` |
 | `transport error` / `Connection reset by peer`, or `--upload` fails with `ssh tar extract exited with status 255` | `kubectl port-forward` dropped a stream; retry the command (re-run `openshell sandbox upload <name> <file> <dest>` for a failed upload), and restart the port-forward if it exited |
 | CLI hangs | Make sure `NO_PROXY` includes `127.0.0.1`, so the CLI does not send gateway traffic through a proxy |
 | Sandbox fails with `Policy fetch failed ... failed to connect to OpenShell server` | Sandbox DNS is blocked. Check `kubectl get netpol eat-openshell-sandbox-pods -n openshell-sandboxes -o yaml` lists the resolver from the pod's `/etc/resolv.conf` (NodeLocal DNSCache `169.254.25.10` on kubespray); if the cluster uses another DNS cache, set `openshell_sandbox_dns_cidrs` and re-run the deployment |
