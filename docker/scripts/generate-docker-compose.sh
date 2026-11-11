@@ -881,7 +881,7 @@ EOF
     log_success "Generation complete!"
     log_info "Next steps:"
     log_info "  1. Review: cat ${OUTPUT_FILE}"
-    log_info "  2. Deploy: ./deploy-agentic-stack.sh --platform=docker"
+    log_info "  2. Deploy: ./docker/deploy.sh"
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

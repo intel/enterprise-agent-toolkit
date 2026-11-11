@@ -1,19 +1,19 @@
 all:
   hosts:
-    master1:
+    localhost:
       ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"
       ansible_user: "{{ lookup('env', 'USER') }}"
-      ansible_become: true
   children:
     kube_control_plane:
       hosts:
-        master1:
+        localhost:
     kube_node:
       hosts:
-        master1:
+        localhost:
     etcd:
       hosts:
-        master1:
+        localhost:
     k8s_cluster:
       children:
         kube_control_plane:

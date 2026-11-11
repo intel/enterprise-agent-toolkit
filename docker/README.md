@@ -30,7 +30,7 @@ models=Qwen/Qwen2.5-Coder-14B-Instruct
 **Step 2:** Deploy from repository root:
 
 ```bash
-./deploy-agentic-stack.sh --platform=docker
+./docker/deploy.sh
 ```
 
 ---
@@ -50,7 +50,7 @@ models=Qwen/Qwen2.5-Coder-14B-Instruct,meta-llama/Llama-3.1-8B-Instruct
 Then deploy:
 
 ```bash
-./deploy-agentic-stack.sh --platform=docker
+./docker/deploy.sh
 ```
 
 > **Note:** Any model container that is already running and unchanged will **not** be restarted. Only new models added to the list will be created.
@@ -215,7 +215,7 @@ models=your-org/your-model-name
 ```
 
 ```bash
-./deploy-agentic-stack.sh --platform=docker
+./docker/deploy.sh
 ```
 
 ---
@@ -344,7 +344,7 @@ models=Qwen/Qwen2.5-Coder-14B-Instruct,meta-llama/Llama-3.1-8B-Instruct
 
 Then redeploy:
 ```bash
-./deploy-agentic-stack.sh --platform=docker
+./docker/deploy.sh
 ```
 
 **Note:** `docker-compose.vllm.yml`, `docker-compose.ovms.yml`, and `litellm/config.yaml` are auto-generated — do not edit manually.
@@ -403,7 +403,7 @@ tool_call_parser=qwen3_coder  # Set to 'none' to disable
 
 ```bash
 # Stop (keep data)
-./deploy-agentic-stack.sh --platform=docker --down
+./docker/deploy.sh --down
 
 # Stop and delete all data, including cached/converted model weights
 # (use docker-compose.ovms.yml when serving_engine=openvino)

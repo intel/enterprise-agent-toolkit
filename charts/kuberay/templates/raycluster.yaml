@@ -1,0 +1,132 @@
+# Copyright (C) 2025-2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# ---------------------------------------------------------------------------
+# RayCluster — reconciled by the KubeRay operator.
+#
+# Head node  : coordinator only (num-cpus=0 keeps user tasks off the head)
+# Worker group: scale-out executors driven by values / agentic-config.cfg
+#
+# In-cluster addresses after deployment:
+#   Ray Client API : ray://{{ include "kuberay-cluster.name" . }}-head-svc.<namespace>.svc.cluster.local:10001
+#   Dashboard API  : http://{{ include "kuberay-cluster.name" . }}-head-svc.<namespace>.svc.cluster.local:8265
+# ---------------------------------------------------------------------------
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: {{ include "kuberay-cluster.name" . }}
+  labels:
+    {{- include "kuberay-cluster.labels" . | nindent 4 }}
+spec:
+  # Ray version must match the container image tag
+  rayVersion: {{ .Chart.AppVersion | quote }}
+
+  # Enable the Ray autoscaler sidecar on the head pod so the cluster can
+  # scale workers between minReplicas and maxReplicas automatically.
+  enableInTreeAutoscaling: true
+
+  # ---------------------------------------------------------------------------
+  # Head group
+  # ---------------------------------------------------------------------------
+  headGroupSpec:
+    rayStartParams:
+      # num-cpus=0: head is coordinator only; no user tasks scheduled here
+      num-cpus: "0"
+      dashboard-host: "0.0.0.0"
+    template:
+      metadata:
+        labels:
+          {{- include "kuberay-cluster.labels" . | nindent 10 }}
+      spec:
+        containers:
+          - name: ray-head
+            image: {{ .Values.cluster.rayImage }}
+            imagePullPolicy: IfNotPresent
+            ports:
+              - containerPort: 6379
+                name: gcs
+              - containerPort: 8265
+                name: dashboard
+              - containerPort: 10001
+                name: client
+            resources:
+              requests:
+                cpu: {{ .Values.cluster.head.cpuRequest | quote }}
+                memory: {{ .Values.cluster.head.memoryRequest | quote }}
+              limits:
+                cpu: {{ .Values.cluster.head.cpuLimit | quote }}
+                memory: {{ .Values.cluster.head.memoryLimit | quote }}
+            # Liveness: GCS port must be accepting connections
+            livenessProbe:
+              tcpSocket:
+                port: 6379
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              failureThreshold: 6
+            # Readiness: dashboard endpoint confirms cluster is fully up
+            readinessProbe:
+              httpGet:
+                path: /api/version
+                port: 8265
+              initialDelaySeconds: 30
+              periodSeconds: 10
+              failureThreshold: 6
+            # Security hardening — no privilege escalation
+            securityContext:
+              allowPrivilegeEscalation: false
+              runAsNonRoot: true
+              capabilities:
+                drop: ["ALL"]
+        {{- with .Values.affinity }}
+        affinity:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .Values.tolerations }}
+        tolerations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+
+  # ---------------------------------------------------------------------------
+  # Worker groups
+  # ---------------------------------------------------------------------------
+  workerGroupSpecs:
+    - groupName: {{ .Values.cluster.worker.groupName | quote }}
+      replicas: {{ .Values.cluster.worker.replicas }}
+      minReplicas: {{ .Values.cluster.worker.minReplicas }}
+      maxReplicas: {{ .Values.cluster.worker.maxReplicas }}
+      rayStartParams: {}
+      template:
+        metadata:
+          labels:
+            {{- include "kuberay-cluster.labels" . | nindent 12 }}
+        spec:
+          containers:
+            - name: ray-worker
+              image: {{ .Values.cluster.rayImage }}
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: {{ .Values.cluster.worker.cpuRequest | quote }}
+                  memory: {{ .Values.cluster.worker.memoryRequest | quote }}
+                limits:
+                  cpu: {{ .Values.cluster.worker.cpuLimit | quote }}
+                  memory: {{ .Values.cluster.worker.memoryLimit | quote }}
+              # Security hardening
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop: ["ALL"]
+              lifecycle:
+                preStop:
+                  exec:
+                    # Drain the worker gracefully before the pod terminates
+                    command: ["/bin/sh", "-c", "ray stop"]
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

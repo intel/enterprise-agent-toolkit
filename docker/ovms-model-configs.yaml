@@ -49,7 +49,7 @@
 #    bash docker/scripts/generate-docker-compose.sh
 #
 # 3. Deploy:
-#    ./deploy-agentic-stack.sh --platform=docker
+#    ./docker/deploy.sh
 #
 # Notes:
 # ------
