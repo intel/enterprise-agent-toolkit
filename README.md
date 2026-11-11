@@ -55,6 +55,7 @@
 - [Validated Orchestration Frameworks](#validated-orchestration-frameworks)
 - [Example Business Use Cases](#example-business-use-cases-not-pre-bundled)
 - [Deployment Model](#deployment-model)
+- [Use with an AI Assistant](#use-with-an-ai-assistant)
 - [Rack-Scale AI Fabric Mode](#rack-scale-ai-fabric-mode)
 - [Build vs. Build-from-Scratch](#build-vs-build-from-scratch)
 - [Frequently Asked Questions](#frequently-asked-questions)
@@ -278,6 +279,22 @@ The full step-by-step deployment guide — covering the base stack, semantic rou
 
 
 **Estimated time to first running agent: hours, not months.**
+
+---
+
+## Use with an AI Assistant
+
+This repository ships instructions and skills for AI coding assistants (GitHub Copilot, Claude Code, Cursor, Cline, Google Antigravity and others). They help you install the toolkit, find the right setting, connect agent code to each service, and debug failures with a catalog of known problems and a read-only health check:
+
+| File | Purpose |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | What each component is for, how to find your installation, and the rules the assistant follows (read-only diagnosis first, never print secrets, ask before changing anything) |
+| [`.agents/skills/`](.agents/skills) | Four skills: `agent-toolkit-install`, `agent-toolkit-configuration`, `agent-toolkit-components`, `agent-toolkit-troubleshoot` |
+| [`.github/copilot-instructions.md`](.github/copilot-instructions.md), [`CLAUDE.md`](CLAUDE.md) | Short entry points for Copilot Chat and Claude Code, which point at the files above |
+
+After `init agent-toolkit`, open `ext/enterprise.agent-toolkit/` in your editor (or start your assistant's CLI there), so the assistant loads these files. Then ask, for example, "check my Agent Toolkit install" or "connect my LangGraph agent to Redis and the sandbox".
+
+The files are in `ext/` only when Toolkit Manager pins a toolkit revision that contains them; check with `ls ext/enterprise.agent-toolkit/AGENTS.md`. If they are missing, open a clone of this repository's `main` branch instead, and give the assistant the path of your Toolkit Manager checkout.
 
 ---
 
