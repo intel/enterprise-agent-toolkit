@@ -657,52 +657,6 @@ immediately and refills the pool in the background.
 
 ---
 
-## Upgrading
-
-### From v0.4.6 → v0.5.0 (Breaking Changes)
-
-1. **Backup existing resources** (if upgrading existing deployment):
-   ```bash
-   kubectl get sandboxes,sandboxclaims,sandboxtemplates,sandboxwarmpools -A -o yaml > backup.yaml
-   ```
-
-2. **Update version** in `env/<name>/config.agent-toolkit.yaml`:
-   ```yaml
-   agent_sandbox_version: "v0.5.0"
-   ```
-
-3. **Re-run deployment**:
-   ```bash
-   ./es_auto_installer.sh install agent-toolkit
-   ```
-
-4. **Update client SDK**:
-   ```bash
-   pip install --upgrade k8s-agent-sandbox==0.5.0
-   ```
-
-5. **Update code to use v1beta1 API** (if creating custom resources):
-   ```yaml
-   # Old (v0.4.6)
-   apiVersion: extensions.agents.x-k8s.io/v1alpha1
-
-   # New (v0.5.0)
-   apiVersion: extensions.agents.x-k8s.io/v1beta1
-   ```
-
-> **Note**: v1alpha1 resources are automatically converted to v1beta1 via conversion webhook.
-> Existing sandboxes continue to work without manual intervention.
-
-### Future Version Upgrades
-
-1. Update `agent_sandbox_version` in `env/<name>/config.agent-toolkit.yaml`
-2. Re-run `./es_auto_installer.sh install agent-toolkit`
-3. Upgrade client SDK to matching version
-
-The Ansible playbook handles all deployment updates automatically.
-
----
-
 ## Troubleshooting
 
 ### Pods not starting
