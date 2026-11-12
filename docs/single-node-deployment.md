@@ -436,7 +436,7 @@ Then re-run the deploy script:
 kubectl get pods -n agent-sandbox-system
 # NAME                                          READY   STATUS    RESTARTS
 # agent-sandbox-controller-xxx                  1/1     Running   0
-# sandbox-router-deployment-xxx                 1/1     Running   0
+# sandbox-router-xxx                            1/1     Running   0
 
 kubectl get sandboxtemplate -n agent-sandbox-system
 # NAME                      AGE

@@ -23,7 +23,7 @@ OpenShell is **optional** and **off by default** (`openshell_enabled: false`).
 |---|---|
 | OpenShell Helm chart / images | `0.0.116` (`oci://ghcr.io/nvidia/openshell/helm-chart`) |
 | OpenShell CLI (used by the deployment) | `v0.0.116` GitHub release |
-| Agent Sandbox | `v0.5.0` (`agent_sandbox_enabled: true`) |
+| Agent Sandbox | `v1.0.10` (`agent_sandbox_enabled: true`) |
 | GenAI Gateway | LiteLLM as deployed by `auth_provider: "litellm"` (optional; provider is skipped if absent) |
 | User authentication | Single-admin mode (ClusterIP gateway, access gated by Kubernetes RBAC) |
 | CNI | Must enforce `NetworkPolicy` (e.g. Calico) |
@@ -76,7 +76,7 @@ GenAI Gateway (LiteLLM, :4000)                   hosts allowed by the sandbox
 | Toolkit component | Used by OpenShell for | Changed |
 |---|---|---|
 | Kubernetes cluster | Runs the gateway and sandbox pods | No |
-| Agent Sandbox controller `v0.5.0` (`agent_sandbox_enabled`) | Turns OpenShell `Sandbox` CRs into pods | No |
+| Agent Sandbox controller `v1.0.10` (`agent_sandbox_enabled`) | Turns OpenShell `Sandbox` CRs into pods | No |
 | GenAI Gateway / LiteLLM (`auth_provider: "litellm"`) | The only path from a sandbox to models | One additional virtual key |
 | Model backends behind LiteLLM | Reached through LiteLLM only | No |
 | Deployment framework (`config.agent-toolkit.yaml`, `es_auto_installer.sh`, Ansible) | Installs and re-runs OpenShell like other components | New `openshell_enabled` switch |

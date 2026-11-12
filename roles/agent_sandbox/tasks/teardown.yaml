@@ -5,7 +5,7 @@
 # Agent Sandbox — Teardown
 # =============================================================================
 # Removes what install applied: sandbox-router, controller + CRDs (via the
-# upstream release manifests), and the namespace.
+# upstream release manifest), and the namespace.
 # =============================================================================
 
 - name: "agent_sandbox | teardown | Remove sandbox-router deployment"
@@ -13,20 +13,26 @@
     state: absent
     api_version: apps/v1
     kind: Deployment
-    name: sandbox-router-deployment
+    name: sandbox-router
     namespace: "{{ agent_sandbox_namespace }}"
   failed_when: false
 
-- name: "agent_sandbox | teardown | Remove extensions manifest (SandboxTemplate/Claim/WarmPool CRDs)"
+- name: "agent_sandbox | teardown | Remove sandbox-router cluster RBAC"
   kubernetes.core.k8s:
     state: absent
-    src: "{{ agent_sandbox_extensions_manifest_url }}"
+    api_version: rbac.authorization.k8s.io/v1
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+  loop:
+    - {kind: ClusterRoleBinding, name: sandbox-router}
+    - {kind: ClusterRoleBinding, name: sandbox-router-auth-delegator}
+    - {kind: ClusterRole, name: sandbox-router}
   failed_when: false
 
-- name: "agent_sandbox | teardown | Remove core manifest (CRDs + controller)"
+- name: "agent_sandbox | teardown | Remove manifest (CRDs + controller)"
   kubernetes.core.k8s:
     state: absent
-    src: "{{ agent_sandbox_core_manifest_url }}"
+    src: "{{ agent_sandbox_manifest_url }}"
   failed_when: false
 
 - name: "agent_sandbox | teardown | Remove namespace"
