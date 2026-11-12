@@ -106,3 +106,28 @@ jobs:
           skip-dirs: core/helm-charts
           format: table
           exit-code: '0'
+
+      - name: Trivy full report (JSON)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig,license
+          skip-dirs: core/helm-charts
+          format: json
+          output: trivy-results.json
+          exit-code: '0'
+
+      # Downloadable reports; the Security tab needs write access.
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && hashFiles('trivy-*.sarif', 'trivy-results.json') != ''
+        with:
+          name: trivy-report
+          path: |
+            trivy-results.json
+            trivy-vuln.sarif
+            trivy-misconfig.sarif
+          retention-days: 14
