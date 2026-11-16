@@ -65,8 +65,9 @@ jobs:
       # password report LOW, so raising the floor would hide them.
       - name: Run Bandit
         run: |
-          bandit -r . -x ./venv,./.venv -s B101,B404,B601,B603 \
-            -f sarif -o bandit-results.sarif --exit-zero
+          args=(-r . -x './venv,./.venv' -s 'B101,B404,B601,B603' --exit-zero)
+          bandit "${args[@]}" -f sarif -o bandit-results.sarif
+          bandit "${args[@]}" -f json -o bandit-results.json
           jq -r '"Bandit: \(.runs[0].results | length) finding(s)",
             (.runs[0].results[]
               | "  \(.level)\t\(.ruleId)\t"
@@ -81,3 +82,14 @@ jobs:
         with:
           sarif_file: bandit-results.sarif
           category: bandit
+
+      # Downloadable reports; the Security tab needs write access.
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && hashFiles('bandit-results.*') != ''
+        with:
+          name: bandit-report
+          path: |
+            bandit-results.json
+            bandit-results.sarif
+          retention-days: 14

@@ -58,7 +58,8 @@ jobs:
             --framework kubernetes github_actions secrets \
             --skip-path 'core/helm-charts/' \
             --soft-fail --compact --quiet \
-            -o sarif --output-file-path console,. || true
+            -o cli -o json -o sarif \
+            --output-file-path console,checkov-results.json,results.sarif || true
           ls -la results.sarif 2>/dev/null || echo "no results.sarif produced"
 
       - name: Upload Checkov SARIF
@@ -67,3 +68,14 @@ jobs:
         with:
           sarif_file: results.sarif
           category: checkov
+
+      # Downloadable reports; the Security tab needs write access.
+      - name: Upload Checkov report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && hashFiles('results.sarif', 'checkov-results.json') != ''
+        with:
+          name: checkov-report
+          path: |
+            checkov-results.json
+            results.sarif
+          retention-days: 14
