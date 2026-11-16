@@ -22,7 +22,11 @@ With `routing_mode: path` (main track) the API is `https://$D/litellm/v1` instea
 
 ### NET-2 kubectl says `Unable to connect to the server: Forbidden`, or `couldn't get current server API group list ... Forbidden`
 - **Why:** the shell's `https_proxy` sends API server traffic to the corporate proxy. The installer uses `global_config.yaml` and is not affected.
-- **Fix:** `export no_proxy=$no_proxy,<every node IP>,.<domain> NO_PROXY=$no_proxy`
+- **Fix:** two separate lines. On one line, `NO_PROXY=$no_proxy` would get the old value, and kubectl reads `NO_PROXY` first.
+  ```bash
+  export no_proxy="${no_proxy:+$no_proxy,}<every node IP>,.<domain>"
+  export NO_PROXY="$no_proxy"
+  ```
 
 ### NET-3 kubectl says `The connection to the server localhost:8080 was refused`
 - **Fix:** `export KUBECONFIG=<root>/env/<env>/kubeconfig.yaml`

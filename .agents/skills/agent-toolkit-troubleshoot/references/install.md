@@ -16,13 +16,13 @@ sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '{l[NR]=$0} END{for(i=1;i<=NR;i++) if(l[i
 - A `fatal:` followed by `...ignoring` is harmless. Kubespray probes things on a fresh install (`etcd --version`, `calicoctl.sh get ...`).
 - `FAILED - RETRYING: ... (N retries left)` is polling.
 - `the output has been hidden due to the fact that 'no_log: true'` hides secret-handling tasks. Debug them from the pod side (logs, Secret present or not). Never turn `no_log` off.
-- `ES_LOG_LEVEL=debug ./es_auto_installer.sh install ...` gives verbose Ansible output.
+- `ES_LOG_LEVEL=debug ./es_auto_installer.sh install ...` gives verbose Ansible output (`-vvv`). That log holds secrets in plain text, even from `no_log` tasks: the `EXEC` lines of the model deploy carry the LiteLLM master key and `HF_TOKEN`. Never share a debug log, leave out its `EXEC` lines when you read it (`grep -v '> EXEC '`), and delete it when done.
 
 ## Before or at the start of the install
 
 ### INS-1 `configure` refuses: `Refusing: stdin is not a terminal and --force was not passed.`
 - **Why:** `configure` asks for confirmation and needs a terminal. Some versions also reject `configure --force`.
-- **Fix:** the user runs `./es_auto_installer.sh configure` in a real terminal. Check whether the version accepts `--force`: `./es_auto_installer.sh --help | grep -n configure`.
+- **Fix:** the user runs `./es_auto_installer.sh configure` in a real terminal **(changes the cluster)**. Check whether the version accepts `--force`: `./es_auto_installer.sh --help | grep -n configure`.
 
 ### INS-2 Preflight: `No internet connectivity — cannot reach https://google.com ...`
 - **Fix:** set `http_proxy`, `https_proxy` and `no_proxy` in `env/<env>/global_config.yaml` **(changes the cluster)**. `no_proxy` needs `localhost`, `127.0.0.1`, the node IPs and subnet, the cluster service and pod CIDRs (`kubernetes_service_cidr`, `kubernetes_cluster_cidr`), `.<base_domain_name>`, `.svc` and `.cluster.local`. Always write the proxy URL with its port.
@@ -64,7 +64,7 @@ sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '{l[NR]=$0} END{for(i=1;i<=NR;i++) if(l[i
 
 ### INS-9 `ERROR: kubectl missing. Run './es_auto_installer.sh configure' ...` after a teardown
 - **Why:** on SSH or multi-node installs, the Kubespray reset deletes `/usr/local/bin/kubectl` and `helm`.
-- **Fix:** the user runs `./es_auto_installer.sh configure` again.
+- **Fix:** the user runs `./es_auto_installer.sh configure` again **(changes the cluster)**.
 
 ### INS-10 `No such file or directory: b'.../.kubespray/venv/bin/pip3'`
 - **Why:** the checkout was moved or renamed; the Kubespray virtualenv is not relocatable.
@@ -74,7 +74,7 @@ sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '{l[NR]=$0} END{for(i=1;i<=NR;i++) if(l[i
 
 ### INS-11 A changed platform setting has no effect on re-run
 - **Why:** Helm-based platform components (cert-manager, Istio, Envoy Gateway, Keycloak, observability, CloudNativePG) are skipped when their release already exists, even a failed one. LiteLLM is skipped too: `LiteLLM already deployed in litellm — skipping install (litellm_reconcile: true upgrades it with the current settings).`
-- **Fix:** for LiteLLM, re-run with `-- -e litellm_reconcile=true`. For a platform component, tear that component down and install it again **(changes the cluster; check what depends on it first)**.
+- **Fix:** for LiteLLM, re-run with `-- -e litellm_reconcile=true` **(changes the cluster)**. For a platform component, tear it down and install it again **(deletes data)**. The teardown also removes every component that depends on it, in every layer above (`depends_on` in `<root>/configs/components.yaml` and in each layer's `components.yaml`); the confirmation prompt does not list them. Never do this for `postgresql`: it takes Keycloak, observability, LiteLLM with its keys and spend, and Langfuse with it, and deletes every platform database. Nor for `cert_manager`, which almost everything depends on. Show the user what goes and get explicit confirmation.
 
 ### INS-12 The install fails while deploying the default or guard model, and the summary blames `a gated model without HF_TOKEN`
 - **Why:** the hint is generic. Look at the model's real error: `grep -n 'Deploy solution-requested default models' -A30 "$log"`. Common causes are memory (INS-13), CPU placement (INS-14) or a gated model (INS-15).
@@ -115,7 +115,7 @@ Component-level failures (Agent Sandbox, Kata, OpenShell, Redis, pgvector, KubeR
 
 ### INS-20 The node readiness report is missing (main track)
 - **Why:** on the main track, `install` does not run the toolkit's node preflight, and `node_preflight_enabled` is not read.
-- **Fix:** run it by hand, with the user's OK. It runs with sudo on the nodes (add `-K` if sudo needs a password; then the user runs it), writes a temporary results file in `/tmp` on each node, and may create or edit `env/<env>/kubespray_extra.yml` to fix the kubelet DNS file. It checks only the hosts already in `inventory/hosts.yaml`.
+- **Fix:** run it by hand, with the user's OK **(changes the cluster)**. It runs with sudo on the nodes (add `-K` if sudo needs a password; then the user runs it), writes a temporary results file in `/tmp` on each node, and may create or edit `env/<env>/kubespray_extra.yml` to fix the kubelet DNS file. It checks only the hosts already in `inventory/hosts.yaml`.
   ```bash
   .venv/bin/ansible-playbook -i env/<env>/inventory/hosts.yaml ext/enterprise.agent-toolkit/playbooks/preflight-check.yml
   ```
@@ -125,14 +125,16 @@ Component-level failures (Agent Sandbox, Kata, OpenShell, Redis, pgvector, KubeR
 
 ### INS-21 Node tasks ran on the installer host instead of the node
 - **You see:** Kata failures on workers (`snapshotter devmapper was not found`), `The module interpreter '.../.venv/bin/python3.12' was not found`, or checks that pass suspiciously fast.
-- **Why:** a node in `env/<env>/inventory/hosts.yaml` has no `ansible_connection`.
-- **Fix:** add `ansible_connection: ssh` to every remote node, and `local` to the installer host **(changes the cluster)**. On the main track, an inventory generated from `nodes.yaml` cannot carry it; write `inventory/hosts.yaml` by hand and leave `nodes_control_plane` in `nodes.yaml` empty.
+- **Why:** a node in `env/<env>/inventory/hosts.yaml` has no `ansible_connection`. The inventory generated from `nodes.yaml` sets it on both tracks, so this comes from a hand-written inventory, or from a main-track checkout older than Toolkit Manager commit `1cb0739` (10 Nov 2026).
+- **Check:** `git -C <root> merge-base --is-ancestor 1cb0739 HEAD && echo has-the-fix` (main track).
+- **Fix:** update an older checkout (`git -C <root> pull`), list the nodes in `env/<env>/nodes.yaml` and let install generate the inventory **(changes the cluster)**. With a hand-written `inventory/hosts.yaml`, add `ansible_connection: ssh` to every remote node and `local` to the installer host, and leave `nodes_control_plane` in `nodes.yaml` empty.
 
 ### INS-22 Preflight `NTP not synced` on a node
 - **Fix:** enable chrony or systemd-timesyncd on every node (`timedatectl status`) **(changes the cluster)**.
 
 ### INS-23 `init --env <name>` for a remote install seeds a localhost inventory
-- **Fix:** write the real nodes into `env/<env>/inventory/hosts.yaml`, each with `ansible_connection: ssh` **(changes the cluster)**.
+- **Why:** `inventory/hosts.yaml` is generated from `nodes.yaml` by `install`. Until then it lists only the installer host.
+- **Fix:** list the nodes in `env/<env>/nodes.yaml` (`nodes_control_plane`, plus `nodes_workers` for dedicated workers) **(changes the cluster)**. A node readiness report (INS-20) run before the first install still checks only the installer host; run the per-node checks in the agent-toolkit-install skill (`references/prerequisites.md`) on the other nodes.
 
 ### INS-24 Adding a node to a running cluster
 - Not supported. List every node before the first install.
@@ -143,11 +145,11 @@ Component-level failures (Agent Sandbox, Kata, OpenShell, Redis, pgvector, KubeR
 ## Teardown and re-install
 
 ### INS-26 `Refusing: stdin is not a terminal and --force was not passed.` on teardown
-- **Fix:** with the user's explicit OK, add `--force`.
+- **Fix:** the user runs the teardown in a terminal, where it asks for confirmation. Add `--force` only when the user asks for it **(deletes data)**.
 
 ### INS-27 A component that is switched off cannot be torn down
 - **Why:** the enable switches filter teardown too. Setting `<component>_enabled: false` and re-running install does not remove anything.
-- **Fix:** `./es_auto_installer.sh teardown <component> --env <env> -- -e <component>_enabled=true`, then set the switch to `false` **(changes the cluster)**.
+- **Fix:** `./es_auto_installer.sh teardown <component> --env <env> -- -e <component>_enabled=true`, then set the switch to `false` **(deletes data: the component's namespace, volumes and credentials)**.
 
 ### INS-28 `teardown infrastructure` after a failed install stops at `vllm_sr | List LLMInferenceServices`: `Invalid kube-config file. No configuration found.`
 - **Why (only with `vllm_sr_enabled: true`):** the semantic-router teardown needs a working cluster API. The release track guards against this in newer inference revisions; the main track does not.
@@ -164,7 +166,7 @@ Component-level failures (Agent Sandbox, Kata, OpenShell, Redis, pgvector, KubeR
 - **Fix:** after teardown, clear that directory when the data is no longer needed **(deletes data: every local volume and the downloaded model weights)**.
 
 ### INS-31 A namespace is still `Terminating` right after `teardown agent-toolkit`
-- **Fix:** wait until `kubectl get ns` no longer lists it, then reinstall.
+- **Fix:** wait until `kubectl get ns` no longer lists it, then reinstall **(changes the cluster)**.
 
 ### INS-32 Harmless noise during teardown
 - `rmtree failed: [Errno 1] Operation not permitted: 'io.prio.class'` and `plugin type="calico" failed (delete): ... connection refused`.

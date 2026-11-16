@@ -43,7 +43,7 @@ This clones the inference and toolkit repos into `ext/` and seeds `env/<env>/`. 
 - `env/<env>/global_config.yaml`: `base_domain_name` (default `solutions.ai`), the proxy settings, `gateway_tls_mode`, `storage_backend`, and Kata (`kata_containers_enabled`, `kata_runtime`).
 - `env/<env>/config.agent-toolkit.yaml`: components (`openshell_enabled`, `kuberay_enabled`, ...) and `llm_services_autodeploy_models`. For 128 GB set `["qwen2-5-coder-7b"]`.
 - Only without systemd-resolved: `env/<env>/kubespray_extra.yml` needs `kube_resolv_conf: "/etc/resolv.conf"` and `resolvconf_mode: "none"`, plus `upstream_dns_servers` when only some nodes lack systemd-resolved. The readiness report in step 5 writes these lines for you.
-- Multi-node or remote: write `env/<env>/inventory/hosts.yaml` by hand in Kubespray format. Give every remote node `ansible_connection: ssh` and the installer host `ansible_connection: local`, and leave `nodes_control_plane` in `nodes.yaml` empty. The inventory generated from `nodes.yaml` has no `ansible_connection` on the main track, so node tasks would run on the installer host. Adding nodes after install is not supported.
+- Multi-node or remote: list the nodes in `env/<env>/nodes.yaml` (`nodes_control_plane`, plus `nodes_workers` for dedicated workers, with the SSH user and key). `install` generates `inventory/hosts.yaml` from it, with `ansible_connection` set for each node. A main-track checkout older than commit `1cb0739` (10 Nov 2026) leaves `ansible_connection` out, so node tasks would run on the installer host: update it first (troubleshoot INS-21). Adding nodes after install is not supported.
 - Export `HF_TOKEN` if any model is gated.
 
 The agent-toolkit-configuration skill explains every key.
@@ -58,7 +58,7 @@ On the main track `install` does not run the toolkit's node readiness report, so
 
 - It does not change the node configuration (it writes only a temporary results file in `/tmp`) and does not stop on failures. It runs with sudo and writes its reports to `env/<env>/logs/health-report-latest.{txt,json,html}`.
 - It may create or edit `env/<env>/kubespray_extra.yml` to fix the kubelet DNS file.
-- It checks the hosts in `inventory/hosts.yaml`. Before the first install that is only the installer host, unless you wrote the inventory by hand (step 4).
+- It checks the hosts in `inventory/hosts.yaml`. Before the first install that is only the installer host, because `install` generates the inventory from `nodes.yaml`. Run the per-node checks in `references/prerequisites.md` on the other nodes.
 
 Fix every FAIL using its hint. On the release track this report runs at the start of `install`.
 
@@ -76,10 +76,12 @@ Fix every FAIL using its hint. On the release track this report runs at the star
 
 ```bash
 export KUBECONFIG=$PWD/env/<env>/kubeconfig.yaml
+kubectl get llminferenceservices -n llm-inference          # every model Ready? (OVMS models: inferenceservices)
 ./es_auto_installer.sh validate agent-toolkit --env <env>
 ```
 
-- The install waits for the guard and default models. If a wait timed out (a `did not become Ready` warning in the log), the model may still be loading; check `kubectl get llminferenceservices -n llm-inference` and validate again once it is Ready.
+- Always check the models first. The install waits for the guard and default models (15 minutes each by default), but a model still loading after that does not fail the install, the log at the default level does not show it, and the summary lists it under "Succeeded". Validate once every model is Ready.
+- `validate` sends one test request through LiteLLM and, on NFS, creates and deletes a probe volume. Tell the user before running it.
 - For client access (hosts entries, the CA in `env/<env>/logs/ai-solutions-ca.crt`, the LiteLLM UI), see `references/lifecycle.md` "After install".
 - For agent code, use the agent-toolkit-components skill.
 

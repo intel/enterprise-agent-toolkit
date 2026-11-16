@@ -55,7 +55,7 @@ So:
 | Kind of setting | How it applies |
 |---|---|
 | Toolkit switch turned **on**, toolkit sizes | `./es_auto_installer.sh install agent-toolkit --env <env>` (or `install <component> --only`) |
-| Toolkit switch turned **off** | Re-running install removes nothing. Run `teardown <component> --env <env>` **while the switch is still on**, then set it to `false`. If it is already `false`: `teardown <component> -- -e <component>_enabled=true`. |
+| Toolkit switch turned **off** | Re-running install removes nothing. Run `teardown <component> --env <env>` **while the switch is still on**, then set it to `false`. If it is already `false`: `teardown <component> -- -e <component>_enabled=true`. **(deletes data: the component's namespace, volumes and credentials)** |
 | `litellm_allowed_namespaces` | Applied on every run: `install litellm --only` |
 | Guardrail **on** | `install agent-toolkit` (not `install litellm --only`: the guard model `qwen3guard` is deployed by `llm_services`, and the guardrail blocks every request until it is Ready) |
 | Guardrail **off**, main track | The switch alone does not unregister it. Set `false`, then delete the `content_safety` guardrail in the LiteLLM admin UI (Guardrails), with the user's OK. Do not run `litellm_reconcile` before it is deleted: that removes the guard host from LiteLLM's allowed hosts while the fail-closed guardrail is still registered, which blocks every request. |
@@ -64,9 +64,10 @@ So:
 | `routing_mode` (main track) | It changes every published URL: gateway, Keycloak, Grafana, LiteLLM. Re-run the full `install agent-toolkit -- -e litellm_reconcile=true`. Treat the change as untested on an installed cluster. |
 | Semantic router routes after a new model | `install vllm_sr --only` |
 | Model CPU, memory or server | `./model-manager deploy <name>` (from `<root>`) |
-| Volume sizes, pgvector database or user names, namespaces | Fixed after the first install. Run `teardown <component>` **with the old value still in place** (it deletes the data; ask first), then change the value, then install. Changing the value first leaves the old release and namespace orphaned. |
-| Kata on or off, `kata_runtime` | `install agent-toolkit` applies it on the running cluster (kata-deploy restarts containerd on every node, so ask first). Then the sandbox role adds the Kata template and pool. |
-| Storage backend, Kubernetes settings | These are fixed when the cluster is built. They need `teardown kubernetes` and a reinstall, which destroys the cluster; only with the user's explicit OK. |
+| Volume sizes, pgvector database or user names, namespaces | Fixed after the first install. Run `teardown <component>` **with the old value still in place** **(deletes data)**, then change the value, then install. Changing the value first leaves the old release and namespace orphaned. |
+| Kata **on**, `kata_runtime` | `install agent-toolkit` applies it on the running cluster **(changes the cluster)**: kata-deploy restarts containerd on every node. Then the sandbox role adds the Kata template and pool. |
+| Kata **off** | Re-running install removes nothing: kata-deploy, the `kata-sandbox-template` SandboxTemplate and the `kata-pool` warm pool stay. While `kata_containers_enabled` is still `true`, run `kubectl delete sandboxwarmpool kata-pool -n agent-sandbox-system`, `kubectl delete sandboxtemplate kata-sandbox-template -n agent-sandbox-system` and `./es_auto_installer.sh teardown kata_containers --env <env>`, then set the switch to `false` **(changes the cluster; running Kata sandboxes stop)**. If it is already `false`, add `-- -e kata_containers_enabled=true` to the teardown. |
+| Storage backend, Kubernetes settings | These are fixed when the cluster is built. They need `teardown kubernetes` and a reinstall, which destroys the cluster; only with the user's explicit OK **(deletes data: the whole cluster)**. |
 
 Install, teardown and model-manager change the cluster. Show the user the command and get an OK first.
 
@@ -79,7 +80,7 @@ Find the track first (`AGENTS.md`, "Which track the installation is on").
   - `jwt`: Keycloak tokens straight to the AI gateway, without any of those.
   - Setting `auth_type` in `config.inference.yaml` has no effect in a toolkit environment, because the toolkit file loads later. The installer's deprecation message and the inference docs say "config.inference.yaml"; that advice is for inference-only environments.
   - An `auth_provider` line in `global_config.yaml` is deprecated. If present it must agree with `auth_type`, otherwise preflight stops; delete it.
-  - Switching from `litellm_vkey` to `jwt` after install leaves LiteLLM running. `teardown litellm -- -e litellm_enabled=true` removes it, and also Langfuse, the master key Secret and the `litellm` namespace. Warn the user first.
+  - Switching from `litellm_vkey` to `jwt` after install leaves LiteLLM running. `teardown litellm -- -e litellm_enabled=true` removes it, and also Langfuse with every trace, the master key Secret and the `litellm` namespace **(deletes data)**. Warn the user first.
 - **Release track:** `auth_provider: litellm` (or `keycloak`) in `global_config.yaml`. `auth_type` is ignored.
 
 Check which value is in effect: `grep -nE '^(auth_type|auth_provider):' env/<env>/{config.inference,config.agent-toolkit,global_config}.yaml`.

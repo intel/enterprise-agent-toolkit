@@ -66,9 +66,9 @@ Install output lines like `FAILED - RETRYING: ... Wait for ... (N retries left)`
 |---|---|
 | `kata_containers_enabled is set, but this is a BYO cluster (existing_kubernetes)` | Kata is supported only on clusters the installer builds. |
 | `kata_runtime='<x>' is not valid` | Use `kata-fc`, `kata-qemu` or `both`. |
-| `... no cluster node exposes /dev/kvm` | Enable virtualisation (VT-x) in the BIOS, or nested virtualisation on a VM. |
-| `/dev/vhost-vsock is missing on: ...` | `sudo modprobe vhost_vsock` on those nodes. |
-| `kata-fc (Firecracker) cannot start microVMs on these AMX-capable nodes ... requires Linux >= 5.17` | Upgrade the kernel, or use `kata_runtime: kata-qemu`. |
+| `... no cluster node exposes /dev/kvm` | The installer has already tried loading the KVM modules. Enable virtualisation (VT-x) in the BIOS, or nested virtualisation on a VM **(changes the cluster)**. |
+| `/dev/vhost-vsock is missing on: ...` | The installer has already run `modprobe vhost_vsock`, so the kernel could not load it. Check `modinfo -n vhost_vsock` on those nodes. If the module is missing, install the kernel's modules package or move to a kernel that has it **(changes the cluster)**. On Ubuntu 24.04 the generic kernel ships it in `linux-modules-$(uname -r)`. |
+| `kata-fc (Firecracker) cannot start microVMs on these AMX-capable nodes ... requires Linux >= 5.17` | Upgrade the kernel, or use `kata_runtime: kata-qemu` **(changes the cluster)**. |
 | `... needs Firecracker, but no node has containerd's devmapper snapshotter in 'ok' state` | See KATA-3. |
 
 ### KATA-2 Kata pool pod stuck `ContainerCreating` with `FailedCreatePodSandBox ... too many open files`
@@ -79,7 +79,7 @@ Install output lines like `FAILED - RETRYING: ... Wait for ... (N retries left)`
 ### KATA-3 `FailedCreatePodSandBox ... snapshotter devmapper was not found` on a worker (kata-fc)
 - **Why:** the node's tasks ran on the installer host instead, because the node has no `ansible_connection` in the inventory. The worker never got the devmapper thin-pool.
 - **Check:** `grep -n ansible_connection env/<env>/inventory/hosts.yaml`. On the node: `sudo ctr plugins ls | grep devmapper` (should be `ok`).
-- **Fix:** add `ansible_connection: ssh` to every remote node (`local` for the installer host), then re-run the install **(changes the cluster)**.
+- **Fix:** see INS-21 in `install.md` (an older main-track checkout, or a hand-written inventory), then re-run the install **(changes the cluster)**.
 
 ### KATA-4 After `teardown kubernetes`, the next Kata install fails on leftovers
 - **You see:** `/opt/kata`, `nydus-for-kata-tee.service` or `containerd-devmapper.service` still present, or a thin-pool on deleted loop files.

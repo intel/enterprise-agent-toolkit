@@ -17,13 +17,14 @@ Side effect: with OpenShell on and Istio present, LiteLLM accepts connections fr
 | Sandbox pods | Namespace `openshell-sandboxes` |
 | CLI installed by the installer | `~/.cache/eat/openshell-cli-v<version>/openshell` on the installer host, for the installing user |
 
-Access model (default): single admin. The gateway is ClusterIP-only. Whoever can `kubectl port-forward` in `openshell-system` and read `openshell-client-tls` (in either namespace) is the admin. OIDC (`openshell_oidc_issuer`) exists but is not validated.
+Access model (default): single admin, and the client certificate is the only check. The gateway Service is ClusterIP, but no NetworkPolicy guards it and `openshell-system` is not in the mesh, so any pod in the cluster can reach `openshell.openshell-system:8080`, not only a port-forward. Whoever holds the certificate is the admin: anyone who can read `openshell-client-tls` in either namespace, or get into a sandbox pod in `openshell-sandboxes` (they mount it). OIDC (`openshell_oidc_issuer`) exists but is not validated.
 
 ## Connect the CLI
 
 ```bash
 kubectl port-forward -n openshell-system svc/openshell 8080:8080 &
-export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost   # otherwise the CLI hangs behind a proxy
+# Otherwise the CLI hangs behind a proxy. Keep the existing entries: kubectl still needs them.
+export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,$NO_PROXY}" no_proxy="127.0.0.1,localhost${no_proxy:+,$no_proxy}"
 dir="${XDG_CONFIG_HOME:-$HOME/.config}/openshell/gateways/eat/mtls"; mkdir -p "$dir"
 for k in ca.crt tls.crt tls.key; do
   kubectl get secret openshell-client-tls -n openshell-system -o jsonpath="{.data.${k//./\\.}}" | base64 -d > "$dir/$k"
@@ -60,7 +61,7 @@ Matching uses the **resolved** path: a venv's python resolves to its base interp
 
 ## Things to know
 
-- `kubectl exec` into a sandbox pod bypasses every policy. Restrict `pods/exec`, and `get`/`list` on Secrets (the admin certificate is there), in `openshell-sandboxes`.
+- `kubectl exec` into a sandbox pod bypasses every policy and reaches the mounted admin certificate. Restrict `pods/exec`, and `get`/`list` on Secrets (the certificate is there too), in `openshell-sandboxes`.
 - Policy decisions are written inside the pod. Fluent Bit and Loki do not collect them; use `openshell logs`.
 - Reinstalling OpenShell issues new client certificates (old CLI configs stop working), a new LiteLLM key and a new provider.
 - If someone revokes the `openshell-sandboxes` key in LiteLLM while the Secret still exists, the installer does not mint a new one. Fix **(changes the cluster)**: `openshell provider delete genai-gateway`, `kubectl delete secret openshell-genai-key -n openshell-system`, then `./es_auto_installer.sh install openshell --only`.

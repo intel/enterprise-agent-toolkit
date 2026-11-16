@@ -53,7 +53,7 @@ copy_secret pgvector-credentials pgvector <agent-ns>
 copy_secret sandbox-router-auth agent-sandbox-system <agent-ns>
 ```
 
-For LiteLLM, mint a virtual key for the agent (`litellm.md`) and store only that key. Never copy `litellm-master-key`.
+For LiteLLM, mint a virtual key for the agent and store only that key: `litellm.md` puts it straight into Secret `<agent>-litellm` in `<agent-ns>`. Never copy `litellm-master-key`.
 
 Copies do not follow changes. After a component is torn down and reinstalled (new password or token), copy again.
 

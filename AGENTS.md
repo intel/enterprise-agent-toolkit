@@ -60,7 +60,7 @@ The docs in `docs/` were written for the release track. On the main track, apply
 
 ## Rules for assistants
 
-- **Never show secret values** (keys, passwords, tokens, kubeconfig contents, certificates) in chat, files or logs. Name the Secret and key instead. When a command needs one, read it into a shell variable in the same command and do not echo it.
+- **Never show secret values** (keys, passwords, tokens, kubeconfig contents, certificates) in chat, files or logs. Name the Secret and key instead. When a command needs one, read it into a shell variable in the same command and do not echo it. A log written with `ES_LOG_LEVEL=debug` or `trace` holds secrets in plain text; never share it.
 - **Diagnose read-only first**: `kubectl get`, `describe`, `logs`, `auth can-i`; `helm list` and `status`; reading files under `env/`. The agent-toolkit-troubleshoot skill lists the checks to run.
 - **Ask the user before changing anything**:
   - `install`, `teardown`, `init` (including `--upgrade`), and `git` operations in `<root>` or `ext/`
@@ -72,6 +72,7 @@ The docs in `docs/` were written for the release track. On the main track, apply
   - `teardown platform`, `teardown inference`, `teardown kubernetes` or `teardown infrastructure`. These remove everything above them, and platform teardown deletes every database, including LiteLLM keys and spend.
   - `./model-manager undeploy all`, which also removes the guard model so that every LiteLLM request is blocked.
   - `teardown agent-toolkit` or `teardown redis_stack|pgvector|agent_sandbox|openshell|kuberay`. These delete the component's namespace, data and credentials.
+  - `teardown <platform component>`. It also removes every component that depends on it; `teardown postgresql` takes Keycloak, observability, LiteLLM and Langfuse with it and deletes every platform database.
   - Deleting PVCs or toolkit namespaces (data loss).
 - **Hand interactive steps to the user.** `./es_auto_installer.sh configure` and password prompts from `sudo` need a terminal; tell the user what to run. `teardown` asks for confirmation; only add `--force` when the user asked for it.
 - **`-- --check` is not a dry run**. Parts of the install run for real.

@@ -33,7 +33,7 @@ Check every row before the first install. Commands only read. Run them on each n
 | Hugging Face | `[ -n "$HF_TOKEN" ] && echo set` | Needed for gated models. Export it in the shell that runs install and model-manager. |
 | `git` | `git --version` | `configure` and `init` need it |
 | Kata only | `ls -l /dev/kvm /dev/vhost-vsock; uname -r` | `/dev/kvm` on the nodes (VT-x, or nested virtualisation on a VM), the `vhost_vsock` module, and Linux 5.17 or newer for `kata-fc` on AMX CPUs |
-| Multi-node | `ssh <user>@<node> true` from the installer host | Key-based SSH as a non-root sudo user to every node. On the main track, write `env/<env>/inventory/hosts.yaml` by hand with `ansible_connection: ssh` per remote node (`local` for the installer host); the inventory generated from `nodes.yaml` lacks it. |
+| Multi-node | `ssh <user>@<node> true` from the installer host | Key-based SSH as a non-root sudo user to every node. List the nodes in `env/<env>/nodes.yaml`; `install` generates the inventory with `ansible_connection` for each node. On the main track that needs Toolkit Manager commit `1cb0739` (10 Nov 2026) or later: `git -C <root> merge-base --is-ancestor 1cb0739 HEAD && echo ok`. |
 
 ## Not covered by validation
 

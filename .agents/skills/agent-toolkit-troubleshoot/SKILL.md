@@ -12,6 +12,7 @@ Diagnose read-only first. In the references, fixes that change the cluster, a ho
 1. Find `<root>`, `<env>` and the track (`AGENTS.md`).
 2. Check health. From `<root>`, `./es_auto_installer.sh validate agent-toolkit --env <env>` checks each installed component. It changes nothing lasting, but it sends one test request through LiteLLM and, on NFS, creates and deletes a probe volume, so tell the user first. Then run these read-only checks, which cover what `validate` does not:
    ```bash
+   export KUBECONFIG=<root>/env/<env>/kubeconfig.yaml                   # first: an inherited KUBECONFIG may point at another cluster
    kubectl get nodes; kubectl get pvc -A | grep -v Bound                 # nodes Ready, volumes Bound
    kubectl get pods -A --no-headers | awk '{split($3,a,"/"); if (!($4=="Completed" || ($4=="Running" && a[1]==a[2])) || $5+0>5) print}'   # not ready, or restarting
    kubectl get llminferenceservices -n llm-inference                     # models Ready, the guard model too (OVMS models: inferenceservices)
@@ -20,7 +21,7 @@ Diagnose read-only first. In the references, fixes that change the cluster, a ho
    kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=eg-gateway -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}'
    getent hosts litellm.<base_domain_name>                               # does this client resolve the gateway?
    ```
-   Point kubectl at this environment first: `export KUBECONFIG=<root>/env/<env>/kubeconfig.yaml`. A `KUBECONFIG` inherited from the shell may point at another cluster. Then map what you see to the catalog:
+   On a bring-your-own cluster, use the user's own kubeconfig instead. Then map what you see to the catalog:
    - pods not ready or restarting: that component's entries (`references/components.md`; for `llm-inference`, `litellm` and `langfuse`, `references/inference.md`)
    - a namespace missing from the mesh or from LiteLLM's list: `references/network.md`
    - no gateway address, or a name that does not resolve: NET-1
@@ -61,6 +62,6 @@ Search the references for the exact error text first, for example `grep -rn 'too
 - When the code and `docs/` disagree, trust the code (`roles/`, `config.yaml`, `components.yaml`) and name the wrong doc page to the user.
 - If nothing matches, collect the following for an issue report:
   - the output of the step 1 checks
-  - the failing task and error from the log
+  - the failing task and error from the log (only those lines: a debug log holds secrets)
   - `kubectl describe` of the failing pod
   - the revisions from the agent-toolkit-install skill (`references/lifecycle.md`, "Record for support")

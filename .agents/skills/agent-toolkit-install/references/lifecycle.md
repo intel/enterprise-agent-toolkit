@@ -14,7 +14,7 @@ All commands run from the Toolkit Manager root. `--env <env>` defaults to `local
 | Check health | `./es_auto_installer.sh validate agent-toolkit --env <env>` (add `--only` for the toolkit layer alone) |
 | Show nodes, pods and URLs | `./es_auto_installer.sh status --env <env>` |
 | List components and layers | `./es_auto_installer.sh show` |
-| Verbose output | `ES_LOG_LEVEL=debug ./es_auto_installer.sh ...` |
+| Verbose output | `ES_LOG_LEVEL=debug ./es_auto_installer.sh ...`. The log then holds the LiteLLM master key and `HF_TOKEN` in plain text: never share it, and delete it when done. |
 | Node readiness report (main track; runs with sudo, may write `env/<env>/kubespray_extra.yml`) | `.venv/bin/ansible-playbook -i env/<env>/inventory/hosts.yaml ext/enterprise.agent-toolkit/playbooks/preflight-check.yml` (add `-K` if sudo needs a password) |
 
 `./es_auto_installer.sh --help` lists the actions and flags of the installed version.
@@ -38,21 +38,22 @@ Observed in validation runs (single node, behind a proxy); expect variation with
 
 ## After install
 
-1. `./es_auto_installer.sh validate agent-toolkit --env <env>`. If the install log warned that a model `did not become Ready`, wait until `kubectl get llminferenceservices -n llm-inference` shows it Ready, then validate again.
-2. The read-only health checks in the agent-toolkit-troubleshoot skill (step 1), for what `validate` does not cover: restarting pods, mesh labels, the gateway address and client name resolution.
-3. Client access: map these names under `.<base_domain_name>` to the gateway IP:
+1. `kubectl get llminferenceservices -n llm-inference` (OVMS models: `inferenceservices`), until every model is Ready. The install finishes even when a model is still loading after its wait (15 minutes by default); the log at the default level does not show it, and the summary lists the model under "Succeeded".
+2. `./es_auto_installer.sh validate agent-toolkit --env <env>`. It sends one test request through LiteLLM and, on NFS, creates and deletes a probe volume, so tell the user first.
+3. The read-only health checks in the agent-toolkit-troubleshoot skill (step 1), for what `validate` does not cover: restarting pods, mesh labels, the gateway address and client name resolution.
+4. Client access: map these names under `.<base_domain_name>` to the gateway IP:
    - always: `litellm`, `langfuse`, `grafana`
    - main track: also `litellm-ui` and `keycloak`
    - with KubeRay: `ray`; with the semantic router: `vllm-sr`
 
    `kubectl get httproute -A -o jsonpath='{range .items[*]}{.spec.hostnames}{"\n"}{end}' | sort -u` lists every published host. Trust `env/<env>/logs/ai-solutions-ca.crt`. See the agent-toolkit-troubleshoot skill (`references/network.md`) for the exact commands.
-4. Wire agents: agent-toolkit-components skill.
+5. Wire agents: agent-toolkit-components skill.
 
 ## Re-running install
 
 - Re-running is the way to resume after a fix. Completed steps are skipped.
 - LiteLLM is skipped when its release exists. Apply LiteLLM changes with `-- -e litellm_reconcile=true`.
-- Helm-based platform components (cert-manager, Istio, Envoy Gateway, Keycloak, observability, CloudNativePG) are also skipped when their release exists, and they have no reconcile switch. Changing them means a teardown of that component and a reinstall (agent-toolkit-configuration skill, "Make the change take effect").
+- Helm-based platform components (cert-manager, Istio, Envoy Gateway, Keycloak, observability, CloudNativePG) are also skipped when their release exists, and they have no reconcile switch. Changing them means a teardown of that component and a reinstall **(deletes data)**. The teardown also removes every component that depends on it, in the layers above too. Never do it for `postgresql` (Keycloak, observability, LiteLLM keys and spend, Langfuse and every platform database go) or `cert_manager` (almost everything depends on it). See INS-11 in the agent-toolkit-troubleshoot skill.
 - A healthy re-run keeps the router token, the Redis and pgvector passwords and the OpenShell key.
 
 ## Teardown: what each target removes
@@ -61,13 +62,13 @@ Observed in validation runs (single node, behind a proxy); expect variation with
 |---|---|---|
 | `teardown <component>` (for example `openshell`) | That component and the toolkit components that depend on it (`agent_sandbox` also removes `openshell`) | Everything else |
 | `teardown agent-toolkit` | The toolkit components and their namespaces, in reverse order | The inference layer: models, LiteLLM, **virtual keys and spend**, guardrail, routers. LiteLLM's access policy still lists the toolkit namespaces. Also the Kata runtime, the env files, the KubeRay CRDs and the OpenShell CLI cache on the installer host. |
-| `teardown inference` | Inference **and** the toolkit, including LiteLLM, its master key Secret and Langfuse | Platform and Kubernetes (virtual keys stay in the platform database) |
-| `teardown platform` | Platform, inference and toolkit. **Deletes every platform database**, including LiteLLM keys and spend, and Langfuse traces. | Kubernetes |
+| `teardown inference` | Inference **and** the toolkit, including LiteLLM, its master key Secret and Langfuse with **every trace** (its ClickHouse volumes in `langfuse`) | Platform and Kubernetes (virtual keys stay in the platform database) |
+| `teardown platform` | Platform, inference and toolkit. **Deletes every platform database**, including LiteLLM keys and spend, and Langfuse's own database. | Kubernetes |
 | `teardown kubernetes`, `teardown infrastructure` | The whole cluster (Kubespray reset) and `env/<env>/kubeconfig.yaml` | Env files. Local volume data in `/opt/local-path-provisioner` (model weights included) unless the version purges it. |
 
 Rules:
 - Teardown asks for confirmation. Without a terminal it needs `--force`; add it only with the user's explicit OK.
-- Only components that are switched **on** are torn down. To remove one that is switched off: `teardown <component> -- -e <component>_enabled=true`.
+- Only components that are switched **on** are torn down. To remove one that is switched off: `teardown <component> -- -e <component>_enabled=true` **(deletes data)**.
 - A toolkit teardown deletes the component namespaces and their volumes. Redis data, pgvector data and every toolkit credential are gone, and new ones are generated on reinstall.
 - Wait until `kubectl get ns` no longer shows the namespaces `Terminating` before reinstalling.
 - On SSH or multi-node installs, `teardown kubernetes` deletes `/usr/local/bin/kubectl` and `helm`. Run `configure` again afterwards.

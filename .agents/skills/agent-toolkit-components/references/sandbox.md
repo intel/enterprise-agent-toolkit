@@ -60,7 +60,7 @@ Check it: `kubectl auth can-i create sandboxclaims.extensions.agents.x-k8s.io -n
 
 ## Code
 
-In a pod, connect to the router Service directly:
+In a pod, connect to the router Service directly. Running this creates a SandboxClaim and deletes it again in `terminate()` **(changes the cluster)**:
 
 ```python
 import os

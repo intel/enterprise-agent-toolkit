@@ -22,19 +22,22 @@ From outside, trust the gateway CA when TLS is self-signed: `env/<env>/logs/ai-s
 - **Master key**: Secret `litellm-master-key`, key `master_key`, namespace `litellm`. Admin only, for minting and managing keys. Never put it in agent code or config.
 - **Virtual key**: one per agent, limited to the models it needs, with a budget and an expiry.
 
-Mint a virtual key **(changes the cluster)**. The master key goes into a variable and is not printed:
+Mint a virtual key and store it as Secret `<agent>-litellm` in the agent's namespace **(changes the cluster)**. The keys go into variables and are never printed or written to a file:
 
 ```bash
 MK=$(kubectl get secret litellm-master-key -n litellm -o jsonpath='{.data.master_key}' | base64 -d)
-curl -s --cacert env/<env>/logs/ai-solutions-ca.crt "https://litellm.<base_domain_name>/key/generate" \
+KEY=$(curl -s --cacert env/<env>/logs/ai-solutions-ca.crt "https://litellm.<base_domain_name>/key/generate" \
   -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
-  -d '{"key_alias":"<agent>","models":["<model>"],"max_budget":10,"duration":"30d"}' \
-  | jq -r .key > <agent>.key
+  -d '{"key_alias":"<agent>","models":["<model>"],"max_budget":10,"duration":"30d"}' | jq -ej .key) &&
+  printf %s "$KEY" | kubectl create secret generic <agent>-litellm -n <agent-ns> --from-file=OPENAI_API_KEY=/dev/stdin
+unset MK KEY
 ```
+
+`jq -e` makes a failed call stop before the Secret is created (the response has no `key`; repeat the call with `jq .error` to see why). Keep `-j`: it leaves out the trailing newline, which would end up in the key.
 
 Or through a port-forward, with `http://localhost:4000/key/generate`. This works even when `litellm_public_paths` limits what the external host publishes.
 
-Store the key as a Secret in the agent's namespace and mount it as `OPENAI_API_KEY`. Manage keys (updates and deletes change the cluster) with `GET /key/list?return_full_object=true`, `GET /key/info?key=<key>`, `POST /key/update` and `POST /key/delete` (`{"keys": [...]}` or `{"key_aliases": [...]}`). Keys and spend live in the platform PostgreSQL, so they survive a toolkit teardown.
+Mount the Secret's `OPENAI_API_KEY` in the agent pod. Manage keys (updates and deletes change the cluster) with `GET /key/list?return_full_object=true`, `GET /key/info?key=<key>`, `POST /key/update` and `POST /key/delete` (`{"keys": [...]}` or `{"key_aliases": [...]}`). Keys and spend live in the platform PostgreSQL, so they survive a toolkit teardown.
 
 Admin UI: on the main track `https://litellm-ui.<base_domain_name>/ui/` (path mode: `https://<base_domain_name>/litellm/ui/`), with Keycloak sign-in. On the release track `https://litellm.<base_domain_name>/ui/`, user `admin`, password = master key. The trailing slash is required.
 
@@ -43,7 +46,8 @@ Admin UI: on the main track `https://litellm-ui.<base_domain_name>/ui/` (path mo
 Always take names from the live list rather than from docs:
 
 ```bash
-curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $(cat <agent>.key)" | jq -r '.data[].id'
+KEY=$(kubectl get secret <agent>-litellm -n <agent-ns> -o jsonpath='{.data.OPENAI_API_KEY}' | base64 -d)
+curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $KEY" | jq -r '.data[].id'
 ```
 
 Usually present with the toolkit defaults:
@@ -55,7 +59,7 @@ Usually present with the toolkit defaults:
 | `vllm-sr/auto` | vLLM Semantic Router, only with `vllm_sr_enabled: true` |
 | `qwen3guard` | The guard model. It is used by the guardrail; agents should not call it. |
 
-More models: `./model-manager deploy <name>` from the Toolkit Manager root (catalog: `env/<env>/models.yaml`). Embedding models serve `/v1/embeddings`. None is deployed by default.
+More models: `./model-manager deploy <name>` from the Toolkit Manager root (catalog: `env/<env>/models.yaml`) **(changes the cluster)**. Embedding models serve `/v1/embeddings`. None is deployed by default.
 
 ## Client configuration
 
