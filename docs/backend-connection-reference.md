@@ -56,7 +56,7 @@ Enabled with `openshell_enabled: true` (requires `agent_sandbox_enabled: true`).
 | **Gateway service** | `openshell.openshell-system.svc.cluster.local:8080` (gRPC, mTLS) |
 | **Sandbox namespace** | `openshell-sandboxes` |
 | **Client mTLS bundle** | Secret `openshell-client-tls` in `openshell-system` |
-| **CLI** | [OpenShell v0.0.116 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.0.116) |
+| **CLI** | [OpenShell v0.1.6 release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.6) |
 | **GenAI provider** | `genai-gateway` (attach with `openshell sandbox create --provider genai-gateway`) |
 
 ```bash

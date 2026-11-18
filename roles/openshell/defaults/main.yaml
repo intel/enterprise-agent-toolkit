@@ -15,9 +15,9 @@
 # =============================================================================
 
 # --- Versions ---
-openshell_chart_version: "0.0.116"   # oci://ghcr.io/nvidia/openshell/helm-chart version
-openshell_image_tag: "0.0.116"
-openshell_release_tag: "v0.0.116"    # GitHub release providing the openshell CLI
+openshell_chart_version: "0.1.6"   # oci://ghcr.io/nvidia/openshell/helm-chart version
+openshell_image_tag: "0.1.6"
+openshell_release_tag: "v0.1.6"    # GitHub release providing the openshell CLI
 
 # StorageClass for sandbox workspace PVCs; empty = `local-path` when the cluster has it, else the default
 openshell_workspace_storage_class: ""
