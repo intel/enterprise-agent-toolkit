@@ -48,23 +48,23 @@ Agents are written in LangGraph, CrewAI, or any OpenAI-compatible SDK. This repo
 
 ## Quickstart
 
-Start here if you want the agent platform running on a single host. Toolkit Manager installs Kubernetes together with the pieces in the table above, which means the LiteLLM gateway, Redis, PostgreSQL with pgvector, the code sandbox, the MCP templates, and Langfuse, and it also deploys one chat model so that the last step can send a request through the gateway and show you that the platform answers.
+Start here to run the agent platform on one host. Toolkit Manager installs Kubernetes and the components in the table above, plus one chat model. The last step calls the gateway so you can see that it answers.
 
-Run every command on that host as a non-root user who can `sudo`, because the installer logs in over SSH even when the machine it is installing is the one you are already on. The example domain below is `api.example.com`, which makes the URL an application calls `https://litellm.api.example.com`.
+Run the commands on that host as a non-root user with `sudo`. The installer logs in over SSH, including to the machine you are on. With the example domain `api.example.com`, the API is `https://litellm.api.example.com`.
 
 ### 1. Prepare the host
 
-Use one server running Ubuntu 22.04 or 24.04 with a 64-bit Intel® processor, at least 48 CPU cores, 32 GB of memory, 150 GB of free disk, and a network connection that can download container images. Thirty-two gigabytes is enough for the operating system to boot, but a normal install of the default model asks for about 131 GB of memory, so a server that has 128 GB should use the smaller model `qwen2-5-coder-7b` or `llama-3-1-8b` when you edit the configuration in step 3. The rest of the hardware, DNS, and certificate setup is in [Prerequisites](docs/getting-started/prerequisites.md).
-
-Run this once on the server before you install. The first command raises a kernel limit the containers need, and the second creates an SSH key so the installer can log in to this machine.
+Use Ubuntu 22.04 or 24.04 on a 64-bit Intel® processor, with 48 cores, 150 GB of free disk, and a network that can download container images. The OS boots in 32 GB, but the default model needs about 131 GB, so on a server with 128 GB set the model to `qwen2-5-coder-7b` or `llama-3-1-8b` in step 3. DNS and certificates are in [Prerequisites](docs/getting-started/prerequisites.md).
 
 ```bash
+# Raise the kernel file-watch limit the containers need.
 sudo tee /etc/sysctl.d/90-inotify.conf > /dev/null <<'EOF'
 fs.inotify.max_user_instances = 8192
 fs.inotify.max_user_watches   = 1048576
 EOF
 sudo sysctl --system
 
+# Create an SSH key so the installer can log in to this machine.
 [ -f ~/.ssh/id_rsa ] || ssh-keygen -t rsa -b 4096 -N "" -f ~/.ssh/id_rsa
 cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
 ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes localhost true && echo "SSH OK"
