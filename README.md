@@ -1,4 +1,4 @@
-<img src="docs copy/assets/banner.jpg" alt="Intel® Agent Toolkit" width="100%">
+<img src="docs/assets/banner.jpg" alt="Intel® Agent Toolkit" width="100%">
 
 <!-- vale off (due to hyperlinks) -->
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/intel/agent-toolkit/blob/main/LICENSE)
@@ -10,25 +10,25 @@
 
 # Intel® Agent Toolkit
 
-**Deploy a production-ready, open source agentic AI stack.**
+**Quickly deploy a production-ready, open source agentic AI stack.**
 
-> A Kubernetes platform with an API gateway, inference routing, agent memory, sandboxed code execution, MCP tools, and observability. Toolkit Manager installs the cluster and the stack. The first run finishes in hours.
+> A Kubernetes platform with an API gateway, inference routing, agent memory, sandboxed code execution, MCP tools, and observability. Toolkit Manager installs the cluster and these pieces for you.
 
 ---
 
-Teams that want **production AI agents** usually discover that a language-model endpoint is not enough. An agent has to remember a conversation, look up company data, call internal APIs, and sometimes run code it just generated. Doing that on a public cloud API also means prompts and documents leave the premises, and every team rebuilds the same plumbing (memory, sandbox, keys, traces).
+Teams that want **production AI agents** usually discover that a language-model endpoint is not enough. An agent has to remember a conversation, look up company data, call internal APIs, and sometimes run code it just generated. Doing that on a public cloud API also means prompts and documents leave the premises, and every team rebuilds the same plumbing: a gateway (LiteLLM), memory (Redis and pgvector), a sandbox, and traces (Langfuse).
 
-Intel® Agent Toolkit is that plumbing, running on Kubernetes on **Intel® hardware** you already operate. [Toolkit Manager](https://github.com/intel/toolkit-manager) installs, updates, and tears it down, including the cluster and model serving. Applications keep an **OpenAI-compatible API**. Developers change the base URL and API key; they do not rewrite clients or drop LangGraph, CrewAI, or similar frameworks. Data and weights stay on your hardware. A GPU is not required.
+Intel® Agent Toolkit is that plumbing, running on Kubernetes on **Intel® hardware** you already operate. [Toolkit Manager](https://github.com/intel/toolkit-manager) installs, updates, and tears it down, including the cluster and model serving. Applications keep an **OpenAI-compatible API**. Developers change the base URL and API key; they do not rewrite clients or drop LangGraph, CrewAI, or similar frameworks. Data and weights stay on your hardware. A GPU is not required. Memory, tools, and coordination run on the CPU. A GPU or a cloud model can still answer the language-model call.
 
 <p align="center">
-  <img src="docs copy/assets/overview.png" alt="Intel® Agent Toolkit. Your agent (LangGraph, CrewAI, OpenClaw, Microsoft Agent Framework) calls an API gateway (LiteLLM, auth, rate limits). The stack provides memory (Redis, PostgreSQL, pgvector), inference and routing (vLLM, SGLang, cloud LLMs), tools and MCP servers, a policy-enforced sandbox (Agent Sandbox, OpenShell), and observability (Langfuse, Prometheus, Grafana). Deployment scales from one node to a rack with Ansible, Helm, and autoscaling, on Kubernetes or Docker Compose, using Intel® Xeon® for orchestration and execution, with GPUs and cloud LLMs for inference.">
+  <img src="docs/assets/overview.png" alt="Intel® Agent Toolkit. Your agent (LangGraph, CrewAI, OpenClaw, Microsoft Agent Framework) calls an API gateway (LiteLLM, auth, rate limits). The stack provides memory (Redis, PostgreSQL, pgvector), inference and routing (vLLM, SGLang, cloud LLMs), tools and MCP servers, a policy-enforced sandbox (Agent Sandbox, OpenShell), and observability (Langfuse, Prometheus, Grafana). Deployment scales from one node to a rack with Ansible, Helm, and autoscaling, on Kubernetes or Docker Compose, using Intel® Xeon® for orchestration and execution, with GPUs and cloud LLMs for inference.">
 </p>
 
 ---
 
 ## What you get
 
-A default install gives you the components below. Every one of them is configurable: turn it off, change its settings, or bring your own (an existing cluster with `existing_kubernetes`, Keycloak instead of LiteLLM, the models you list in `llm_services_autodeploy_models`). See [Configuration](docs copy/configuration/configuration.md).
+A default install gives you the components below. Every one of them is configurable: turn it off, change its settings, or bring your own (an existing cluster with `existing_kubernetes`, Keycloak instead of LiteLLM, the models you list in `llm_services_autodeploy_models`). See [Configuration](docs/configuration/configuration.md).
 
 | Component | Implementation | Purpose |
 |---|---|---|
@@ -52,7 +52,7 @@ Install on a single host and send a first chat request. Run all commands on that
 
 ### 1. Prepare the host
 
-Requirements: Ubuntu 22.04 or 24.04, x86_64, 48 cores, 32 GB RAM, 150 GB free disk, and internet access. The default model needs more RAM than 32 GB: a default install requests about 131 GiB. On a 128 GB node, set `llm_services_autodeploy_models` to `qwen2-5-coder-7b` or `llama-3-1-8b` in step 3. See [Prerequisites](docs copy/getting-started/prerequisites.md).
+Requirements: Ubuntu 22.04 or 24.04, x86_64, 48 cores, 32 GB RAM, 150 GB free disk, and internet access. The default model needs more RAM than 32 GB: a default install requests about 131 GiB. On a 128 GB node, set `llm_services_autodeploy_models` to `qwen2-5-coder-7b` or `llama-3-1-8b` in step 3. See [Prerequisites](docs/getting-started/prerequisites.md).
 
 Raise the inotify limits, then configure passwordless SSH (the installer uses SSH even on a single node):
 
@@ -140,7 +140,7 @@ curl -k https://litellm.api.example.com/v1/chat/completions \
 | `500`, `503`, or a timeout | The model is still loading. Wait until its pod is `1/1 Running`, then retry. |
 | Pods stuck, `too many open files` | The inotify sysctl from step 1 was not applied on this node. |
 
-Any OpenAI-compatible SDK uses base URL `https://litellm.api.example.com/v1` and that master key. Field-level detail is in the [single-node quickstart](docs copy/getting-started/quickstart.md). Failures: [Troubleshooting](docs copy/faq-and-troubleshooting/troubleshooting.md).
+Any OpenAI-compatible SDK uses base URL `https://litellm.api.example.com/v1` and that master key. Field-level detail is in the [single-node quickstart](docs/getting-started/quickstart.md). Failures: [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md).
 
 ---
 
@@ -148,9 +148,9 @@ Any OpenAI-compatible SDK uses base URL `https://litellm.api.example.com/v1` and
 
 | Path | Best for | Guide |
 |---|---|---|
-| **Single node** | First run on one host | [Single-node quickstart](docs copy/getting-started/quickstart.md) |
-| **Multi-node** | One control plane plus workers | [Multi-node](docs copy/deployment/multi-node.md) |
-| **Docker Compose** | Containers on one Linux host, without Toolkit Manager | [Docker](docs copy/deployment/docker.md) |
+| **Single node** | First run on one host | [Single-node quickstart](docs/getting-started/quickstart.md) |
+| **Multi-node** | One control plane plus workers | [Multi-node](docs/deployment/multi-node.md) |
+| **Docker Compose** | Containers on one Linux host, without Toolkit Manager | [Docker](docs/deployment/docker.md) |
 
 Not in this release: rack-scale networking, Intel® Arc™ (XPU), and the Flowise plugin.
 
@@ -158,20 +158,14 @@ Not in this release: rack-scale networking, Intel® Arc™ (XPU), and the Flowis
 
 ## Documentation
 
-The guides written for a first install are in [`docs copy/`](docs copy/README.md). The flat notes those guides were checked against are in [`docs/`](docs/README.md).
+The map of every guide is the [docs index](docs/README.md). Start here:
 
-- [Docs index](docs copy/README.md)
-- [Meet the Agent Toolkit](docs copy/overview/meet.md)
-- [Prerequisites](docs copy/getting-started/prerequisites.md)
-- [Single-node quickstart](docs copy/getting-started/quickstart.md)
-- [Configuration](docs copy/configuration/configuration.md): the YAML files under `env/local/`
-- [Routing](docs copy/configuration/routing.md): virtual model names, including the hybrid router
-- [Guardrails](docs copy/configuration/guardrails.md): content-safety screening before the main model
-- [Backend URLs](docs copy/reference/backend-connections.md): in-cluster Redis, pgvector, sandbox, and gateway
-- [FAQ](docs copy/faq-and-troubleshooting/frequently-asked-questions.md): short answers to the questions people ask first
-- [Troubleshooting](docs copy/faq-and-troubleshooting/troubleshooting.md): Toolkit Manager, API, and pod failures
-- [Intel® Inference Toolkit](https://github.com/intel/inference-toolkit): model serving installed by Toolkit Manager
-- [Intel® Chatbot Toolkit](https://swcatalog.intel.com/developer/docs/enterprise-rag): retrieval-augmented chat on the Intel® Software Catalog
+- [Meet the Agent Toolkit](docs/overview/meet.md)
+- [Prerequisites](docs/getting-started/prerequisites.md)
+- [Single-node quickstart](docs/getting-started/quickstart.md)
+- [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md)
+
+Related software Toolkit Manager can install: [Intel® Inference Toolkit](https://github.com/intel/inference-toolkit) and [Intel® Chatbot Toolkit](https://swcatalog.intel.com/developer/docs/enterprise-rag).
 
 > Discover more Intel® AI software on the [Intel® Software Catalog](https://swcatalog.intel.com/).
 
