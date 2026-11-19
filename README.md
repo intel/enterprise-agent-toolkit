@@ -48,13 +48,15 @@ Agents are written in LangGraph, CrewAI, or any OpenAI-compatible SDK. This repo
 
 ## Quickstart
 
-Install on a single host and send a first chat request. Run all commands on that host as a non-root user with `sudo`. The gateway name is `litellm.<base_domain_name>`. With the example domain below, that is `litellm.api.example.com`.
+Start here. This install brings up the agent platform on one host. Toolkit Manager installs Kubernetes and the pieces in the table above: the LiteLLM gateway, Redis, PostgreSQL with pgvector, the code sandbox, MCP templates, and Langfuse, plus one chat model. The last step sends a request through that gateway so you can see the platform answer.
+
+Run every command on that host as a non-root user who can `sudo`. The installer connects over SSH, including when the target is the machine you are already on. The example domain is `api.example.com`, so the URL an application calls is `https://litellm.api.example.com`.
 
 ### 1. Prepare the host
 
-Requirements: Ubuntu 22.04 or 24.04, x86_64, 48 cores, 32 GB RAM, 150 GB free disk, and internet access. The default model needs more RAM than 32 GB: a default install requests about 131 GiB. On a 128 GB node, set `llm_services_autodeploy_models` to `qwen2-5-coder-7b` or `llama-3-1-8b` in step 3. See [Prerequisites](docs/getting-started/prerequisites.md).
+Use a machine running Ubuntu 22.04 or 24.04 on x86_64, with at least 48 cores, 32 GB of RAM, 150 GB of free disk, and a path to the internet. The default model asks for more memory than that 32 GB floor: a default install requests about 131 GiB. On a 128 GB machine, set `llm_services_autodeploy_models` to `qwen2-5-coder-7b` or `llama-3-1-8b` when you edit the configuration in step 3. Hardware, DNS, and certificates are in [Prerequisites](docs/getting-started/prerequisites.md).
 
-Raise the inotify limits, then configure passwordless SSH (the installer uses SSH even on a single node):
+The file-watcher limit on a stock kernel is too low once this many pods are running, and the installer still SSHes to localhost. Raise the limit, then allow key-based SSH from this user to this host:
 
 ```bash
 sudo tee /etc/sysctl.d/90-inotify.conf > /dev/null <<'EOF'
@@ -68,7 +70,7 @@ cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_k
 ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes localhost true && echo "SSH OK"
 ```
 
-Continue only if the output includes `SSH OK`. Add `/etc/hosts` after install, once you have the gateway IP (step 5).
+Go on when that last command prints `SSH OK`. You add the gateway name to `/etc/hosts` in step 5, after the install has an IP for it.
 
 ### 2. Install Toolkit Manager and generate the configuration
 
@@ -79,11 +81,11 @@ cd toolkit-manager
 ./toolkit_manager.sh init agent-toolkit
 ```
 
-Run the remaining commands from the `toolkit-manager` directory.
+Run the rest of this quickstart from the `toolkit-manager` directory. `init` has cloned this repository under `ext/` and written the configuration you are about to edit.
 
 ### 3. Set the configuration
 
-`init` writes the configuration to `env/local/`. Change these and leave the rest.
+`init` writes `env/local/`. Set the domain, and change the model only if you are not using the default. Leave the other keys as they are.
 
 | File | Setting | Purpose |
 |---|---|---|
@@ -100,7 +102,7 @@ export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx   # only for a gated model (Llama, Gemma
 ./toolkit_manager.sh install agent-toolkit
 ```
 
-The first install takes 20–40 minutes. If it stops, rerun the same command to resume. The model pod can take another 10–15 minutes to download weights.
+The first install usually takes 20–40 minutes, and the model pod can spend another 10–15 minutes downloading weights. If the command stops, run it again. It picks up at the step that did not finish. The same command is what you re-run later when you change the YAML.
 
 ### 5. Verify
 
@@ -130,7 +132,7 @@ curl -k https://litellm.api.example.com/v1/chat/completions \
        "max_tokens": 100}'
 ```
 
-`/v1/models` lists `qwen2-5-coder-14b`, and `/v1/chat/completions` returns the reply in `choices[0].message.content`. The `-k` flag is required because the certificate is self-signed.
+A working platform lists `qwen2-5-coder-14b` from `/v1/models` and returns the model's reply in `choices[0].message.content`. Pass `-k` because the certificate was signed by the installer. Redis, pgvector, and the sandbox are already up behind that gateway. Their in-cluster addresses are in the [backend connection reference](docs/reference/backend-connections.md).
 
 | Symptom | Resolution |
 |---|---|
@@ -140,7 +142,7 @@ curl -k https://litellm.api.example.com/v1/chat/completions \
 | `500`, `503`, or a timeout | The model is still loading. Wait until its pod is `1/1 Running`, then retry. |
 | Pods stuck, `too many open files` | The inotify sysctl from step 1 was not applied on this node. |
 
-Any OpenAI-compatible SDK uses base URL `https://litellm.api.example.com/v1` and that master key. Field-level detail is in the [single-node quickstart](docs/getting-started/quickstart.md). Failures: [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md).
+Point an OpenAI-compatible client at `https://litellm.api.example.com/v1` with the master key from the command above. That is the URL an agent uses for every model call. Once this request succeeds, [build a first agent](docs/getting-started/first-agent.md) on the same gateway. The [single-node quickstart](docs/getting-started/quickstart.md) is the same install with the field reference, and [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md) covers install and API failures.
 
 ---
 
@@ -148,7 +150,7 @@ Any OpenAI-compatible SDK uses base URL `https://litellm.api.example.com/v1` and
 
 | Path | Best for | Guide |
 |---|---|---|
-| **Single node** | First run on one host | [Single-node quickstart](docs/getting-started/quickstart.md) |
+| **Single node** | The agent platform on one machine. Start here. | [Single-node quickstart](docs/getting-started/quickstart.md) |
 | **Multi-node** | One control plane plus workers | [Multi-node](docs/deployment/multi-node.md) |
 | **Docker Compose** | Containers on one Linux host, without Toolkit Manager | [Docker](docs/deployment/docker.md) |
 
