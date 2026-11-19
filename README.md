@@ -18,7 +18,7 @@
 
 Teams that want **production AI agents** usually discover that a language-model endpoint is not enough. An agent has to remember a conversation, look up company data, call internal APIs, and sometimes run code it just generated. Doing that on a public cloud API also means prompts and documents leave the premises, and every team rebuilds the same plumbing: a gateway (LiteLLM), memory (Redis and pgvector), a sandbox, and traces (Langfuse).
 
-Intel® Agent Toolkit is that plumbing, running on Kubernetes on **Intel® hardware** you already operate. [Toolkit Manager](https://github.com/intel/toolkit-manager) installs, updates, and tears it down, including the cluster and model serving. Applications keep an **OpenAI-compatible API**. Developers change the base URL and API key; they do not rewrite clients or drop LangGraph, CrewAI, or similar frameworks. Data and weights stay on your hardware. A GPU is not required. Memory, tools, and coordination run on the CPU. A GPU or a cloud model can still answer the language-model call.
+Intel® Agent Toolkit is that plumbing, running on Kubernetes on **Intel® hardware** you already operate. [Toolkit Manager](https://github.com/intel/toolkit-manager) installs, updates, and tears it down, including the cluster and model serving. Applications keep an **OpenAI-compatible API**, so developers change the base URL and the API key and keep using LangGraph, CrewAI, or a similar framework. Data and weights stay on your hardware. A GPU is not required, because memory, tools, and coordination run on the CPU, while a GPU or a cloud model can still answer the language-model call when you want that.
 
 <p align="center">
   <img src="docs/assets/overview.png" alt="Intel® Agent Toolkit. Your agent (LangGraph, CrewAI, OpenClaw, Microsoft Agent Framework) calls an API gateway (LiteLLM, auth, rate limits). The stack provides memory (Redis, PostgreSQL, pgvector), inference and routing (vLLM, SGLang, cloud LLMs), tools and MCP servers, a policy-enforced sandbox (Agent Sandbox, OpenShell), and observability (Langfuse, Prometheus, Grafana). Deployment scales from one node to a rack with Ansible, Helm, and autoscaling, on Kubernetes or Docker Compose, using Intel® Xeon® for orchestration and execution, with GPUs and cloud LLMs for inference.">
@@ -48,15 +48,15 @@ Agents are written in LangGraph, CrewAI, or any OpenAI-compatible SDK. This repo
 
 ## Quickstart
 
-Start here. This install brings up the agent platform on one host. Toolkit Manager installs Kubernetes and the pieces in the table above: the LiteLLM gateway, Redis, PostgreSQL with pgvector, the code sandbox, MCP templates, and Langfuse, plus one chat model. The last step sends a request through that gateway so you can see the platform answer.
+Start here if you want the agent platform running on a single host. Toolkit Manager installs Kubernetes together with the pieces in the table above, which means the LiteLLM gateway, Redis, PostgreSQL with pgvector, the code sandbox, the MCP templates, and Langfuse, and it also deploys one chat model so that the last step can send a request through the gateway and show you that the platform answers.
 
-Run every command on that host as a non-root user who can `sudo`. The installer connects over SSH, including when the target is the machine you are already on. The example domain is `api.example.com`, so the URL an application calls is `https://litellm.api.example.com`.
+Run every command on that host as a non-root user who can `sudo`, because the installer logs in over SSH even when the machine it is installing is the one you are already on. The example domain below is `api.example.com`, which makes the URL an application calls `https://litellm.api.example.com`.
 
 ### 1. Prepare the host
 
-Use a machine running Ubuntu 22.04 or 24.04 on x86_64, with at least 48 cores, 32 GB of RAM, 150 GB of free disk, and a path to the internet. The default model asks for more memory than that 32 GB floor: a default install requests about 131 GiB. On a 128 GB machine, set `llm_services_autodeploy_models` to `qwen2-5-coder-7b` or `llama-3-1-8b` when you edit the configuration in step 3. Hardware, DNS, and certificates are in [Prerequisites](docs/getting-started/prerequisites.md).
+Use one server running Ubuntu 22.04 or 24.04 with a 64-bit Intel® processor, at least 48 CPU cores, 32 GB of memory, 150 GB of free disk, and a network connection that can download container images. Thirty-two gigabytes is enough for the operating system to boot, but a normal install of the default model asks for about 131 GB of memory, so a server that has 128 GB should use the smaller model `qwen2-5-coder-7b` or `llama-3-1-8b` when you edit the configuration in step 3. The rest of the hardware, DNS, and certificate setup is in [Prerequisites](docs/getting-started/prerequisites.md).
 
-The file-watcher limit on a stock kernel is too low once this many pods are running, and the installer still SSHes to localhost. Raise the limit, then allow key-based SSH from this user to this host:
+Run this once on the server before you install. The first command raises a kernel limit the containers need, and the second creates an SSH key so the installer can log in to this machine.
 
 ```bash
 sudo tee /etc/sysctl.d/90-inotify.conf > /dev/null <<'EOF'
@@ -70,7 +70,7 @@ cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_k
 ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes localhost true && echo "SSH OK"
 ```
 
-Go on when that last command prints `SSH OK`. You add the gateway name to `/etc/hosts` in step 5, after the install has an IP for it.
+Go on to the next step when that last command prints `SSH OK`. You will add the gateway name to `/etc/hosts` in step 5, once the install has given you an IP address for it.
 
 ### 2. Install Toolkit Manager and generate the configuration
 
@@ -81,11 +81,11 @@ cd toolkit-manager
 ./toolkit_manager.sh init agent-toolkit
 ```
 
-Run the rest of this quickstart from the `toolkit-manager` directory. `init` has cloned this repository under `ext/` and written the configuration you are about to edit.
+Run the rest of this quickstart from the `toolkit-manager` directory, because `init` has cloned this repository under `ext/` and written the configuration you are about to edit.
 
 ### 3. Set the configuration
 
-`init` writes `env/local/`. Set the domain, and change the model only if you are not using the default. Leave the other keys as they are.
+`init` writes the files under `env/local/`. Set the domain there, and change the model only when you do not want the default, leaving the other keys as `init` wrote them.
 
 | File | Setting | Purpose |
 |---|---|---|
@@ -93,7 +93,7 @@ Run the rest of this quickstart from the `toolkit-manager` directory. `init` has
 | `global_config.yaml` | `auth_provider: litellm` | LiteLLM gateway. The default written by `init` is already `litellm`. |
 | `config.agent-toolkit.yaml` | `llm_services_autodeploy_models: ["qwen2-5-coder-14b"]` | Default chat model. Names must match `models.yaml`. |
 
-`gateway_tls_mode: selfsigned` generates the certificate. `storage_backend: local-path` stores data on this host.
+`gateway_tls_mode: selfsigned` tells the installer to generate the certificate, and `storage_backend: local-path` keeps the data on this host.
 
 ### 4. Install
 
@@ -102,7 +102,7 @@ export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx   # only for a gated model (Llama, Gemma
 ./toolkit_manager.sh install agent-toolkit
 ```
 
-The first install usually takes 20–40 minutes, and the model pod can spend another 10–15 minutes downloading weights. If the command stops, run it again. It picks up at the step that did not finish. The same command is what you re-run later when you change the YAML.
+The first install usually takes 20–40 minutes, and the model pod can spend another 10–15 minutes downloading weights after that. If the command stops before it finishes, run it again and it will pick up at the step that did not complete. You use that same command later, whenever you change the YAML and want the cluster to match it.
 
 ### 5. Verify
 
@@ -132,7 +132,7 @@ curl -k https://litellm.api.example.com/v1/chat/completions \
        "max_tokens": 100}'
 ```
 
-A working platform lists `qwen2-5-coder-14b` from `/v1/models` and returns the model's reply in `choices[0].message.content`. Pass `-k` because the certificate was signed by the installer. Redis, pgvector, and the sandbox are already up behind that gateway. Their in-cluster addresses are in the [backend connection reference](docs/reference/backend-connections.md).
+A working platform lists `qwen2-5-coder-14b` from `/v1/models` and returns the model's reply in `choices[0].message.content`. Pass `-k` on those `curl` commands because the certificate was signed by the installer. Redis, pgvector, and the sandbox are already running behind that gateway, and their addresses inside the cluster are in the [backend connection reference](docs/reference/backend-connections.md).
 
 | Symptom | Resolution |
 |---|---|
@@ -142,7 +142,7 @@ A working platform lists `qwen2-5-coder-14b` from `/v1/models` and returns the m
 | `500`, `503`, or a timeout | The model is still loading. Wait until its pod is `1/1 Running`, then retry. |
 | Pods stuck, `too many open files` | The inotify sysctl from step 1 was not applied on this node. |
 
-Point an OpenAI-compatible client at `https://litellm.api.example.com/v1` with the master key from the command above. That is the URL an agent uses for every model call. Once this request succeeds, [build a first agent](docs/getting-started/first-agent.md) on the same gateway. The [single-node quickstart](docs/getting-started/quickstart.md) is the same install with the field reference, and [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md) covers install and API failures.
+Point an OpenAI-compatible client at `https://litellm.api.example.com/v1` and give it the master key from the command above, because that is the URL an agent uses for every model call. Once this request succeeds, [build a first agent](docs/getting-started/first-agent.md) against the same gateway. The [single-node quickstart](docs/getting-started/quickstart.md) walks through this same install with the field-by-field reference, and [Troubleshooting](docs/faq-and-troubleshooting/troubleshooting.md) covers the install and API failures that show up after it.
 
 ---
 
