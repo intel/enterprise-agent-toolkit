@@ -8,8 +8,7 @@ Kubernetes itself is installed by Kubespray. The list of nodes is `env/local/inv
 
 If you only have one host, follow the [single-node quickstart](../getting-started/quickstart.md) instead.
 
-> [!WARNING]
-> **Not installed by Toolkit Manager yet.** [Rack-scale deployment](rack-scale.md) (100G/200G/400G fabric and NVMe Ceph) still describes the standalone stack. The team needs to review that page. Do not mix it with this multi-node guide until someone confirms it.
+For a high-speed fabric and NVMe Ceph, see [Rack-scale deployment](rack-scale.md) instead of this Ethernet multi-node path.
 
 Complete **[Prerequisites](../getting-started/prerequisites.md)** on every node before you start: SSH from the installer host to all nodes, `/etc/hosts` (or DNS), and TLS.
 

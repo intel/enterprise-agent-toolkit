@@ -2,10 +2,7 @@
 
 [← Docs index](../README.md)
 
-> [!WARNING]
-> **Not installed by Toolkit Manager yet.** The team needs to review this page before anyone follows it.
->
-> Compose is the old in-tree `docker/` bundle: `bash docker/deploy.sh`. `toolkit_manager.sh` only installs Kubernetes. For a first run with Toolkit Manager, use the [single-node quickstart](../getting-started/quickstart.md).
+This path is separate from Toolkit Manager. Compose uses the in-tree `docker/` bundle (`bash docker/deploy.sh`). `toolkit_manager.sh` installs Kubernetes. For a first run with Toolkit Manager, use the [single-node quickstart](../getting-started/quickstart.md).
 
 This path runs the agent stack as **containers on a single Linux host**, without Kubernetes. You still get vLLM, LiteLLM, Redis, and Postgres, but they are started by Docker Compose rather than Helm. It is meant for a lab or development server where you do not want to provision a cluster. Production stays on Kubernetes.
 
@@ -104,7 +101,7 @@ Do not edit `docker-compose.vllm.yml` or `litellm/config.yaml` by hand; they are
 ```ini
 tool_call_parser=qwen3_coder   # none to disable
 deploy_docker_fresh=off        # on = install Docker if missing
-deploy_agenticai_plugin=off    # Flowise. Not in this release. Leave off.
+deploy_agenticai_plugin=off    # Flowise. Deprecated. Leave off.
 deploy_observability=off       # Langfuse
 http_proxy=
 https_proxy=

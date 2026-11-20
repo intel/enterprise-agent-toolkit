@@ -17,8 +17,6 @@ Use one mechanism per virtual model name.
 
 ## Semantic routing
 
-> **Not available in this release.** The steps below are the procedure for when it is. Confirm `vllm_sr_enabled` on your install before you depend on `vllm-sr/auto`.
-
 Semantic routing sits in front of models you have already deployed. A request with `"model": "vllm-sr/auto"` is classified and sent to one of those models. A request that names a real model is not routed.
 
 - Coding prompts are sent to a coding model; general chat is sent to a general-purpose model.

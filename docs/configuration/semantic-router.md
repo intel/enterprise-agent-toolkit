@@ -2,7 +2,7 @@
 
 [← Docs index](../README.md)
 
-> **Not available in this release.** The steps below are the procedure for when it is. Confirm `vllm_sr_enabled` on your install before you depend on `vllm-sr/auto`. The short enable and call sequence is also on [Routing](routing.md#semantic-routing).
+Set `vllm_sr_enabled: true` in `config.inference.yaml` before you depend on `vllm-sr/auto`. The short enable and call sequence is also on [Routing](routing.md#semantic-routing).
 
 vLLM Semantic Router classifies each prompt and sends it to one deployed model. A request with `"model": "vllm-sr/auto"` is routed. A request that names a real model goes to that model. Project background: [vllm-semantic-router.com](https://vllm-semantic-router.com/).
 

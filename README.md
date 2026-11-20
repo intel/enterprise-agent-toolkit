@@ -2,7 +2,8 @@
 
 <!-- vale off (due to hyperlinks) -->
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/intel/agent-toolkit/blob/main/LICENSE)
-[![Platform: Intel hardware](https://img.shields.io/badge/Platform-Intel%C2%AE%20hardware-0068B5)](https://www.intel.com/content/www/us/en/products/details/processors.html)
+[![Platform: Intel® Xeon®](https://img.shields.io/badge/Platform-Intel%C2%AE%20Xeon%C2%AE-0068B5)](https://www.intel.com/xeon)
+[![Platform: GPU](https://img.shields.io/badge/Platform-GPU-0068B5)](https://www.intel.com/content/www/us/en/products/details/discrete-gpus.html)
 [![Deployment: Kubernetes](https://img.shields.io/badge/Deployment-Kubernetes-326CE5)](https://kubernetes.io)
 [![Gateway: LiteLLM](https://img.shields.io/badge/Gateway-LiteLLM-green)](https://litellm.ai)
 [![Frameworks: LangGraph · CrewAI](https://img.shields.io/badge/Frameworks-LangGraph%20%C2%B7%20CrewAI-orange)](https://github.com/intel/agent-toolkit)
@@ -33,11 +34,12 @@ A default install gives you the components below. Every one of them is configura
 | Component | Implementation | Purpose |
 |---|---|---|
 | **API gateway** | LiteLLM (or Keycloak in front of the AI gateway) | A single HTTPS URL and key for every model |
-| **Model serving** | vLLM on Intel® hardware | The language model the agent calls |
+| **Model serving** | Optimized OpenAI-compatible runtimes on Intel® hardware | The language model the agent calls |
 | **Short-term memory** | Redis Stack (with RediSearch) | Session state and recent context |
 | **Long-term memory** | PostgreSQL + pgvector | RAG, embeddings, and data that persists across restarts |
-| **Code sandbox** | Isolated Kubernetes pods | Execute agent-generated code without access to the host |
+| **Sandbox** | Agent Sandbox + OpenShell | Deploy agents and run their code securely, isolated from the host |
 | **Tools** | MCP server templates | Register APIs and tools the agent can invoke |
+| **Guardrails** | LiteLLM content safety + guard model | Screen each prompt before the main model |
 | **Observability** | Langfuse + Prometheus / Grafana | Tokens, latency, and each agent step |
 
 Out of the box, Redis, pgvector, and the sandbox are on; each has an `*_enabled` flag to switch it off. MCP templates are installed, but no MCP server runs until you add one. KubeRay (distributed Ray jobs) is off until you set `kuberay_enabled: true`.
@@ -154,7 +156,7 @@ Point an OpenAI-compatible client at `https://litellm.api.example.com/v1` and gi
 | **Multi-node** | One control plane plus workers | [Multi-node](docs/deployment/multi-node.md) |
 | **Docker Compose** | Containers on one Linux host, without Toolkit Manager | [Docker](docs/deployment/docker.md) |
 
-Not in this release: rack-scale networking, Intel® Arc™ (XPU), and the Flowise plugin.
+Also available: [rack-scale networking](docs/deployment/rack-scale.md) and [Intel® Arc™ (GPU)](docs/deployment/intel-arc.md).
 
 ---
 

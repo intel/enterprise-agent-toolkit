@@ -2,13 +2,6 @@
 
 [← Docs index](../README.md)
 
-> [!WARNING]
-> **Not installed by Toolkit Manager yet.** The team needs to review this page before anyone follows it.
->
-> Commands, paths, and flags below still describe the **standalone** stack (`deploy-agentic-stack.sh`, `core/inventory/agentic-config.cfg`, `rack_scale_mode=on`). They will **not** run if you only cloned Toolkit Manager and used `toolkit_manager.sh init agent-toolkit`.
->
-> Until this path is wired into `toolkit_manager.sh`, use [multi-node deployment](multi-node.md) on a normal Ethernet cluster.
-
 Use this guide when the rack has a **high-speed AI fabric** (100G, 200G, 400G, or 800G), dual-homed NICs (Intel® E810-C or compatible), and NVMe Ceph. A single `rack-profile.yaml` is meant to generate Kubernetes and Ceph config so you do not hand-edit `hosts.yaml` or `ceph-storage.yml`.
 
 > **Speed-agnostic design:** The deployment stack (Kubespray, Calico BGP, Rook/Ceph, and the
@@ -471,8 +464,7 @@ grep -A6 "ceph1:" core/inventory/hosts.yaml
 
 ## Step 4: Configure agentic-config.cfg
 
-> [!WARNING]
-> **Not installed by Toolkit Manager yet.** `agentic-config.cfg` and `rack_scale_mode=on` belong to the standalone stack. There is no equivalent flag in `env/local/*.yaml` today. Do not mix these steps with `toolkit_manager.sh` until the team confirms how Toolkit Manager should map them.
+Some examples below still use the older `agentic-config.cfg` and `rack_scale_mode=on` names. Map those flags to Toolkit Manager YAML with [Configuration](../configuration/configuration.md#if-you-used-the-old-ini-file).
 
 Open `core/inventory/agentic-config.cfg` and set:
 
@@ -491,7 +483,7 @@ deploy_ingress_controller=on
 deploy_genai_gateway=on
 deploy_observability=on
 deploy_llm_models=on
-deploy_agenticai_plugin=off    # Flowise. Not in this release.
+deploy_agenticai_plugin=off    # Flowise. Deprecated. Leave off.
 deploy_redis=on
 deploy_pgvector=on
 deploy_agent_sandbox=on

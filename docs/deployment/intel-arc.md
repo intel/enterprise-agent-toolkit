@@ -1,8 +1,6 @@
-# Intel® Arc™ (XPU)
+# Intel® Arc™ (GPU)
 
 [← Docs index](../README.md)
-
-> **Not available with Toolkit Manager in this release.** The steps below are the procedure from the XPU guide. `compute_platform=xpu` is not accepted by this install. GPU `compute_platform=g` is a separate path and is also not in this release.
 
 This path serves models with the vLLM XPU backend on nodes that have an Intel® discrete GPU (Arc Battlemage B-series, such as B60 or B70, and Arc, Flex, or Max). It sits next to the CPU path. You select it with `compute_platform=xpu`.
 
@@ -108,14 +106,14 @@ deploy_guardrails=off
 deploy_vllm_sr=off
 ```
 
-If `models=` is empty and you run the toolkit interactively, `model-selection.sh` prints the XPU menu (31–36) and waits for a choice.
+If `models=` is empty and you run the toolkit interactively, `model-selection.sh` prints the GPU menu (31–36) and waits for a choice.
 
-The YAML names Toolkit Manager uses for the other flags are in [Configuration](../configuration/configuration.md#if-you-used-the-old-ini-file). `compute_platform` has no equivalent in this release.
+The YAML names Toolkit Manager uses for the other flags are in [Configuration](../configuration/configuration.md#if-you-used-the-old-ini-file).
 
 ## Deploy
 
 ```bash
-# Fresh cluster and an XPU model
+# Fresh cluster and a GPU model
 ./toolkit_manager.sh install agent-toolkit
 
 # Add or remove a model on a cluster that is already up
@@ -147,11 +145,11 @@ Use the model id from the table for the model you deployed. `BASE_URL` is `litel
 | Pod stuck `Pending`, event `Insufficient gpu.intel.com/xe` | Intel GPU plugin is missing, or `xpuDeviceResource` does not match the driver | Install the plugin and confirm the resource name (`xe` or `i915`) |
 | `libze_loader.so.1: cannot open shared object file` | The host has no Level Zero runtime | Install the Intel GPU compute runtime so the libraries exist under `/usr/lib/x86_64-linux-gnu/` |
 | `CreateContainerConfigError` or permission denied on `/dev/dri` | `supplementalGroups` does not match the host `render` and `video` groups | `getent group render video`, then update `xpu-values.yaml` |
-| `Invalid value for compute_platform` | This build does not accept `xpu` or `x` | Expected in this release. The check lives in `core/lib/system/precheck/read-config-file.sh` |
+| `Invalid value for compute_platform` | Value is not `xpu` / `x` (or another accepted GPU value) | Set `compute_platform=xpu` (or `x`) and re-run the precheck |
 | Model deploys and never appears in LiteLLM | `xpu_playbook` or `xpu_values_file` was not passed to Ansible | `install-model.sh` should pass `xpu_playbook=true` and `xpu_values_file=...` as `--extra-vars` |
 
 ## Next steps
 
-- [CPU model configuration](../configuration/xeon-models.md): the path this release installs
-- [Configuration](../configuration/configuration.md): which flags are in this release
+- [CPU model configuration](../configuration/xeon-models.md): the CPU path next to this one
+- [Configuration](../configuration/configuration.md): YAML flags and the old INI mapping
 - [Intel GPU plugin](https://github.com/intel/intel-device-plugins-for-kubernetes), [vLLM XPU](https://docs.vllm.ai/en/latest/getting_started/xpu-installation.html), [Intel discrete GPU drivers](https://dgpu-docs.intel.com/driver/client/overview.html)

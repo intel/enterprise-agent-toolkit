@@ -19,9 +19,9 @@ These are the files `init` writes under `env/local/`. Change the copies here; th
 | File | What it is for |
 |---|---|
 | `global_config.yaml` | Cluster-wide: domain, TLS, auth, storage, proxy, bring-your-own kubeconfig |
-| `config.inference.yaml` | Inference-layer settings the toolkit overrides (guardrails, hybrid router, LiteLLM) |
+| `config.inference.yaml` | Inference layer: which routers to install, and guardrail flags |
 | `models.yaml` | Catalog of model names, Hugging Face ids, CPU, and memory. Deploy with `llm_services_autodeploy_models` or `./model-manager deploy <name>` |
-| `config.agent-toolkit.yaml` | Toolkit knobs: which models install, namespaces, Redis, pgvector, sandbox, optional KubeRay |
+| `config.agent-toolkit.yaml` | Toolkit knobs: which models to install, namespaces, Redis, pgvector, sandbox, optional KubeRay |
 | `inventory/hosts.yaml` | Which nodes are in the cluster |
 
 ### `global_config.yaml`
@@ -51,14 +51,26 @@ storage_backend: local-path      # local-path | nfs | ceph
 
 ### `config.inference.yaml`
 
-Routing and the semantic router live here. Model selection does not. See [Routing](routing.md) and [Hybrid router](hybrid-router.md).
+This file turns inference routers (and related guardrail flags) on or off. **Which chat models deploy is not here.** Put those names in `llm_services_autodeploy_models` in `config.agent-toolkit.yaml`.
+
+**What routing is.** By default, an application names one deployed model (for example `qwen2-5-coder-14b`) on every `/v1/chat/completions` call. Routing replaces that with a virtual model name. The stack looks at the prompt, picks which real model should answer, and returns the completion. The client still calls the same gateway URL; only the `"model"` value changes.
+
+**Why it matters.** You often run several models at once: a small fast one for simple questions, a larger one for hard code or reasoning, and maybe a specialist for a category such as coding. Without routing, every client has to know which model to call. With routing, clients keep one name, and the stack sends easy prompts to the cheap model and hard prompts to the capable one. That cuts cost and latency without changing the application.
+
+Routing is optional. A request that names a real model goes straight to that model. A virtual model name picks a router instead. There are two kinds of routing to choose from.
+
+#### LiteLLM-based routing
+
+Complexity, hybrid, and semantic routers run through the LiteLLM gateway. The flag in this file is for the toolkit **hybrid router**: `hybrid_router_enabled` defaults to `true`, and install creates the virtual model `hybrid-router`. That router classifies how complex the prompt is, then selects a deployed model. Details: [Routing](routing.md) and [Hybrid router](hybrid-router.md).
+
+#### vLLM-SR
+
+vLLM Semantic Router is separate from the LiteLLM options above. Set `vllm_sr_enabled: true` to install it. Clients call the virtual model `vllm-sr/auto`; the router classifies by intent or category and selects a deployed model. Details: [Routing](routing.md) and [vLLM semantic router](semantic-router.md).
 
 ```yaml
 hybrid_router_enabled: true
 # vllm_sr_enabled: false
 ```
-
-`hybrid_router_enabled` defaults to true. This release creates the `hybrid-router` model at install.
 
 ### `models.yaml`
 

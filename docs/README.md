@@ -34,8 +34,6 @@ Start with the table. Each row is one job and one page. The sections under it ar
 | Look up a term | [Glossary](reference/glossary.md) |
 | Report a bug or change the toolkit | [Contributing](../CONTRIBUTING.md) |
 
-Pages for rack-scale networking, Intel® Arc™ GPUs, and the vLLM semantic router are written, and they are **not in this release**. They are listed at the bottom so they stay out of the install path.
-
 ## Folders
 
 | Folder | When you open it |
@@ -66,6 +64,8 @@ Do these in order on one host: prerequisites, quickstart, then the first agent.
 | Guide | What it covers |
 |---|---|
 | [Deploy on multiple nodes](deployment/multi-node.md) | One control plane plus worker nodes, including the inventory YAML Kubespray uses |
+| [Rack-scale AI fabric](deployment/rack-scale.md) | High-speed fabric and NVMe Ceph |
+| [Intel® Arc™ (GPU)](deployment/intel-arc.md) | Model serving on Intel discrete GPUs |
 | [Docker Compose](deployment/docker.md) | Containers on a single Linux host, via `docker/deploy.sh` |
 | [Corporate proxy](deployment/proxy.md) | `http_proxy`, `https_proxy`, and `no_proxy` for image pulls and model downloads |
 | [Decommission and redeploy](deployment/decommission.md) | Tear the toolkit, or the whole install, down and install again |
@@ -88,6 +88,7 @@ Edit YAML under `env/local/` and re-run `install`. Hybrid routing is on by defau
 | [Guardrails](configuration/guardrails.md) | A small safety model that screens each prompt before the main language model sees it |
 | [Routing](configuration/routing.md) | A virtual model name. The stack selects which deployed model serves the request |
 | [Hybrid router](configuration/hybrid-router.md) | Complexity- and cost-aware routing inside LiteLLM. On by default |
+| [vLLM semantic router](configuration/semantic-router.md) | Intent routing through `vllm-sr/auto`, including the dashboard and routing config |
 
 ## Connect an application
 
