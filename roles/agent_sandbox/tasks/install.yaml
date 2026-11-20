@@ -29,38 +29,12 @@
           istio.io/dataplane-mode: "ambient"
   when: istio_enabled | default(false) | bool
 
-# The API server reaches the conversion webhook in plaintext
-- name: "agent_sandbox | Accept the API server on the controller webhook port"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: security.istio.io/v1
-      kind: PeerAuthentication
-      metadata:
-        name: agent-sandbox-controller-webhook
-        namespace: "{{ agent_sandbox_namespace }}"
-        labels:
-          app.kubernetes.io/managed-by: agentic-ai-stack
-      spec:
-        selector:
-          matchLabels:
-            app: agent-sandbox-controller
-        mtls:
-          mode: STRICT
-        portLevelMtls: "{{ {'9443': {'mode': 'PERMISSIVE'}} }}"
-  when: istio_enabled | default(false) | bool
-
 # ── Core components (CRDs + controller) from official release manifests ──
 
-- name: "agent_sandbox | Apply core manifest (CRDs + controller)"
+- name: "agent_sandbox | Apply manifest (CRDs + controller with extensions)"
   kubernetes.core.k8s:
     state: present
-    src: "{{ agent_sandbox_core_manifest_url }}"
-
-- name: "agent_sandbox | Apply extensions manifest (SandboxTemplate/Claim/WarmPool CRDs)"
-  kubernetes.core.k8s:
-    state: present
-    src: "{{ agent_sandbox_extensions_manifest_url }}"
+    src: "{{ agent_sandbox_manifest_url }}"
 
 - name: "agent_sandbox | Wait for controller to be ready"
   kubernetes.core.k8s_info:
@@ -77,94 +51,41 @@
 
 # ── Sandbox router ────────────────────────────────────────────────────────
 
-- name: "agent_sandbox | Check for the sandbox-router auth token secret"
-  kubernetes.core.k8s_info:
-    kind: Secret
-    name: sandbox-router-auth
-    namespace: "{{ agent_sandbox_namespace }}"
-  register: _router_secret_existing
-  no_log: true
-
-# Created once: a new token would no longer match the sandbox MCP servers.
-# The result returns the stored Secret, token included, so it stays out of the log.
-- name: "agent_sandbox | Create sandbox-router auth token secret"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: sandbox-router-auth
-        namespace: "{{ agent_sandbox_namespace }}"
-      type: Opaque
-      stringData:
-        ROUTER_AUTH_TOKEN: "{{ lookup('password', '/dev/null length=64 chars=hexdigits') }}"
-  register: _router_secret
-  no_log: true
-  ignore_errors: true
-  when: _router_secret_existing.resources | default([]) | length == 0
-
-- name: "agent_sandbox | Check sandbox-router auth token secret"
-  ansible.builtin.assert:
-    that: _router_secret is succeeded
-    fail_msg: "Creating Secret sandbox-router-auth failed: {{ _router_secret.msg | default('no error message returned') }}"
-    quiet: true
-  when: _router_secret is not skipped
-
 # Download with retry/backoff — raw.githubusercontent throttles (HTTP 429).
-- name: "agent_sandbox | Download sandbox-router manifest"
+- name: "agent_sandbox | Download sandbox-router manifests"
   ansible.builtin.get_url:
-    url: "{{ agent_sandbox_router_manifest_url }}"
-    dest: "/tmp/agent-sandbox-router.yaml"
+    url: "{{ agent_sandbox_router_manifest_base_url }}/{{ item }}"
+    dest: "/tmp/agent-sandbox-router-{{ item }}"
     mode: "0644"
+  loop: "{{ agent_sandbox_router_manifests }}"
   register: _router_dl
   retries: 5
   delay: 30
   until: _router_dl is not failed
 
-- name: "agent_sandbox | Read sandbox-router manifest"
+- name: "agent_sandbox | Read sandbox-router manifests"
   ansible.builtin.slurp:
-    src: "/tmp/agent-sandbox-router.yaml"
-  register: _router_manifest
+    src: "/tmp/agent-sandbox-router-{{ item }}"
+  loop: "{{ agent_sandbox_router_manifests }}"
+  register: _router_manifests
 
-# Substitute the published router image and switch the (commented) Never
-# pull policy to IfNotPresent so the registry image is pulled.
-- name: "agent_sandbox | Apply sandbox-router manifest"
+# Pin the router image and require a Kubernetes token (TokenReview) on every request.
+- name: "agent_sandbox | Apply sandbox-router manifests"
   kubernetes.core.k8s:
     state: present
-    namespace: "{{ agent_sandbox_namespace }}"
     definition: >-
-      {{ _router_manifest['content'] | b64decode
-         | replace('${ROUTER_IMAGE}', agent_sandbox_router_image)
-         | replace('imagePullPolicy: Never', 'imagePullPolicy: IfNotPresent')
-         | from_yaml_all | list }}
-
-- name: "agent_sandbox | Inject ROUTER_AUTH_TOKEN into sandbox-router deployment"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: sandbox-router-deployment
-        namespace: "{{ agent_sandbox_namespace }}"
-      spec:
-        template:
-          spec:
-            containers:
-              - name: router
-                env:
-                  - name: ROUTER_AUTH_TOKEN
-                    valueFrom:
-                      secretKeyRef:
-                        name: sandbox-router-auth
-                        key: ROUTER_AUTH_TOKEN
+      {{ _router_manifests.results | map(attribute='content') | map('b64decode')
+         | map('replace', 'registry.k8s.io/agent-sandbox/sandbox-router-go:latest', agent_sandbox_router_image)
+         | map('replace', '- --cache-enabled=true', _authz_args)
+         | map('from_yaml_all') | map('list') | flatten(levels=1) }}
+  vars:
+    _authz_args: "- --cache-enabled=true\n        - --authz-mode=tokenreview\n        - --authz-tokenreview-require-token=true"
 
 - name: "agent_sandbox | Wait for sandbox-router to be ready"
   kubernetes.core.k8s_info:
     kind: Deployment
     namespace: "{{ agent_sandbox_namespace }}"
-    name: sandbox-router-deployment
+    name: sandbox-router
   register: _asb_router
   until: >-
     _asb_router.resources | length > 0 and
